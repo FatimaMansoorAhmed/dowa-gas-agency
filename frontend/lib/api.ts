@@ -13,36 +13,251 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+import type {
+  Company, Party, RateEntry, Customer, Product, PaymentAccount, ExpenseCategory,
+  Sale, Payment, Expense, CustomerLedgerSummary, Purchase, CompanyPayment,
+  CompanyLedgerSummary, PlantLedgerSummaryRow, CylinderTransaction, CylinderBalance, OwnerDrawing, UnifiedSaleBatch, UnifiedSaleResult, DestinationType
+} from "./types";
+
 export const api = {
-companies: {
-    list: () => request<import("./types").Company[]>("/companies"),
-    create: (name: string) =>
-      request<import("./types").Company>("/companies", { 
-        method: "POST", 
-        body: JSON.stringify({ name }) 
-      }),
+  companies: {
+    list: () => request<Company[]>("/companies"),
+    get: (id: string) => request<Company>(`/companies/${id}`),
+    create: (payload: { name: string; mobile?: string; opening_balance?: number; opening_balance_date?: string }) =>
+      request<Company>("/companies", { method: "POST", body: JSON.stringify(payload) }),
   },
   parties: {
-    list: (companyId?: string) =>
-      request<import("./types").Party[]>(`/parties${companyId ? `?company_id=${companyId}` : ""}`),
+    list: (companyId?: string) => request<Party[]>(`/parties${companyId ? `?company_id=${companyId}` : ""}`),
     create: (company_id: string, name: string) =>
-      request<import("./types").Party>("/parties", { method: "POST", body: JSON.stringify({ company_id, name }) }),
+      request<Party>("/parties", { method: "POST", body: JSON.stringify({ company_id, name }) }),
   },
   rates: {
-    list: () => request<import("./types").RateEntry[]>("/rates"),
-    latest: () => request<import("./types").RateEntry[]>("/rates/latest"),
-    create: (payload: {
-      company_id: string; party_id: string; rate_118: number; entered_by: string; timestamp?: string;
-    }) => request<import("./types").RateEntry>("/rates", { method: "POST", body: JSON.stringify(payload) }),
+    list: () => request<RateEntry[]>("/rates"),
+    latest: () => request<RateEntry[]>("/rates/latest"),
+    create: (payload: { company_id: string; party_id: string; rate_118: number; entered_by: string; timestamp?: string }) =>
+      request<RateEntry>("/rates", { method: "POST", body: JSON.stringify(payload) }),
   },
   customers: {
-    list: (search?: string) =>
-      request<import("./types").Customer[]>(`/customers${search ? `?search=${encodeURIComponent(search)}` : ""}`),
-    create: (payload: { name: string; mobile: string; address?: string; opening_balance: number }) =>
-      request<import("./types").Customer>("/customers", { method: "POST", body: JSON.stringify(payload) }),
+    list: (search?: string) => {
+      const query = search?.trim() ? `?search=${encodeURIComponent(search.trim())}` : "";
+      return request<Customer[]>(`/customers/${query}`);
+    },
+    get: (id: string) => request<Customer>(`/customers/${id}`),
+    create: (payload: {
+      name: string; mobile: string; alt_mobile?: string; shop_name?: string; address?: string;
+      city_area?: string; opening_balance: number; opening_balance_date?: string;
+    }) => request<Customer>("/customers/", { method: "POST", body: JSON.stringify(payload) }),
     adjust: (id: string, kind: "payment" | "charge", amount: number) =>
-      request<import("./types").Customer>(`/customers/${id}/adjust`, {
-        method: "PATCH", body: JSON.stringify({ kind, amount }),
+      request<Customer>(`/customers/${id}/adjust`, { method: "PATCH", body: JSON.stringify({ kind, amount }) }),
+  },
+  products: {
+    list: () => request<Product[]>("/products"),
+    create: (name: string, weight_kg: number) =>
+      request<Product>("/products", { method: "POST", body: JSON.stringify({ name, weight_kg }) }),
+  },
+  paymentAccounts: {
+    list: () => request<PaymentAccount[]>("/payment-accounts"),
+    create: (name: string, kind: "cash" | "bank", opening_balance = 0) =>
+      request<PaymentAccount>("/payment-accounts", { method: "POST", body: JSON.stringify({ name, kind, opening_balance }) }),
+  },
+  expenseCategories: {
+    list: () => request<ExpenseCategory[]>("/expense-categories"),
+    create: (name: string, description?: string) =>
+      request<ExpenseCategory>("/expense-categories", { method: "POST", body: JSON.stringify({ name, description }) }),
+  },
+  sales: {
+    list: (params?: { customer_id?: string; month?: string }) => {
+      const q = new URLSearchParams(params as Record<string, string>).toString();
+      return request<Sale[]>(`/sales${q ? `?${q}` : ""}`);
+    },
+    create: (payload: {
+      date: string; customer_id: string; product_id: string; company_id?: string;
+      quantity: number; rate_per_cylinder: number; gate_pass_no?: string;
+      vehicle_no?: string; notes?: string; entered_by: string; cylinders_returned?: number;
+    }) => request<Sale>("/sales", { method: "POST", body: JSON.stringify(payload) }),
+    cancel: (id: string, by: string) => request<Sale>(`/sales/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
+  },
+  payments: {
+    list: (params?: { customer_id?: string; month?: string }) => {
+      const q = new URLSearchParams(params as Record<string, string>).toString();
+      return request<Payment[]>(`/payments${q ? `?${q}` : ""}`);
+    },
+    create: (payload: {
+      date: string; customer_id: string; sale_id?: string; amount: number;
+      method: "cash" | "bank_transfer" | "cheque" | "online" | "other";
+      account_id: string; reference_no?: string; received_by?: string; notes?: string; entered_by: string;
+    }) => request<Payment>("/payments", { method: "POST", body: JSON.stringify(payload) }),
+    cancel: (id: string, by: string) => request<Payment>(`/payments/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
+  },
+  
+  // Endpoint group for Standalone Payment Receipts with destination routing
+  paymentReceipts: {
+    list: (params?: { customer_id?: string; month?: string }) => {
+      const q = new URLSearchParams(params as Record<string, string>).toString();
+      return request<Payment[]>(`/payment-receipts${q ? `?${q}` : ""}`);
+    },
+    create: (payload: {
+      date: string;
+      customer_id: string;
+      amount: number;
+      method: "cash" | "bank_transfer" | "cheque" | "online" | "other";
+      home_expense_amount?: number;
+      home_expense_category_id?: string;
+      owner_drawings_amount?: number;
+      destination_type: DestinationType;
+      target_plant_id?: string;
+      account_id?: string;
+      reference_no?: string;
+      notes?: string;
+      entered_by: string;
+    }) => request<Payment>("/payment-receipts", { method: "POST", body: JSON.stringify(payload) }),
+    cancel: (id: string, by: string) => request<Payment>(`/payment-receipts/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
+  },
+
+  expenses: {
+    list: (params?: { category_id?: string; account_id?: string; month?: string }) => {
+      const q = new URLSearchParams(params as Record<string, string>).toString();
+      return request<Expense[]>(`/expenses${q ? `?${q}` : ""}`);
+    },
+    create: (payload: {
+      date: string; category_id: string; amount: number; account_id: string; method?: string;
+      description?: string; vendor?: string; reference_no?: string; entered_by: string;
+    }) => request<Expense>("/expenses", { method: "POST", body: JSON.stringify(payload) }),
+  },
+  ledger: {
+    customerMonth: (customerId: string, month: string) =>
+      request<CustomerLedgerSummary>(`/ledger/customer/${customerId}?month=${month}`),
+    companyMonth: (companyId: string, month: string) =>
+      request<CompanyLedgerSummary>(`/ledger/company/${companyId}?month=${month}`),
+    plantSummary: (month: string) =>
+      request<PlantLedgerSummaryRow[]>(`/ledger/companies?month=${month}`),
+  },
+  purchases: {
+    list: (params?: { company_id?: string; month?: string }) => {
+      const q = new URLSearchParams(params as Record<string, string>).toString();
+      return request<Purchase[]>(`/purchases${q ? `?${q}` : ""}`);
+    },
+    create: (payload: {
+      date: string; company_id: string; product_id: string; quantity: number;
+      rate_per_cylinder: number; additional_charges?: number; transport_charges?: number;
+      other_charges?: number; gate_pass_no?: string; vehicle_no?: string;
+      driver_name?: string; driver_contact?: string; notes?: string; entered_by: string;
+    }) => request<Purchase>("/purchases", { method: "POST", body: JSON.stringify(payload) }),
+    cancel: (id: string, by: string) => request<Purchase>(`/purchases/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
+  },
+  companyPayments: {
+    list: (params?: { company_id?: string; month?: string }) => {
+      const q = new URLSearchParams(params as Record<string, string>).toString();
+      return request<CompanyPayment[]>(`/company-payments${q ? `?${q}` : ""}`);
+    },
+    create: (payload: {
+      date: string; company_id: string; purchase_id?: string; amount: number;
+      method: "cash" | "bank_transfer" | "cheque" | "online" | "other";
+      account_id: string; reference_no?: string; paid_by?: string; notes?: string; entered_by: string;
+    }) => request<CompanyPayment>("/company-payments", { method: "POST", body: JSON.stringify(payload) }),
+    cancel: (id: string, by: string) => request<CompanyPayment>(`/company-payments/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
+  },
+  cylinderTransactions: {
+    list: (params?: { customer_id?: string; product_id?: string; month?: string }) => {
+      const q = new URLSearchParams(params as Record<string, string>).toString();
+      return request<CylinderTransaction[]>(`/cylinder-transactions${q ? `?${q}` : ""}`);
+    },
+    balances: (customerId?: string) =>
+      request<CylinderBalance[]>(`/cylinder-transactions/balances${customerId ? `?customer_id=${customerId}` : ""}`),
+    create: (payload: {
+      date: string; customer_id: string; product_id: string;
+      qty_out?: number; qty_in?: number; notes?: string; entered_by: string;
+    }) => request<CylinderTransaction>("/cylinder-transactions", { method: "POST", body: JSON.stringify(payload) }),
+    cancel: (id: string, by: string) =>
+      request<CylinderTransaction>(`/cylinder-transactions/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
+  },
+  ownerDrawings: {
+    list: (month?: string) => request<OwnerDrawing[]>(`/owner-drawings${month ? `?month=${month}` : ""}`),
+    create: (payload: { date: string; amount: number; account_id?: string; notes?: string; entered_by: string }) =>
+      request<OwnerDrawing>("/owner-drawings", { method: "POST", body: JSON.stringify(payload) }),
+  },
+  unifiedSale: { 
+    list: (params?: { customer_id?: string; month?: string }) => { 
+      const q = new URLSearchParams(params as Record<string, string>).toString(); 
+      return request<UnifiedSaleBatch[]>(
+        `/sales/unified${q ? `?${q}` : ""}`
+      ); 
+    },
+
+    get: (id: string) =>
+      request<UnifiedSaleResult>(`/sales/unified/${id}`),
+
+    create: (payload: { 
+      date: string; 
+      customer_id: string; 
+      plant_id: string; 
+      items: { 
+        product_id: string; 
+        quantity: number; 
+        purchase_rate: number; 
+        selling_rate: number;
+      }[]; 
+      settlement: { 
+        total_credit_received: number; 
+        cash_received?: number; 
+        cash_account_id?: string; 
+        home_expense_amount: number; 
+        home_expense_category_id?: string; 
+        owner_drawings_amount: number; 
+        destination_type?: DestinationType;
+        target_plant_id?: string;
+        account_id?: string;
+      }; 
+      gate_pass_no?: string; 
+      vehicle_no?: string; 
+      notes?: string; 
+      entered_by?: string; 
+    }) => request<UnifiedSaleResult>(
+      "/sales/unified", 
+      { method: "POST", body: JSON.stringify(payload) }
+    ), 
+
+    update: (
+      id: string, 
+      payload: { 
+        date: string; 
+        customer_id: string; 
+        plant_id: string; 
+        items: { 
+          product_id: string; 
+          quantity: number; 
+          purchase_rate: number; 
+          selling_rate: number;
+        }[]; 
+        settlement: { 
+          total_credit_received: number; 
+          cash_received?: number; 
+          cash_account_id?: string; 
+          home_expense_amount: number; 
+          home_expense_category_id?: string; 
+          owner_drawings_amount: number; 
+          destination_type?: DestinationType;
+          target_plant_id?: string;
+          account_id?: string;
+        }; 
+        gate_pass_no?: string; 
+        vehicle_no?: string; 
+        notes?: string; 
+        entered_by?: string; 
+      }
+    ) => request<UnifiedSaleResult>(`/sales/unified/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
+    approve: (id: string, approved_by?: string) =>
+      request<UnifiedSaleResult>(`/sales/unified/${id}/approve${approved_by ? `?by=${encodeURIComponent(approved_by)}` : ""}`, {
+        method: "POST",
+      }),
+
+    cancel: (id: string, cancelled_by?: string) =>
+      request<UnifiedSaleResult>(`/sales/unified/${id}/cancel${cancelled_by ? `?by=${encodeURIComponent(cancelled_by)}` : ""}`, {
+        method: "POST",
       }),
   },
 };

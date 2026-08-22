@@ -10,6 +10,12 @@ import type { Company, Party, RateEntry } from "@/lib/types";
 
 const RATIO = 45.4 / 11.8;
 
+// HELPER: Exact Local Datetime for <input type="datetime-local" />
+const getLocalDatetimeString = (d = new Date()) => {
+  const offset = d.getTimezoneOffset() * 60000;
+  return new Date(d.getTime() - offset).toISOString().slice(0, 16);
+};
+
 function NewRateBody() {
   const { user } = useAuth();
   const [companies, setCompanies] = useState<Company[]>([]);
@@ -27,21 +33,32 @@ function NewRateBody() {
   const [addingParty, setAddingParty] = useState(false);
 
   const [rate118, setRate118] = useState("");
-  const [timestamp, setTimestamp] = useState(() => new Date().toISOString().slice(0, 16));
+  
+  // FIX 1: Auto-fill EXACT current local time on component mount
+  const [timestamp, setTimestamp] = useState(() => getLocalDatetimeString());
   const [toast, setToast] = useState<string | null>(null);
 
   const load = async () => {
     const [c, p, r] = await Promise.all([api.companies.list(), api.parties.list(), api.rates.list()]);
     setCompanies(c); setParties(p); setRates(r);
   };
-  useEffect(() => { load(); }, []);
+
+  useEffect(() => { 
+    load(); 
+    // Interval runs every minute to keep time fresh if page stays open un-submitted
+    const timer = setInterval(() => {
+      setTimestamp(getLocalDatetimeString());
+    }, 60000);
+    return () => clearInterval(timer);
+  }, []);
 
   const companyParties = parties.filter((p) => p.company_id === companyId);
   const rate454Preview = rate118 ? Math.round(parseFloat(rate118) * RATIO * 100) / 100 : null;
 
+  // FIX 2: Compare dates in local string format for accurate Today's entries
   const todayEntries = useMemo(
     () => rates
-      .filter((r) => new Date(r.timestamp).toDateString() === new Date().toDateString())
+      .filter((r) => new Date(r.timestamp).toLocaleDateString() === new Date().toLocaleDateString())
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
     [rates]
   );
@@ -67,13 +84,22 @@ function NewRateBody() {
 
   const handleSave = async () => {
     if (!companyId || !partyId || !rate118 || !user) return;
+    
+    // Pass ISO standard with offset preservation
     await api.rates.create({
-      company_id: companyId, party_id: partyId, rate_118: parseFloat(rate118),
-      entered_by: user.name, timestamp: new Date(timestamp).toISOString(),
+      company_id: companyId, 
+      party_id: partyId, 
+      rate_118: parseFloat(rate118),
+      entered_by: user.name, 
+      timestamp: new Date(timestamp).toISOString(),
     });
+
     setToast("Rate saved.");
     setRate118("");
-    setTimestamp(new Date().toISOString().slice(0, 16));
+    
+    // FIX 3: Reset to current live local time upon successful submission
+    setTimestamp(getLocalDatetimeString());
+    
     await load();
     setTimeout(() => setToast(null), 2200);
   };
@@ -85,7 +111,7 @@ function NewRateBody() {
       <div className="grid grid-cols-[1fr_1.3fr] gap-4">
         <Panel>
           <div className="flex flex-col gap-3.5">
-            {/* Company Field with Inline Dynamic Creation */}
+            {/* Company Field */}
             <Field label="Company">
               {!addingCompany ? (
                 <div className="flex gap-1.5">
@@ -184,7 +210,7 @@ function NewRateBody() {
                 );
               })}
               {!todayEntries.length && (
-                <tr><td className="text-steel font-body text-[13px] py-3">Nothing logged yet today.</td></tr>
+                <tr><td colSpan={6} className="text-steel font-body text-[13px] py-3">Nothing logged yet today.</td></tr>
               )}
             </tbody>
           </table>

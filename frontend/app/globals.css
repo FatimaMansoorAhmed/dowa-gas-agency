@@ -7,4 +7,74 @@ body {
   color: #0B2138;
 }
 
-table { font-variant-numeric: tabular-nums; }
+table { 
+  font-variant-numeric: tabular-nums; 
+}
+
+/* --------------------------------------------------
+   1. DASHBOARD AREA (Dark & Ultra-Readable Text)
+-------------------------------------------------- */
+
+/* Headings aur Normal Text */
+main h1, main h2, main h3, main h4 {
+  color: #0B2138 !important;
+}
+
+main p, main span, main div, main label {
+  color: #1E293B !important;
+}
+
+/* Light Labels, Dates aur Subtitles ko Dark Slate Slate Karein */
+main .text-steel,
+main [class*="text-slate-"],
+main [class*="text-gray-"],
+main [class*="text-zinc-"] {
+  color: #111827 !important; /* Bold Dark Blackish-Slate */
+  font-weight: 600 !important;
+  opacity: 1 !important;
+}
+
+/* Uppercase Headers (e.g. COMPANIES TRACKED, DASHBOARD) */
+main .uppercase {
+  color: #0F172A !important;
+  font-weight: 700 !important;
+}
+
+
+/* --------------------------------------------------
+   2. SIDEBAR AREA (Solid White & Protected)
+-------------------------------------------------- */
+
+/* Sidebar ke Har Element Ko Strictly White Hi Rakhein */
+aside, 
+aside *, 
+nav, 
+nav * {
+  color: #FFFFFF !important;
+}
+
+/* Active tab background ke andar icons/text white rakhein */
+aside [class*="bg-"] *, 
+nav [class*="bg-"] * {
+  color: #FFFFFF !important;
+}
+@keyframes livePulse {
+  0% { box-shadow: 0 0 0 0 rgba(15, 139, 141, 0.5); }
+  70% { box-shadow: 0 0 0 6px rgba(15, 139, 141, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(15, 139, 141, 0); }
+}
+.live-dot {
+  width: 6px; height: 6px; border-radius: 9999px; background: #0F8B8D;
+  animation: livePulse 1.8s infinite;
+}
+/* Chrome, Safari, Edge, Opera mein arrows hatane ke liye */
+input::-webkit-outer-spin-button,
+input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Firefox mein arrows hatane ke liye */
+input[type=number] {
+  -moz-appearance: textfield;
+}

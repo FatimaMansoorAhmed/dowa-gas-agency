@@ -37,20 +37,21 @@ export function PageHeader({
   );
 }
 
-export function Th({ children, right = false }: { children: ReactNode; right?: boolean }) {
+export function Th({ children, right = false, center = false }: { children: ReactNode; right?: boolean; center?: boolean }) {
   return (
-    <th className={`font-mono text-[10.5px] tracking-wide uppercase text-steel px-2.5 py-2 border-b border-hairline font-medium whitespace-nowrap ${right ? "text-right" : "text-left"}`}>
+    <th className={`font-mono text-[10.5px] tracking-wide uppercase text-steel px-2.5 py-2 border-b border-hairline font-medium whitespace-nowrap ${center ? "text-center" : right ? "text-right" : "text-left"}`}>
       {children}
     </th>
   );
 }
 
 export function Td({
-  children, right = false, mono = false, color, bold = false,
-}: { children: ReactNode; right?: boolean; mono?: boolean; color?: string; bold?: boolean }) {
+  children, right = false, center = false, mono = false, color, bold = false, colSpan,
+}: { children: ReactNode; right?: boolean; center?: boolean; mono?: boolean; color?: string; bold?: boolean; colSpan?: number }) {
   return (
     <td
-      className={`text-[13px] px-2.5 py-2.5 border-b border-hairline whitespace-nowrap ${mono ? "font-mono" : "font-body"} ${right ? "text-right" : "text-left"} ${bold ? "font-semibold" : "font-normal"}`}
+      colSpan={colSpan}
+      className={`text-[13px] px-2.5 py-2.5 border-b border-hairline whitespace-nowrap ${mono ? "font-mono" : "font-body"} ${center ? "text-center" : right ? "text-right" : "text-left"} ${bold ? "font-semibold" : "font-normal"}`}
       style={{ color: color || "#0B2138" }}
     >
       {children}
