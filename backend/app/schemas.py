@@ -1406,4 +1406,3 @@ class PlantLedgerSummaryRow(BaseModel):
     total_purchases: Decimal
     total_payments: Decimal
     closing_balance: Decimal
-

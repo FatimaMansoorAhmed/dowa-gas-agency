@@ -235,7 +235,7 @@ function PaymentsBody() {
   const kpis = useMemo(() => {
     let totalCollections = 0;
     let plantSettlements = 0;
-    let dawaAccountTotal = 0;
+    let dowaAccountTotal = 0;
     let officeCashTotal = 0;
     let ownerHomeTotal = 0;
 
@@ -246,7 +246,7 @@ function PaymentsBody() {
       if (row.destination_type === "plant" || row.target_plant_id) {
         plantSettlements += amt;
       } else if (row.account_id === "dowa_account") {
-        dawaAccountTotal += amt;
+        dowaAccountTotal += amt;
       } else if (row.account_id === "owner_home") {
         ownerHomeTotal += amt;
       } else {
@@ -254,7 +254,7 @@ function PaymentsBody() {
       }
     });
 
-    return { totalCollections, plantSettlements, dawaAccountTotal, officeCashTotal, ownerHomeTotal };
+    return { totalCollections, plantSettlements, dowaAccountTotal, officeCashTotal, ownerHomeTotal };
   }, [registerRows]);
 
   const filteredRegister = useMemo(() => {
@@ -274,7 +274,7 @@ function PaymentsBody() {
       let matchesRoute = true;
       if (filterRoute === "plant") {
         matchesRoute = isPlant;
-      } else if (filterRoute === "dawa") {
+      } else if (filterRoute === "dowa") {
         matchesRoute = !isPlant && row.account_id === "dowa_account";
       } else if (filterRoute === "owner_home") {
         matchesRoute = !isPlant && row.account_id === "owner_home";
@@ -291,7 +291,7 @@ function PaymentsBody() {
       const plant = companies.find((c) => c.id === row.target_plant_id);
       return { label: plant ? `Plant: ${plant.name}` : "Plant Settlement", color: "bg-teal/10 text-teal border-teal/30" };
     }
-    if (row.account_id === "dowa_account") return { label: "Dawa Account", color: "bg-blue-50 text-blue-700 border-blue-200" };
+    if (row.account_id === "dowa_account") return { label: "Dowa Account", color: "bg-blue-50 text-blue-700 border-blue-200" };
     if (row.account_id === "owner_home") return { label: "Owner Home", color: "bg-purple-50 text-purple-700 border-purple-200" };
 
     return { label: resolveAccountLabel(row.account_id, accounts), color: "bg-amber-50 text-amber-700 border-amber-200" };
@@ -301,7 +301,7 @@ return (
       <PageHeader
         eyebrow="Financial Audit"
         title="Payment Register & Audit Log"
-        caption="Track customer collections, deduct home expenses or owner drawings, and route remaining balances to Plants, Dawa Account, Owner Home, or Office Cash."
+        caption="Track customer collections, deduct home expenses or owner drawings, and route remaining balances to Plants, Dowa Account, Owner Home, or Office Cash."
       />
 
       {/* TOP KPI SUMMARY CARDS - PERFECTLY BALANCED 5 COLUMNS */}
@@ -324,10 +324,10 @@ return (
 
         <div className="p-4 bg-panel border border-hairline rounded-xl shadow-xs">
           <div className="flex justify-between items-center text-blue-600 mb-1">
-            <span className="font-mono text-[10px] uppercase font-bold tracking-wider">Dawa Account</span>
+            <span className="font-mono text-[10px] uppercase font-bold tracking-wider">Dowa Account</span>
             <ShieldCheck size={14} />
           </div>
-          <div className="font-mono text-xl font-bold text-blue-600">{pkr(kpis.dawaAccountTotal)}</div>
+          <div className="font-mono text-xl font-bold text-blue-600">{pkr(kpis.dowaAccountTotal)}</div>
         </div>
 
         <div className="p-4 bg-panel border border-hairline rounded-xl shadow-xs">
@@ -507,7 +507,7 @@ return (
                       >
                         <option value="office_cash">Office Cash</option>
                         <option value="owner_home">Owner Home Account</option>
-                        <option value="dowa_account">Dawa Account</option>
+                        <option value="dowa_account">Dowa Account</option>
                         <option value="bank">Specific Bank Account</option>
                       </select>
                     </Field>
@@ -573,7 +573,7 @@ return (
                 >
                   <option value="all">All Routes</option>
                   <option value="plant">Plant Settlements</option>
-                  <option value="dawa">Dawa Account</option>
+                  <option value="dowa">Dawa Account</option>
                   <option value="office_cash">Office Cash</option>
                   <option value="owner_home">Owner Home</option>
                 </select>

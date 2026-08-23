@@ -46,6 +46,7 @@ function UnifiedSaleBody() {
   const [recent, setRecent] = useState<UnifiedSaleBatch[]>([]);
 
   const [showNewPlant, setShowNewPlant] = useState(false);
+  const [showSaleForm, setShowSaleForm] = useState(false);
   const [addingCategory, setAddingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
 
@@ -76,7 +77,7 @@ function UnifiedSaleBody() {
   const [targetPlantId, setTargetPlantId] = useState("");
   // "account" destination is always one of these 4 fixed buckets — never a
   // dynamically-chosen bank/cash PaymentAccount row.
-  const [accountCategory, setAccountCategory] = useState<AccountType>("cash");
+  const [accountCategory, setAccountCategory] = useState<AccountType>("owner_home"); // was "cash"
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -85,8 +86,6 @@ function UnifiedSaleBody() {
   const [loadingTransaction, setLoadingTransaction] = useState(false);
   const [transactionError, setTransactionError] = useState<string | null>(null);
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
-
-  
 
   const load = async () => {
     const [c, cu, p, cat, acc, r, ru] = await Promise.all([
@@ -155,8 +154,26 @@ function UnifiedSaleBody() {
   const projectedCustomerBalance = selectedCustomer
     ? parseFloat(selectedCustomer.current_balance) + totalSelling - totalCreditNum
     : null;
+
+  // Settlement only nets off the purchase plant's payable when it's actually
+  // the routing target (no target chosen, or target === purchase plant) —
+  // otherwise the money never touches the purchase plant's balance.
+  const purchasePlantSettlement =
+    destinationType === "plant" && (!targetPlantId || targetPlantId === companyId)
+      ? netPlantPayment
+      : 0;
+
   const projectedPlantBalance = selectedCompany
-    ? parseFloat(selectedCompany.current_balance) + totalPurchase
+    ? parseFloat(selectedCompany.current_balance) + totalPurchase - purchasePlantSettlement
+    : null;
+
+  const targetPlant =
+    destinationType === "plant" && targetPlantId && targetPlantId !== companyId
+      ? companies.find((c) => c.id === targetPlantId)
+      : null;
+
+  const projectedTargetPlantBalance = targetPlant
+    ? parseFloat(targetPlant.current_balance) - netPlantPayment
     : null;
 
   const handleAddCategory = async () => {
@@ -182,6 +199,7 @@ function UnifiedSaleBody() {
     setCustomerId(""); setCustomerSearch(""); setCompanyId("");
     setDestinationType("plant"); setTargetPlantId(""); setAccountCategory("cash");
     setEditingId(null); setEditingDisplayId(null);
+    setShowSaleForm(false);
   };
 
   const handleViewTransaction = async (id: string) => {
@@ -203,21 +221,20 @@ function UnifiedSaleBody() {
       const full = await api.unifiedSale.get(row.id);
       setEditingId(full.id);
       setEditingDisplayId(full.display_id);
+      setShowSaleForm(true);
       setDate(full.date.slice(0, 10));
       setCustomerId(full.customer_id);
       setCompanyId(full.company_id);
-      
+
       setDestinationType(full.destination_type || "plant");
       setTargetPlantId(full.target_plant_id || "");
       // Older batches may have a real PaymentAccount UUID saved from before
       // routing was locked to the 4 fixed buckets — fall back to "cash" since
       // this dropdown can no longer represent an arbitrary account.
       const savedAccount = full.account_id;
-      setAccountCategory(
-        savedAccount === "cash" || savedAccount === "office_cash" || savedAccount === "owner_home" || savedAccount === "dowa_account"
-          ? savedAccount
-          : "cash"
-      );
+   setAccountCategory(
+  savedAccount === "office_cash" || savedAccount === "owner_home" || savedAccount === "dowa_account"? savedAccount : "owner_home"
+);
 
       const nextItems: Record<string, ItemRow> = {};
       full.sales.forEach((sale) => {
@@ -323,7 +340,7 @@ function UnifiedSaleBody() {
   };
 
   const pendingOrders = useMemo(() => recent.filter((r) => r.status === "pending"), [recent]);
-  const completedOrders = useMemo(() => recent.filter((r) => r.status !== "pending").slice(0, 10), [recent]);
+  const completedOrders = useMemo(() => recent.filter((r) => r.status === "approved").slice(0, 10), [recent]);
 
   const getDestinationLabel = (r: UnifiedSaleBatch) => {
     if (r.destination_type === "account") {
@@ -341,11 +358,68 @@ function UnifiedSaleBody() {
         caption="Sells product, posts the plant's cost, and splits the customer's payment across home expense, owner drawings, and your choice of plant or cash account. Nothing posts until the order is approved."
       />
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        
-        {/* LEFT COLUMN: FORM PANEL */}
-        <div className="lg:col-span-8 xl:col-span-5">
-          <Panel>
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <button
+          type="button"
+          onClick={() => { resetForm(); setShowSaleForm(true); }}
+          className="group rounded-xl border border-teal/30 bg-teal/5 hover:bg-teal/10 transition-colors p-5 text-left"
+        >
+          <div className="flex items-center justify-between">
+            <div className="h-10 w-10 rounded-lg bg-teal text-white flex items-center justify-center">
+              <PlusCircle size={19} />
+            </div>
+            <span className="font-mono text-[10px] uppercase tracking-wide text-teal font-semibold">Create</span>
+          </div>
+          <div className="mt-4 font-display text-lg font-bold text-ink">New Sale</div>
+          <div className="mt-1 font-body text-xs text-steel">Create a sale and settlement in one entry.</div>
+        </button>
+
+        <Panel className="!p-5">
+          <div className="font-mono text-[10px] uppercase text-steel">Pending Approval</div>
+          <div className="mt-2 font-display text-2xl font-bold text-[#8A6D00]">{pendingOrders.length}</div>
+          <div className="mt-1 font-body text-xs text-steel">Orders waiting for review</div>
+        </Panel>
+
+        <Panel className="!p-5">
+          <div className="font-mono text-[10px] uppercase text-steel">Recent Approved</div>
+          <div className="mt-2 font-display text-2xl font-bold text-[#1E8A5F]">{completedOrders.length}</div>
+          <div className="mt-1 font-body text-xs text-steel">Latest approved orders shown below</div>
+        </Panel>
+
+        <Panel className="!p-5">
+          <div className="font-mono text-[10px] uppercase text-steel">Workflow</div>
+          <div className="mt-2 font-display text-sm font-bold text-ink">Save → Review → Approve</div>
+          <div className="mt-1 font-body text-xs text-steel">Nothing posts until approval.</div>
+        </Panel>
+      </div>
+
+      <div className="space-y-6">
+
+        {/* NEW / EDIT SALE MODAL */}
+        {showSaleForm && (
+          <div
+            className="fixed inset-0 z-40 bg-black/40 p-3 sm:p-5 flex items-center justify-center"
+            onMouseDown={(e) => { if (e.target === e.currentTarget) resetForm(); }}
+          >
+            <div className="w-full max-w-5xl max-h-[94vh] overflow-hidden bg-white rounded-xl shadow-2xl flex flex-col">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-hairline shrink-0">
+                <div>
+                  <Eyebrow>{editingId ? "Edit Pending Sale" : "New Unified Sale"}</Eyebrow>
+                  <div className="font-body text-xs text-steel mt-1">
+                    {editingId ? `Editing ${editingDisplayId}` : "Create the sale, settlement and routing in one entry."}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={resetForm}
+                  className="p-2 rounded-md hover:bg-paper text-steel hover:text-ink"
+                  title="Close"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="overflow-y-auto p-3 sm:p-5">
+                <Panel>
             <div className="flex flex-col gap-4">
               {editingId && (
                 <div className="flex items-center justify-between px-3 py-2 bg-[#FFF6E0] border border-[#F0DFA0] rounded-lg">
@@ -523,12 +597,11 @@ function UnifiedSaleBody() {
                       {/* Fixed to exactly these 4 buckets — never a dynamic
                           bank/cash PaymentAccount row (§ Settlement Routing). */}
                       <Field label="Target Account">
-                        <select value={accountCategory} onChange={(e) => setAccountCategory(e.target.value as AccountType)} className={inputClass}>
-                          <option value="cash">{ACCOUNT_TYPE_LABELS.cash}</option>
-                          <option value="office_cash">{ACCOUNT_TYPE_LABELS.office_cash}</option>
-                          <option value="dowa_account">{ACCOUNT_TYPE_LABELS.dowa_account}</option>
-                          <option value="owner_home">{ACCOUNT_TYPE_LABELS.owner_home}</option>
-                        </select>
+<select value={accountCategory} onChange={(e) => setAccountCategory(e.target.value as AccountType)} className={inputClass}>
+  <option value="office_cash">{ACCOUNT_TYPE_LABELS.office_cash}</option>
+  <option value="dowa_account">{ACCOUNT_TYPE_LABELS.dowa_account}</option>
+  <option value="owner_home">{ACCOUNT_TYPE_LABELS.owner_home}</option>
+</select>
                       </Field>
                     </div>
                   )}
@@ -572,7 +645,18 @@ function UnifiedSaleBody() {
                 <div className="font-body text-xs text-steel border-t border-hairline pt-3">
                   <div className="text-[10px] uppercase text-steel/70 mb-1">Projected on approval, not immediately</div>
                   {selectedCustomer && <div>Customer balance {pkr(selectedCustomer.current_balance)} → after: <b className="text-ink">{pkr(projectedCustomerBalance!)}</b></div>}
-                  {selectedCompany && <div className="mt-1">Plant payable {pkr(selectedCompany.current_balance)} → after: <b className="text-ink">{pkr(projectedPlantBalance!)}</b></div>}
+                  {selectedCompany && (
+                    <div className="mt-1">
+                      Plant payable ({selectedCompany.name}) {pkr(selectedCompany.current_balance)} → after:{" "}
+                      <b className="text-ink">{pkr(projectedPlantBalance!)}</b>
+                    </div>
+                  )}
+                  {targetPlant && (
+                    <div className="mt-1">
+                      Settlement plant payable ({targetPlant.name}) {pkr(targetPlant.current_balance)} → after:{" "}
+                      <b className="text-ink">{pkr(projectedTargetPlantBalance!)}</b>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -582,12 +666,15 @@ function UnifiedSaleBody() {
                 {saving ? "Saving…" : editingId ? "Save Changes" : "Save Unified Sale (Pending)"}
               </Button>
             </div>
-          </Panel>
-        </div>
+                </Panel>
+              </div>
+            </div>
+          </div>
+        )}
 
-        {/* RIGHT COLUMN: PENDING QUEUE & RECENT TABLE */}
-        <div className="lg:col-span-6 xl:col-span-7 space-y-4">
-          
+        {/* PENDING QUEUE & RECENT TABLE */}
+        <div className="space-y-6">
+
           {/* Last Created Alert */}
           {lastResult && (
             <Panel className="border-2 border-teal">
@@ -643,12 +730,14 @@ function UnifiedSaleBody() {
 </div>
 <div className="overflow-x-auto mt-3 -mx-1 px-1">
 
-  
-  <table className="w-full min-w-[920px] border-collapse">
+
+  <table className="w-full min-w-[1100px] border-collapse">
     <thead>
       <tr className="border-b border-hairline text-left">
         <Th>ID</Th>
         <Th>CUSTOMER</Th>
+        <Th right>11.8 KG</Th>
+        <Th right>45.4 KG</Th>
         <Th>PLANT</Th>
         <Th right>SALE</Th>
         <Th right>SETTLED</Th>
@@ -694,6 +783,16 @@ function UnifiedSaleBody() {
               >
                 {c?.name || "—"}
               </div>
+            </Td>
+
+            {/* 11.8 KG */}
+            <Td right mono bold>
+              {Number(r.qty_11_8kg || 0)}
+            </Td>
+
+            {/* 45.4 KG */}
+            <Td right mono bold>
+              {Number(r.qty_45_4kg || 0)}
             </Td>
 
             {/* PLANT */}
@@ -843,7 +942,7 @@ function UnifiedSaleBody() {
       {!pendingOrders.length && (
         <tr>
           <td
-            colSpan={7}
+            colSpan={9}
             className="text-steel font-body text-[13px] py-6 text-center"
           >
             No pending sales awaiting approval.
@@ -860,47 +959,64 @@ function UnifiedSaleBody() {
             <Eyebrow>Processed Unified Sales</Eyebrow>
             <SectionCaption>Recent approved and cancelled transactions.</SectionCaption>
 
-            <div className="overflow-x-auto mt-3">
-              <table className="w-full border-collapse">
-                <thead>
-                  <tr className="border-b border-hairline text-left">
-                    <Th>ID</Th>
-                    <Th>CUSTOMER</Th>
-                    <Th right>SALE</Th>
-                    <Th right>SETTLED</Th>
-                    <Th center>STATUS</Th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-hairline">
-                  {completedOrders.map((r) => {
-                    const c = customers.find((x) => x.id === r.customer_id);
-                    return (
-                      <tr key={r.id} className="hover:bg-paper/60 transition-colors">
-                        <Td mono>
-                          <button
-                            type="button"
-                            onClick={() => handleViewTransaction(r.id)}
-                            className="text-teal hover:underline font-mono text-[11px] cursor-pointer"
-                          >
-                            {r.display_id}
-                          </button>
-                        </Td>
-                        <Td bold>{c?.name || "—"}</Td>
-                        <Td right mono color="#0F8B8D">{pkr(r.total_selling_amount)}</Td>
-                        <Td right mono color="#1E8A5F">{pkr(r.total_credit_received)}</Td>
-                        <Td center><StatusBadge status={r.status} /></Td>
-                      </tr>
-                    );
-                  })}
-                  {!completedOrders.length && (
-                    <tr>
-                      <td colSpan={5} className="text-steel font-body text-[13px] py-6 text-center">
-                        No processed sales found.
-                      </td>
+            <div className="mt-3">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[850px] border-collapse">
+                  <thead>
+                    <tr className="border-b border-hairline text-left">
+                      <Th>ID</Th>
+                      <Th>CUSTOMER</Th>
+                      <Th right>11.8 KG</Th>
+                      <Th right>45.4 KG</Th>
+                      <Th>PLANT</Th>
+                      <Th right>SALE</Th>
+                      <Th right>SETTLED</Th>
+                      <Th>DESTINATION</Th>
                     </tr>
-                  )}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-hairline">
+                    {completedOrders.map((r) => {
+                      const c = customers.find((x) => x.id === r.customer_id);
+                      const plant = companies.find((x) => x.id === r.company_id);
+                      return (
+                        <tr key={r.id} className="hover:bg-paper/60 transition-colors">
+                          <Td mono>
+                            <button
+                              type="button"
+                              onClick={() => handleViewTransaction(r.id)}
+                              className="text-teal hover:underline font-mono text-[11px] cursor-pointer font-bold whitespace-nowrap"
+                            >
+                              {r.display_id}
+                            </button>
+                          </Td>
+                          <Td bold>{c?.name || "—"}</Td>
+                          <Td right mono>{Number(r.qty_11_8kg || 0)}</Td>
+                          <Td right mono>{Number(r.qty_45_4kg || 0)}</Td>
+                          <Td>
+                            <span className="inline-flex items-center px-2 py-1 rounded-md bg-slate-100 text-slate-800 text-[11px] font-medium border border-slate-200 whitespace-nowrap">
+                              {plant?.name || r.company_id || "—"}
+                            </span>
+                          </Td>
+                          <Td right mono color="#0F8B8D">{pkr(r.total_selling_amount)}</Td>
+                          <Td right mono color="#1E8A5F" bold>{pkr(r.total_credit_received)}</Td>
+                          <Td>
+                            <span className="whitespace-nowrap font-body text-xs text-slate-700 font-semibold">
+                              {getDestinationLabel(r)}
+                            </span>
+                          </Td>
+                        </tr>
+                      );
+                    })}
+                    {!completedOrders.length && (
+                      <tr>
+                        <td colSpan={8} className="text-steel font-body text-[13px] py-6 text-center">
+                          No approved sales found.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </Panel>
         </div>

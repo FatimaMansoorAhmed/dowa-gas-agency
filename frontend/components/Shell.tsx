@@ -33,6 +33,7 @@ const NAV = [
   // { href: "/cylinder-ledger", label: "Cylinder Ledger", icon: CircleGauge },
   { href: "/customers", label: "Customers", icon: Users },
   { href: "/expenses", label: "Expenses", icon: Wallet },
+  
 ];
 
 export default function Shell({ children }: { children: ReactNode }) {
