@@ -6,6 +6,7 @@ import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, 
 import { api } from "@/lib/api";
 import { pkr, fmtTime, resolveAccountLabel } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
+import { findBucketAccount, bucketBalance } from "@/lib/accounts";
 import { Building2, Wallet, XCircle, Search, ShieldCheck, Home, DollarSign, Link2 } from "lucide-react";
 import type { Customer, Company, PaymentAccount, ExpenseCategory, Payment, UnifiedSaleBatch, DestinationType } from "@/lib/types";
 
@@ -65,7 +66,7 @@ function PaymentsBody() {
   const [targetPlantId, setTargetPlantId] = useState("");
   const [specialAccount, setSpecialAccount] = useState<"office_cash" | "owner_home" | "dowa_account" | "bank">("office_cash");
   const [accountId, setAccountId] = useState("");
-  
+
   const [referenceNo, setReferenceNo] = useState("");
   const [notes, setNotes] = useState("");
 
@@ -146,11 +147,13 @@ function PaymentsBody() {
     setSaving(true);
     setError(null);
 
-    // Determine target account label or ID
+    // Resolve to the real, shared bucket PaymentAccount id when it's already
+    // provisioned (same lookup Cash Management uses) — falls back to the
+    // bucket key itself, which the backend resolves/creates on its own.
     let finalAccountId = accountId;
     if (destinationType === "account" && specialAccount !== "bank") {
-      const matchingAcc = accounts.find((a) => a.name.toLowerCase().includes(specialAccount.replace("_", " ")));
-      finalAccountId = matchingAcc ? matchingAcc.id : specialAccount;
+      const bucketAccount = findBucketAccount(accounts, specialAccount);
+      finalAccountId = bucketAccount ? bucketAccount.id : specialAccount;
     }
 
     try {
@@ -197,64 +200,84 @@ function PaymentsBody() {
   // batches (their settlement never creates a Payment row — see the
   // RegisterRow comment above — so without this merge, an approved Unified
   // Sale's chosen account/plant destination would never show up here at all).
+  //
+  // IMPORTANT: `amount` shown here is the NET amount that actually reached
+  // the settlement route in the badge next to it — NOT the customer's gross
+  // payment. Gross includes any home_expense/owner_drawings deducted before
+  // routing, which are separate ledger entries (Expense / OwnerDrawings) and
+  // must never be double-counted as if they also landed in the routed
+  // account. The gross figure is preserved in the notes column instead.
   const registerRows = useMemo<RegisterRow[]>(() => {
     const receiptRows: RegisterRow[] = payments
       .filter((p) => p.status !== "cancelled")
-      .map((p) => ({
-        id: p.id,
-        display_id: p.display_id,
-        date: p.date,
-        customer_id: p.customer_id,
-        amount: p.amount,
-        destination_type: p.destination_type ?? null,
-        target_plant_id: p.target_plant_id ?? null,
-        account_id: p.account_category ?? p.account_id ?? null,
-        reference_no: p.reference_no,
-        notes: p.notes,
-        source: "receipt",
-      }));
+      .map((p) => {
+        const gross = parseFloat(p.amount) || 0;
+        const net = p.net_settlement_amount != null ? parseFloat(p.net_settlement_amount) : gross;
+        const hasDeduction = Math.abs(net - gross) > 0.01;
+        return {
+          id: p.id,
+          display_id: p.display_id,
+          date: p.date,
+          customer_id: p.customer_id,
+          // net_settlement_amount is what actually reached the destination —
+          // p.amount is the customer's gross payment before home_expense /
+          // owner_drawings were deducted. Fall back to p.amount for legacy
+          // rows saved before net_settlement_amount existed.
+          amount: p.net_settlement_amount ?? p.amount,
+          destination_type: p.destination_type ?? null,
+          target_plant_id: p.target_plant_id ?? null,
+          account_id: p.account_category ?? p.account_id ?? null,
+          reference_no: p.reference_no,
+          notes: hasDeduction
+            ? `${p.notes ? p.notes + " · " : ""}gross ${pkr(gross)}`
+            : p.notes,
+          source: "receipt" as const,
+        };
+      });
 
-    const unifiedRows: RegisterRow[] = unifiedSales.map((b) => ({
-      id: b.id,
-      display_id: b.display_id,
-      date: b.approved_at || b.date,
-      customer_id: b.customer_id,
-      amount: b.total_credit_received,
-      destination_type: b.destination_type ?? null,
-      target_plant_id: b.target_plant_id ?? null,
-      account_id: b.account_id ?? null,
-      reference_no: null,
-      notes: `Unified Sale settlement · ${b.display_id}`,
-      source: "unified_sale",
-    }));
+    const unifiedRows: RegisterRow[] = unifiedSales.map((b) => {
+      const gross = parseFloat(b.total_credit_received) || 0;
+      const net = parseFloat(b.net_plant_payment) || 0;
+      const hasDeduction = Math.abs(net - gross) > 0.01;
+      return {
+        id: b.id,
+        display_id: b.display_id,
+        date: b.approved_at || b.date,
+        customer_id: b.customer_id,
+        // Same principle — net_plant_payment is what reached this
+        // destination, not total_credit_received (which also covers
+        // home_expense/owner_drawings deducted before routing).
+        amount: b.net_plant_payment,
+        destination_type: b.destination_type ?? null,
+        target_plant_id: b.target_plant_id ?? null,
+        account_id: b.account_id ?? null,
+        reference_no: null,
+        notes: `Unified Sale settlement · ${b.display_id}${hasDeduction ? ` · gross ${pkr(gross)}` : ""}`,
+        source: "unified_sale" as const,
+      };
+    });
 
     return [...receiptRows, ...unifiedRows].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [payments, unifiedSales]);
 
-  // KPIs
+  // Lifetime collection KPIs — these stay derived from the register (they're
+  // running totals of money received, not a balance). Dowa Account / Office
+  // Cash / Owner Home are NOT computed here — they read the same
+  // PaymentAccount ledger row Cash Management reads (see bucketBalance
+  // below), so both pages always show the exact same number.
   const kpis = useMemo(() => {
     let totalCollections = 0;
     let plantSettlements = 0;
-    let dowaAccountTotal = 0;
-    let officeCashTotal = 0;
-    let ownerHomeTotal = 0;
 
     registerRows.forEach((row) => {
       const amt = parseFloat(row.amount) || 0;
       totalCollections += amt;
-
       if (row.destination_type === "plant" || row.target_plant_id) {
         plantSettlements += amt;
-      } else if (row.account_id === "dowa_account") {
-        dowaAccountTotal += amt;
-      } else if (row.account_id === "owner_home") {
-        ownerHomeTotal += amt;
-      } else {
-        officeCashTotal += amt;
       }
     });
 
-    return { totalCollections, plantSettlements, dowaAccountTotal, officeCashTotal, ownerHomeTotal };
+    return { totalCollections, plantSettlements };
   }, [registerRows]);
 
   const filteredRegister = useMemo(() => {
@@ -277,24 +300,31 @@ function PaymentsBody() {
       } else if (filterRoute === "dowa") {
         matchesRoute = !isPlant && row.account_id === "dowa_account";
       } else if (filterRoute === "owner_home") {
-        matchesRoute = !isPlant && row.account_id === "owner_home";
+        // "cash" is a legacy alias for Owner Home — money handed to the
+        // owner directly is the same bucket, never Office Cash.
+        matchesRoute = !isPlant && (row.account_id === "owner_home" || row.account_id === "cash");
       } else if (filterRoute === "office_cash") {
-        matchesRoute = !isPlant && (row.account_id === "office_cash" || row.account_id === "cash" || (!row.account_id && row.destination_type === "account"));
+        matchesRoute = !isPlant && row.account_id === "office_cash";
       }
 
       return matchesSearch && matchesRoute;
     });
   }, [registerRows, customers, searchQuery, filterRoute]);
-  
+
   const resolveRouteBadge = (row: RegisterRow) => {
     if (row.destination_type === "plant" || row.target_plant_id) {
       const plant = companies.find((c) => c.id === row.target_plant_id);
       return { label: plant ? `Plant: ${plant.name}` : "Plant Settlement", color: "bg-teal/10 text-teal border-teal/30" };
     }
     if (row.account_id === "dowa_account") return { label: "Dowa Account", color: "bg-blue-50 text-blue-700 border-blue-200" };
-    if (row.account_id === "owner_home") return { label: "Owner Home", color: "bg-purple-50 text-purple-700 border-purple-200" };
+    // "cash" (legacy) is the same bucket as Owner Home — money paid to the
+    // owner directly, not a separate account.
+    if (row.account_id === "owner_home" || row.account_id === "cash") {
+      return { label: "Owner Home", color: "bg-purple-50 text-purple-700 border-purple-200" };
+    }
+    if (row.account_id === "office_cash") return { label: "Office Cash", color: "bg-amber-50 text-amber-700 border-amber-200" };
 
-    return { label: resolveAccountLabel(row.account_id, accounts), color: "bg-amber-50 text-amber-700 border-amber-200" };
+    return { label: resolveAccountLabel(row.account_id, accounts), color: "bg-slate-50 text-slate-700 border-slate-200" };
   };
 return (
     <div className="max-w-[1700px] mx-auto w-full space-y-6 px-4 sm:px-6">
@@ -327,7 +357,7 @@ return (
             <span className="font-mono text-[10px] uppercase font-bold tracking-wider">Dowa Account</span>
             <ShieldCheck size={14} />
           </div>
-          <div className="font-mono text-xl font-bold text-blue-600">{pkr(kpis.dowaAccountTotal)}</div>
+          <div className="font-mono text-xl font-bold text-blue-600">{pkr(bucketBalance(accounts, "dowa_account"))}</div>
         </div>
 
         <div className="p-4 bg-panel border border-hairline rounded-xl shadow-xs">
@@ -335,7 +365,7 @@ return (
             <span className="font-mono text-[10px] uppercase font-bold tracking-wider">Office Cash</span>
             <Wallet size={14} />
           </div>
-          <div className="font-mono text-xl font-bold text-amber-600">{pkr(kpis.officeCashTotal)}</div>
+          <div className="font-mono text-xl font-bold text-amber-600">{pkr(bucketBalance(accounts, "office_cash"))}</div>
         </div>
 
         <div className="p-4 bg-panel border border-hairline rounded-xl shadow-xs col-span-2 md:col-span-1">
@@ -343,7 +373,7 @@ return (
             <span className="font-mono text-[10px] uppercase font-bold tracking-wider">Owner Home</span>
             <Home size={14} />
           </div>
-          <div className="font-mono text-xl font-bold text-purple-600">{pkr(kpis.ownerHomeTotal)}</div>
+          <div className="font-mono text-xl font-bold text-purple-600">{pkr(bucketBalance(accounts, "owner_home"))}</div>
         </div>
       </div>
 
@@ -360,7 +390,7 @@ return (
                   <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} />
                 </Field>
                 <Field label="Payment Method">
-                  <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as any)} className={inputClass}>
+                  <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as typeof paymentMethod)} className={inputClass}>
                     <option value="cash">Cash</option>
                     <option value="bank_transfer">Bank Transfer</option>
                     <option value="cheque">Cheque</option>
@@ -502,7 +532,7 @@ return (
                     <Field label="Select Destination Account">
                       <select
                         value={specialAccount}
-                        onChange={(e) => setSpecialAccount(e.target.value as any)}
+                        onChange={(e) => setSpecialAccount(e.target.value as typeof specialAccount)}
                         className={inputClass}
                       >
                         <option value="office_cash">Office Cash</option>

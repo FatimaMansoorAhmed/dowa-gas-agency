@@ -16,7 +16,8 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 import type {
   Company, Party, RateEntry, Customer, Product, PaymentAccount, ExpenseCategory,
   Sale, Payment, Expense, CustomerLedgerSummary, Purchase, CompanyPayment,
-  CompanyLedgerSummary, PlantLedgerSummaryRow, CylinderTransaction, CylinderBalance, OwnerDrawing, UnifiedSaleBatch, UnifiedSaleResult, DestinationType
+  CompanyLedgerSummary, PlantLedgerSummaryRow, CylinderTransaction, CylinderBalance, OwnerDrawing, UnifiedSaleBatch, UnifiedSaleResult, DestinationType,
+  AccountType, AccountTransferResult
 } from "./types";
 
 export const api = {
@@ -57,8 +58,10 @@ export const api = {
   },
   paymentAccounts: {
     list: () => request<PaymentAccount[]>("/payment-accounts"),
-    create: (name: string, kind: "cash" | "bank", opening_balance = 0) =>
-      request<PaymentAccount>("/payment-accounts", { method: "POST", body: JSON.stringify({ name, kind, opening_balance }) }),
+    create: (name: string, kind: "cash" | "bank", opening_balance = 0, account_type?: AccountType) =>
+      request<PaymentAccount>("/payment-accounts", { method: "POST", body: JSON.stringify({ name, kind, opening_balance, account_type }) }),
+    transfer: (payload: { from_account_id: string; to_account_id: string; amount: number; notes?: string; entered_by: string }) =>
+      request<AccountTransferResult>("/payment-accounts/transfer", { method: "POST", body: JSON.stringify(payload) }),
   },
   expenseCategories: {
     list: () => request<ExpenseCategory[]>("/expense-categories"),

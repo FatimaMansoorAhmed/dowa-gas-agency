@@ -33,6 +33,7 @@ const NAV = [
   // { href: "/cylinder-ledger", label: "Cylinder Ledger", icon: CircleGauge },
   { href: "/customers", label: "Customers", icon: Users },
   { href: "/expenses", label: "Expenses", icon: Wallet },
+   { href: "/cash-managment", label: "Cash Book", icon: Wallet },
   
 ];
 

@@ -18,9 +18,11 @@ from sqlalchemy.engine import Engine
 # Expense.source_payment_id == payment.id)`) fail with a type-mismatch
 # error at the DB level even though the ORM query itself is correct.
 _NEW_COLUMNS: list[tuple[str, str, str]] = [
+    ("payment_accounts", "account_type", "VARCHAR(50)"),
     ("unified_sale_batches", "destination_type", "VARCHAR(50) NOT NULL DEFAULT 'plant'"),
     ("unified_sale_batches", "target_plant_id", "GUID"),
     ("unified_sale_batches", "account_id", "VARCHAR(255)"),
+    ("unified_sale_batches", "vehicle_no", "VARCHAR(255)"),
     ("payments", "destination_type", "VARCHAR(50)"),
     ("payments", "target_plant_id", "GUID"),
     ("payments", "account_category", "VARCHAR(255)"),

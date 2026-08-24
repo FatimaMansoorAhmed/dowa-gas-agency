@@ -58,6 +58,11 @@ export type PaymentAccount = {
   active: string;
 };
 
+export type AccountTransferResult = {
+  from_account: PaymentAccount;
+  to_account: PaymentAccount;
+};
+
 export type ExpenseCategory = { id: string; name: string; description: string | null; active: string };
 
 export type Sale = {
@@ -209,6 +214,7 @@ export type UnifiedSaleBatch = {
   destination_type?: DestinationType;
   target_plant_id?: string | null;
   account_id?: string | null;
+  vehicle_no?: string | null;
   qty_11_8kg: string;
   qty_45_4kg: string;
   total_kg: string;

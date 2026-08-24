@@ -89,7 +89,9 @@ function CustomerLedgerBody() {
                   {c.display_id ?? ""} · {c.mobile}
                 </div>
                 <div className="mt-1">
-                  <BalanceTag amount={c.current_balance} />
+                 <BalanceTag 
+  amount={customerId === c.id && summary ? summary.closing_balance : c.current_balance} 
+/>
                 </div>
               </button>
             ))}

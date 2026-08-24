@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
-from app.utils import next_display_id
+from app.utils import next_display_id, resolve_account_or_bucket
 
 router = APIRouter(prefix="/sales", tags=["unified-sale"])
 
@@ -179,6 +179,7 @@ def _batch_to_out(batch, sales, purchases, plant_payment, expense, owner_drawing
         total_credit_received=batch.total_credit_received, net_plant_payment=batch.net_plant_payment,
         home_expense_amount=batch.home_expense_amount, owner_drawings_amount=batch.owner_drawings_amount,
         destination_type=batch.destination_type, target_plant_id=batch.target_plant_id, account_id=batch.account_id,
+        vehicle_no=batch.vehicle_no,
         status=batch.status, approved_at=batch.approved_at, approved_by=batch.approved_by,
         entered_by=batch.entered_by, created_at=batch.created_at,
         sales=[schemas.SaleOut.model_validate(x) for x in sales],
@@ -280,6 +281,7 @@ def create_unified_sale(payload: schemas.UnifiedSaleCreate, db: Session = Depend
             destination_type=destination_type,
             target_plant_id=target_plant_id,
             account_id=account_id,
+            vehicle_no=payload.vehicle_no,
             status="pending",
             entered_by=payload.entered_by,
         )
@@ -334,6 +336,7 @@ def edit_unified_sale(unified_sale_id: UUID, payload: schemas.UnifiedSaleEdit, d
         batch.destination_type = destination_type
         batch.target_plant_id = target_plant_id
         batch.account_id = account_id
+        batch.vehicle_no = payload.vehicle_no
         db.add(batch)
         db.flush()
 
@@ -403,14 +406,14 @@ def approve_unified_sale(
         net_plant_payment = _dec(batch.net_plant_payment)
         if net_plant_payment > 0:
             if batch.destination_type == "account":
-                account_uuid = _try_uuid(batch.account_id)
-                account_row = db.query(models.PaymentAccount).get(account_uuid) if account_uuid else None
+                # A fixed bucket key (office_cash | owner_home | dowa_account)
+                # resolves to the same real PaymentAccount row Cash Management
+                # reads — see resolve_account_or_bucket — so both pages stay
+                # in sync with this credit.
+                account_row = resolve_account_or_bucket(db, batch.account_id)
                 if account_row:
                     account_row.current_balance = _dec(account_row.current_balance) + net_plant_payment
                     db.add(account_row)
-                # else: a category label with no PaymentAccount row (e.g.
-                # "office_cash") — nothing to credit, money is only tracked
-                # via the batch's own destination_type/account_id fields.
             else:
                 target_id = batch.target_plant_id or batch.company_id
                 target_company = company if target_id == batch.company_id else db.query(models.Company).get(target_id)

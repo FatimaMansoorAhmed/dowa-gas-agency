@@ -908,6 +908,8 @@ class PaymentAccountCreate(BaseModel):
     name: str
     kind: Literal["cash", "bank"] = "cash"
     opening_balance: Decimal = Decimal("0")
+    # One of the fixed Liquidity Hub buckets this row represents, if any.
+    account_type: Optional[Literal["cash", "office_cash", "owner_home", "dowa_account"]] = None
 
 
 class PaymentAccountOut(BaseModel):
@@ -915,9 +917,25 @@ class PaymentAccountOut(BaseModel):
     id: UUID
     name: str
     kind: str
+    account_type: Optional[str] = None
     opening_balance: Decimal
     current_balance: Decimal
     active: str
+
+
+# ---------- Account Transfer (internal cash movement between two real
+# PaymentAccount rows — e.g. Office Cash -> Dowa Account) ----------
+class AccountTransferCreate(BaseModel):
+    from_account_id: UUID
+    to_account_id: UUID
+    amount: Decimal
+    notes: Optional[str] = None
+    entered_by: str
+
+
+class AccountTransferOut(BaseModel):
+    from_account: PaymentAccountOut
+    to_account: PaymentAccountOut
 
 
 # ---------- Expense Category ----------
@@ -1322,6 +1340,7 @@ class UnifiedSaleBatchOut(BaseModel):
     destination_type: str
     target_plant_id: Optional[UUID] = None
     account_id: Optional[str] = None
+    vehicle_no: Optional[str] = None
     # --- ADD THESE NEW FIELDS ---
     qty_11_8kg: Decimal = Decimal("0")
     qty_45_4kg: Decimal = Decimal("0")
@@ -1350,6 +1369,7 @@ class UnifiedSaleOut(BaseModel):
     destination_type: str
     target_plant_id: Optional[UUID] = None
     account_id: Optional[str] = None
+    vehicle_no: Optional[str] = None
     status: str
     approved_at: Optional[datetime] = None
     approved_by: Optional[str] = None

@@ -742,6 +742,7 @@ function UnifiedSaleBody() {
         <Th right>SALE</Th>
         <Th right>SETTLED</Th>
         <Th>DESTINATION</Th>
+        <Th>VEHICLE</Th>
         <Th right>ACTIONS</Th>
       </tr>
     </thead>
@@ -844,6 +845,11 @@ function UnifiedSaleBody() {
               >
                 {getDestinationLabel(r)}
               </span>
+            </Td>
+
+            {/* VEHICLE */}
+            <Td mono color="#8E8E93">
+              {r.vehicle_no || "—"}
             </Td>
 
             {/* ACTIONS */}
@@ -972,6 +978,7 @@ function UnifiedSaleBody() {
                       <Th right>SALE</Th>
                       <Th right>SETTLED</Th>
                       <Th>DESTINATION</Th>
+                      <Th>VEHICLE</Th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-hairline">
@@ -1004,6 +1011,7 @@ function UnifiedSaleBody() {
                               {getDestinationLabel(r)}
                             </span>
                           </Td>
+                          <Td mono color="#8E8E93">{r.vehicle_no || "—"}</Td>
                         </tr>
                       );
                     })}

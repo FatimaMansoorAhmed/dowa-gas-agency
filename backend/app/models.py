@@ -143,6 +143,11 @@ class PaymentAccount(Base):
     id = Column(GUID(), primary_key=True, default=gen_uuid)
     name = Column(String, unique=True, nullable=False)  # Main Cash, Meezan Bank, HBL...
     kind = Column(String, nullable=False, default="cash")  # cash | bank
+    # Tags a real PaymentAccount row as one of the fixed Liquidity Hub
+    # buckets (office_cash | owner_home | dowa_account) so Cash Management
+    # can find/transfer/pay against it. Null for ordinary bank/cash rows
+    # (Main Cash, Meezan Bank, ...) that aren't one of those buckets.
+    account_type = Column(String, nullable=True)
     opening_balance = Column(Numeric(14, 2), nullable=False, default=0)
     current_balance = Column(Numeric(14, 2), nullable=False, default=0)
     active = Column(String, nullable=False, default="active")
@@ -336,6 +341,9 @@ class UnifiedSaleBatch(Base):
     destination_type = Column(String(50), nullable=False, default="plant")
     target_plant_id = Column(GUID(), ForeignKey("companies.id"), nullable=True)
     account_id = Column(String(255), nullable=True)
+
+    # Optional delivery reference for the whole batch — never required to save.
+    vehicle_no = Column(String, nullable=True)
 
     # pending -> approved | canceled. Ledger effects only apply on approval —
     # a pending batch's child Sale/Purchase/Payment/Expense/OwnerDrawings

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
-from app.utils import next_display_id
+from app.utils import next_display_id, resolve_account_or_bucket
 
 router = APIRouter(prefix="/payment-receipts", tags=["payment-receipts"])
 
@@ -24,7 +24,10 @@ def _try_uuid(value):
 def _resolve_destination(db: Session, payload: schemas.PaymentReceiptCreate):
     """Mirrors unified_sale._resolve_destination — validates and normalizes
     settlement routing. Returns (destination_type, target_plant_id,
-    account_row_or_None, account_category_or_None)."""
+    account_row_or_None, account_category_or_None). A fixed bucket key
+    (office_cash | owner_home | dowa_account) resolves to the SAME real
+    PaymentAccount row Cash Management reads — see resolve_account_or_bucket —
+    so crediting it below keeps both pages in sync."""
     destination_type = payload.destination_type or "plant"
     if destination_type == "plant":
         if not payload.target_plant_id:
@@ -36,10 +39,14 @@ def _resolve_destination(db: Session, payload: schemas.PaymentReceiptCreate):
     if not payload.account_id:
         raise HTTPException(400, "account_id is required when destination_type is 'account'")
     account_uuid = _try_uuid(payload.account_id)
-    account_row = db.query(models.PaymentAccount).get(account_uuid) if account_uuid else None
-    if account_uuid and not account_row:
-        raise HTTPException(404, "Payment account not found")
-    account_category = None if account_row else str(payload.account_id)
+    if account_uuid:
+        account_row = db.query(models.PaymentAccount).get(account_uuid)
+        if not account_row:
+            raise HTTPException(404, "Payment account not found")
+        return destination_type, None, account_row, None
+
+    account_row = resolve_account_or_bucket(db, payload.account_id)
+    account_category = str(payload.account_id)
     return destination_type, None, account_row, account_category
 
 
