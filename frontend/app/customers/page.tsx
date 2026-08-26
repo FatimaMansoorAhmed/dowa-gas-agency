@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Search, ChevronRight, X, AlertTriangle } from "lucide-react";
+import { Search, ChevronRight, X, AlertTriangle, Plus } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, Field, inputClass, Button, Th, Td, BalanceTag } from "@/components/ui";
 import { api } from "@/lib/api";
@@ -13,7 +13,13 @@ function CustomerBody() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
   const [search, setSearch] = useState("");
-  const [form, setForm] = useState({ name: "", mobile: "", shopName: "", address: "", openingBalance: "" });
+  
+  // Modal state for adding a customer
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [form, setForm] = useState({
+    name: "", mobile: "", shopName: "", address: "", openingBalance: "",
+    emptyCylinders118: "", emptyCylinders454: "",
+  });
 
   const [payModal, setPayModal] = useState<Customer | null>(null);
   const [payAmount, setPayAmount] = useState("");
@@ -35,14 +41,17 @@ function CustomerBody() {
     await api.customers.create({
       name: form.name.trim(), mobile: form.mobile.trim(), shop_name: form.shopName.trim() || undefined,
       address: form.address.trim() || undefined, opening_balance: parseFloat(form.openingBalance) || 0,
+      empty_cylinders_118: parseFloat(form.emptyCylinders118) || 0,
+      empty_cylinders_454: parseFloat(form.emptyCylinders454) || 0,
     });
-    setForm({ name: "", mobile: "", shopName: "", address: "", openingBalance: "" });
+    setForm({
+      name: "", mobile: "", shopName: "", address: "", openingBalance: "",
+      emptyCylinders118: "", emptyCylinders454: "",
+    });
+    setIsAddModalOpen(false);
     load(search || undefined);
   };
 
-  // Same endpoint the New Sale page's inline payment uses (§19) -- record it
-  // once, here or there, and every screen that reads customer/payment data
-  // reflects it. No page-specific balance math to keep in sync by hand.
   const submitPayment = async () => {
     if (!payModal || !payAmount || !payAccountId || !user) return;
     await api.payments.create({
@@ -64,70 +73,92 @@ function CustomerBody() {
 
   return (
     <div>
-      <PageHeader
-        eyebrow="Customers"
-        title="Add and manage customer accounts"
-        caption="Balances follow the advance convention -- negative means the customer paid ahead, shown as Advance, not Balance Due. Payments recorded here use the same ledger as New Sale."
-      />
-
-      <div className="grid grid-cols-[0.85fr_1.4fr] gap-4">
-        <Panel>
-          <Eyebrow>Add New Customer</Eyebrow>
-          <div className="flex flex-col gap-3 mt-2">
-            <Field label="Customer Name"><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputClass} /></Field>
-            <Field label="Mobile Number"><input value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} placeholder="03XX-XXXXXXX" className={inputClass} /></Field>
-            <Field label="Shop / Business Name (optional)"><input value={form.shopName} onChange={(e) => setForm({ ...form, shopName: e.target.value })} className={inputClass} /></Field>
-            <Field label="Address (optional)"><input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className={inputClass} /></Field>
-            <Field label="Opening Balance"><input type="number" value={form.openingBalance} onChange={(e) => setForm({ ...form, openingBalance: e.target.value })} placeholder="0" className={inputClass} /></Field>
-            <Button variant="primary" onClick={handleAdd} disabled={!form.name.trim() || !form.mobile.trim()}>Add Customer</Button>
-          </div>
-        </Panel>
-
-        <Panel>
-          <div className="flex justify-between items-center mb-1">
-            <Eyebrow>Existing Customers ({customers.length})</Eyebrow>
-            <div className="flex items-center gap-1.5 border border-hairline rounded-md px-2.5">
-              <Search size={13} className="text-steel" />
-              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Name, mobile, shop, or ID" className="border-none outline-none font-body text-xs py-1.5 w-[190px]" />
-            </div>
-          </div>
-          <table className="w-full border-collapse mt-2">
-            <thead>
-              <tr><Th>ID</Th><Th>Name</Th><Th>Mobile</Th><Th right>Balance</Th><Th>Status</Th><Th right>Action</Th></tr>
-            </thead>
-            <tbody>
-              {customers.map((c) => (
-                <tr key={c.id}>
-                  <Td mono>{c.display_id}</Td>
-                  <Td bold>{c.name}{c.shop_name ? <span className="text-steel font-normal"> · {c.shop_name}</span> : ""}</Td>
-                  <Td mono>{c.mobile}</Td>
-                  <Td right><BalanceTag amount={c.current_balance} /></Td>
-                  <Td>
-                    <span className={`font-mono text-[10.5px] px-2 py-0.5 rounded-full ${c.status === "active" ? "bg-[#EAF5EF] text-brand-green" : "bg-[#F2F1EC] text-steel"}`}>
-                      {c.status}
-                    </span>
-                  </Td>
-                  <Td right>
-                    <div className="flex gap-2.5 justify-end">
-                      <button onClick={() => setChargeModal(c)} className="bg-transparent border-none cursor-pointer text-steel font-body text-xs">
-                        Add charge
-                      </button>
-                      <button
-                        onClick={() => { setPayModal(c); setPayAccountId(""); setPayAmount(""); }}
-                        className="bg-transparent border-none cursor-pointer text-teal font-body text-xs inline-flex items-center gap-1"
-                      >
-                        Record payment <ChevronRight size={12} />
-                      </button>
-                    </div>
-                  </Td>
-                </tr>
-              ))}
-              {!customers.length && <tr><td className="text-steel font-body text-[13px] py-3">No customers match.</td></tr>}
-            </tbody>
-          </table>
-        </Panel>
+      <div className="flex justify-between items-start mb-4">
+        <PageHeader
+          eyebrow="Customers"
+          title="Add and manage customer accounts"
+          caption="Balances follow the advance convention -- negative means the customer paid ahead, shown as Advance, not Balance Due. Payments recorded here use the same ledger as New Sale."
+        />
+        <Button variant="primary" onClick={() => setIsAddModalOpen(true)}>
+          <Plus size={15} /> Add New Customer
+        </Button>
       </div>
 
+      <Panel>
+        <div className="flex justify-between items-center mb-1">
+          <Eyebrow>Existing Customers ({customers.length})</Eyebrow>
+          <div className="flex items-center gap-1.5 border border-hairline rounded-md px-2.5">
+            <Search size={13} className="text-steel" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Name, mobile, shop, or ID" className="border-none outline-none font-body text-xs py-1.5 w-[190px]" />
+          </div>
+        </div>
+        <table className="w-full border-collapse mt-2">
+          <thead>
+            <tr><Th>ID</Th><Th>Name</Th><Th>Mobile</Th><Th right>Balance</Th><Th right>Empty Cylinders</Th><Th>Status</Th><Th right>Action</Th></tr>
+          </thead>
+          <tbody>
+            {customers.map((c) => (
+              <tr key={c.id}>
+                <Td mono>{c.display_id}</Td>
+                <Td bold>{c.name}{c.shop_name ? <span className="text-steel font-normal"> · {c.shop_name}</span> : ""}</Td>
+                <Td mono>{c.mobile}</Td>
+                <Td right><BalanceTag amount={c.current_balance} /></Td>
+                <Td right mono>
+                  11.8k: {c.empty_cylinders_118 || 0} · 45.4k: {c.empty_cylinders_454 || 0}
+                </Td>
+                <Td>
+                  <span className={`font-mono text-[10.5px] px-2 py-0.5 rounded-full ${c.status === "active" ? "bg-[#EAF5EF] text-brand-green" : "bg-[#F2F1EC] text-steel"}`}>
+                    {c.status}
+                  </span>
+                </Td>
+                <Td right>
+                  <div className="flex gap-2.5 justify-end">
+                    <button onClick={() => setChargeModal(c)} className="bg-transparent border-none cursor-pointer text-steel font-body text-xs">
+                      Add charge
+                    </button>
+                    <button
+                      onClick={() => { setPayModal(c); setPayAccountId(""); setPayAmount(""); }}
+                      className="bg-transparent border-none cursor-pointer text-teal font-body text-xs inline-flex items-center gap-1"
+                    >
+                      Record payment <ChevronRight size={12} />
+                    </button>
+                  </div>
+                </Td>
+              </tr>
+            ))}
+            {!customers.length && <tr><td className="text-steel font-body text-[13px] py-3">No customers match.</td></tr>}
+          </tbody>
+        </table>
+      </Panel>
+
+      {/* Add New Customer Modal */}
+      {isAddModalOpen && (
+        <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl px-6 py-6 w-[420px] max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-3">
+              <div className="font-display font-bold text-[17px] text-ink">Add New Customer</div>
+              <button onClick={() => setIsAddModalOpen(false)} className="bg-transparent border-none cursor-pointer">
+                <X size={16} className="text-steel" />
+              </button>
+            </div>
+            <div className="flex flex-col gap-3 mt-2">
+              <Field label="Customer Name"><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputClass} /></Field>
+              <Field label="Mobile Number"><input value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} placeholder="03XX-XXXXXXX" className={inputClass} /></Field>
+              <Field label="Shop / Business Name (optional)"><input value={form.shopName} onChange={(e) => setForm({ ...form, shopName: e.target.value })} className={inputClass} /></Field>
+              <Field label="Address (optional)"><input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className={inputClass} /></Field>
+              <Field label="Opening Balance"><input type="number" value={form.openingBalance} onChange={(e) => setForm({ ...form, openingBalance: e.target.value })} placeholder="0" className={inputClass} /></Field>
+              <Field label="Empty Cylinders 11.8 KG (Opening)"><input type="number" min="0" value={form.emptyCylinders118} onChange={(e) => setForm({ ...form, emptyCylinders118: e.target.value })} placeholder="0" className={inputClass} /></Field>
+              <Field label="Empty Cylinders 45.4 KG (Opening)"><input type="number" min="0" value={form.emptyCylinders454} onChange={(e) => setForm({ ...form, emptyCylinders454: e.target.value })} placeholder="0" className={inputClass} /></Field>
+              <div className="mt-2 flex gap-2 justify-end">
+                <Button variant="outline" onClick={() => setIsAddModalOpen(false)}>Cancel</Button>
+                <Button variant="primary" onClick={handleAdd} disabled={!form.name.trim() || !form.mobile.trim()}>Add Customer</Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Record Payment Modal */}
       {payModal && (
         <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50">
           <div className="bg-white rounded-xl px-6 py-6 w-[380px]">
@@ -164,13 +195,15 @@ function CustomerBody() {
                 <span>Excess of {pkr(excess)} will be recorded as account credit (advance).</span>
               </div>
             )}
-            <div className="mt-4">
+            <div className="mt-4 flex gap-2 justify-end">
+              <Button variant="outline" onClick={() => setPayModal(null)}>Cancel</Button>
               <Button variant="primary" onClick={submitPayment} disabled={!payAmount || !payAccountId}>Save Payment</Button>
             </div>
           </div>
         </div>
       )}
 
+      {/* Charge Modal */}
       {chargeModal && (
         <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50">
           <div className="bg-white rounded-xl px-6 py-6 w-[360px]">
@@ -187,7 +220,8 @@ function CustomerBody() {
             <Field label="Amount">
               <input type="number" autoFocus value={chargeAmount} onChange={(e) => setChargeAmount(e.target.value)} className={inputClass} />
             </Field>
-            <div className="mt-4">
+            <div className="mt-4 flex gap-2 justify-end">
+              <Button variant="outline" onClick={() => setChargeModal(null)}>Cancel</Button>
               <Button variant="primary" onClick={submitCharge} disabled={!chargeAmount}>Save Charge</Button>
             </div>
           </div>

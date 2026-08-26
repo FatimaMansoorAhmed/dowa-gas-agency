@@ -19,7 +19,7 @@ def list_company_payments(
     q = db.query(models.CompanyPayment).filter(models.CompanyPayment.status == "active")
     if company_id:
         q = q.filter(models.CompanyPayment.company_id == company_id)
-    rows = q.order_by(models.CompanyPayment.date.desc()).all()
+    rows = q.order_by(models.CompanyPayment.date.desc(), models.CompanyPayment.created_at.desc()).all()
     if month:
         rows = [r for r in rows if r.date.strftime("%Y-%m") == month]
     return rows

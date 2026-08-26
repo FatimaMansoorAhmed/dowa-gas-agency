@@ -21,10 +21,46 @@ def list_expenses(
         q = q.filter(models.Expense.category_id == category_id)
     if account_id:
         q = q.filter(models.Expense.account_id == account_id)
-    rows = q.order_by(models.Expense.date.desc()).all()
+    rows = q.order_by(models.Expense.date.desc(), models.Expense.created_at.desc()).all()
     if month:
         rows = [r for r in rows if r.date.strftime("%Y-%m") == month]
-    return rows
+
+    # Resolve the customer whose payment funded each customer-funded expense
+    # (source_payment_id from a Payment Receipt's home-expense deduction, or
+    # unified_sale_id from a Unified Sale's) — batched to avoid N+1 queries.
+    payment_ids = {r.source_payment_id for r in rows if r.source_payment_id}
+    batch_ids = {r.unified_sale_id for r in rows if r.unified_sale_id}
+    payments = (
+        {p.id: p for p in db.query(models.Payment).filter(models.Payment.id.in_(payment_ids)).all()}
+        if payment_ids else {}
+    )
+    batches = (
+        {b.id: b for b in db.query(models.UnifiedSaleBatch).filter(models.UnifiedSaleBatch.id.in_(batch_ids)).all()}
+        if batch_ids else {}
+    )
+    customer_ids = {p.customer_id for p in payments.values()} | {b.customer_id for b in batches.values()}
+    customers = (
+        {c.id: c for c in db.query(models.Customer).filter(models.Customer.id.in_(customer_ids)).all()}
+        if customer_ids else {}
+    )
+
+    out: list[schemas.ExpenseOut] = []
+    for r in rows:
+        customer = None
+        if r.source_payment_id and r.source_payment_id in payments:
+            customer = customers.get(payments[r.source_payment_id].customer_id)
+        elif r.unified_sale_id and r.unified_sale_id in batches:
+            customer = customers.get(batches[r.unified_sale_id].customer_id)
+        out.append(schemas.ExpenseOut(
+            id=r.id, display_id=r.display_id, date=r.date, category_id=r.category_id,
+            amount=r.amount, account_id=r.account_id, method=r.method,
+            description=r.description, vendor=r.vendor, reference_no=r.reference_no,
+            unified_sale_id=r.unified_sale_id,
+            customer_id=customer.id if customer else None,
+            customer_name=customer.name if customer else None,
+            status=r.status, entered_by=r.entered_by, created_at=r.created_at,
+        ))
+    return out
 
 
 @router.post("", response_model=schemas.ExpenseOut, status_code=201)

@@ -15,9 +15,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 import type {
   Company, Party, RateEntry, Customer, Product, PaymentAccount, ExpenseCategory,
-  Sale, Payment, Expense, CustomerLedgerSummary, Purchase, CompanyPayment,
+  Sale, Payment, Expense, CustomerLedgerSummary, CustomerFlag, Purchase, CompanyPayment,
   CompanyLedgerSummary, PlantLedgerSummaryRow, CylinderTransaction, CylinderBalance, OwnerDrawing, UnifiedSaleBatch, UnifiedSaleResult, DestinationType,
-  AccountType, AccountTransferResult
+  AccountType, AccountTransferResult, CylinderTransactionCreate, CustomerCombinedLedger, EmptyCylinderSale
 } from "./types";
 
 export const api = {
@@ -47,9 +47,31 @@ export const api = {
     create: (payload: {
       name: string; mobile: string; alt_mobile?: string; shop_name?: string; address?: string;
       city_area?: string; opening_balance: number; opening_balance_date?: string;
+      empty_cylinders_118?: number; empty_cylinders_454?: number;
     }) => request<Customer>("/customers/", { method: "POST", body: JSON.stringify(payload) }),
     adjust: (id: string, kind: "payment" | "charge", amount: number) =>
       request<Customer>(`/customers/${id}/adjust`, { method: "PATCH", body: JSON.stringify({ kind, amount }) }),
+    addCylinderTransaction: (customerId: string, payload: CylinderTransactionCreate) =>
+      request<{ status: string; data: CylinderTransaction }>(`/customers/${customerId}/cylinders`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+
+    // Sell a customer's empty cylinders back — decreases their empty
+    // cylinder balance and posts the sale amount to the Customer Ledger.
+    sellEmptyCylinders: (
+      customerId: string,
+      payload: { cylinder_size: "118" | "454"; quantity: number; amount: number; notes?: string; entered_by: string }
+    ) =>
+      request<EmptyCylinderSale>(`/customers/${customerId}/empty-cylinders/sell`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+
+    // 2. Full Combined Cash + Cylinder Ledger Fetch Karna
+    getLedger: (customerId: string) =>
+      request<CustomerCombinedLedger>(`/customers/${customerId}/ledger`),
+
   },
   products: {
     list: () => request<Product[]>("/products"),
@@ -134,6 +156,8 @@ export const api = {
       request<CompanyLedgerSummary>(`/ledger/company/${companyId}?month=${month}`),
     plantSummary: (month: string) =>
       request<PlantLedgerSummaryRow[]>(`/ledger/companies?month=${month}`),
+    customerFlags: (month: string) =>
+      request<CustomerFlag[]>(`/ledger/customers/flags?month=${month}`),
   },
   purchases: {
     list: (params?: { company_id?: string; month?: string }) => {

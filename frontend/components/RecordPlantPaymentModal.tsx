@@ -3,13 +3,9 @@ import { useEffect, useState } from "react";
 import { X, Check, AlertTriangle } from "lucide-react";
 import { Field, inputClass, Button, BalanceTag } from "./ui";
 import { api } from "@/lib/api";
-import { pkr } from "@/lib/format";
+import { pkr, todayLocalInput } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import type { Company, PaymentAccount } from "@/lib/types";
-
-function todayLocalInput() {
-  return new Date().toISOString().slice(0, 10);
-}
 
 export default function RecordPlantPaymentModal({
   onClose,

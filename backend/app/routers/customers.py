@@ -1,4 +1,5 @@
 from datetime import datetime, date
+from decimal import Decimal
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -73,6 +74,11 @@ def create_customer(payload: schemas.CustomerCreate, db: Session = Depends(get_d
             opening_balance=opening_bal,
             current_balance=opening_bal,
             opening_balance_date=parsed_date,
+            empty_cylinders_118=payload.empty_cylinders_118 or 0,
+            empty_cylinders_454=payload.empty_cylinders_454 or 0,
+            # Generic running total (drives the Sell Empty Cylinders flow,
+            # which doesn't split by size) starts as the sum of both.
+            empty_cylinders=(payload.empty_cylinders_118 or 0) + (payload.empty_cylinders_454 or 0),
         )
         
         db.add(new_customer)
@@ -159,3 +165,193 @@ def set_customer_status(customer_id: UUID, status: str = Query(..., pattern="^(a
     db.commit()
     db.refresh(customer)
     return customer
+
+# 7. ADD CYLINDER TRANSACTION (Return / Exchange / Sell Empty)
+@router.post("/{customer_id}/cylinders")
+def add_cylinder_transaction(
+    customer_id: UUID,
+    payload: schemas.CylinderTransactionCreate,
+    db: Session = Depends(get_db)
+):
+    customer = db.query(models.Customer).get(customer_id)
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+
+    # Same validation as the standalone /cylinder-transactions endpoint
+    # (app/routers/cylinder_transactions.py) — kept in sync so both entry
+    # points enforce the same rules.
+    if payload.qty_out < 0 or payload.qty_in < 0:
+        raise HTTPException(400, "Quantities cannot be negative")
+    if payload.qty_out == 0 and payload.qty_in == 0:
+        raise HTTPException(400, "Enter a quantity out or in")
+
+    disp_id = f"CYL-{db.query(models.CylinderTransaction).count() + 1:06d}"
+
+    txn = models.CylinderTransaction(
+        display_id=disp_id,
+        customer_id=customer_id,
+        product_id=payload.product_id,
+        qty_out=payload.qty_out,
+        qty_in=payload.qty_in,
+        transaction_type=payload.transaction_type,
+        notes=payload.notes,
+        entered_by=payload.entered_by,
+        status="active"
+    )
+    db.add(txn)
+
+    # Balance Update Logic — Decimal throughout, matching the Numeric DB columns.
+    net = payload.qty_out - payload.qty_in
+    if payload.product_id:
+        product = db.query(models.Product).get(payload.product_id)
+        if product and product.weight_kg > Decimal("20"):
+            customer.cylinder_balance_454 = (customer.cylinder_balance_454 or Decimal("0")) + net
+        else:
+            customer.cylinder_balance_118 = (customer.cylinder_balance_118 or Decimal("0")) + net
+    else:
+        customer.cylinder_balance_118 = (customer.cylinder_balance_118 or Decimal("0")) + net
+
+    db.add(customer)
+    db.commit()
+    db.refresh(txn)
+    return {"status": "success", "data": txn}
+
+
+# 7b. SELL EMPTY CYLINDERS (Empty Cylinders page action)
+@router.post("/{customer_id}/empty-cylinders/sell", response_model=schemas.EmptyCylinderSaleOut, status_code=201)
+def sell_empty_cylinders(
+    customer_id: UUID,
+    payload: schemas.EmptyCylinderSaleCreate,
+    db: Session = Depends(get_db),
+):
+    customer = db.query(models.Customer).get(customer_id)
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+
+    if payload.quantity <= 0:
+        raise HTTPException(400, "Quantity must be greater than 0")
+    if payload.amount <= 0:
+        raise HTTPException(400, "Amount must be greater than 0")
+
+    is_454 = payload.cylinder_size == "454"
+    available = (customer.empty_cylinders_454 if is_454 else customer.empty_cylinders_118) or 0
+    if payload.quantity > available:
+        raise HTTPException(
+            400,
+            f"Quantity exceeds the customer's available {'45.4' if is_454 else '11.8'} KG empty cylinder balance",
+        )
+
+    sale = models.EmptyCylinderSale(
+        display_id=next_display_id(db, models.EmptyCylinderSale, "ECS", width=6),
+        date=payload.date or datetime.utcnow(),
+        customer_id=customer_id,
+        cylinder_size=payload.cylinder_size,
+        quantity=payload.quantity,
+        amount=payload.amount,
+        notes=payload.notes,
+        status="active",
+        entered_by=payload.entered_by,
+    )
+    db.add(sale)
+
+    if is_454:
+        customer.empty_cylinders_454 = (customer.empty_cylinders_454 or 0) - payload.quantity
+    else:
+        customer.empty_cylinders_118 = (customer.empty_cylinders_118 or 0) - payload.quantity
+    customer.empty_cylinders = (customer.empty_cylinders or 0) - payload.quantity
+    # Same core formula as a regular Sale (§13): a sale only ever adds to
+    # what the customer owes.
+    customer.current_balance = customer.current_balance + payload.amount
+    customer.last_transaction_at = sale.date
+    db.add(customer)
+
+    db.commit()
+    db.refresh(sale)
+    return sale
+
+
+# 8. GET COMBINED FINANCIAL & CYLINDER LEDGER FOR A CUSTOMER
+@router.get("/{customer_id}/ledger")
+def get_customer_combined_ledger(customer_id: UUID, db: Session = Depends(get_db)):
+    customer = db.query(models.Customer).get(customer_id)
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+
+    # 1. Fetch Sales (Debit Money / Credit Cylinder)
+    sales = db.query(models.Sale).filter(
+        models.Sale.customer_id == customer_id, models.Sale.status == "active"
+    ).all()
+
+    # 2. Fetch Payments (Credit Money)
+    payments = db.query(models.Payment).filter(
+        models.Payment.customer_id == customer_id, models.Payment.status == "active"
+    ).all()
+
+    # 3. Fetch Cylinder Returns/Adjustments
+    cyl_txns = db.query(models.CylinderTransaction).filter(
+        models.CylinderTransaction.customer_id == customer_id, models.CylinderTransaction.status == "active"
+    ).all()
+
+    # Combine into unified ledger list
+    ledger_entries = []
+
+    for s in sales:
+        ledger_entries.append({
+            "id": str(s.id),
+            "date": s.date,
+            "type": "SALE",
+            "description": f"Sale - {s.display_id}",
+            "debit": float(s.total_amount),
+            "credit": 0.0,
+            "cyl_out": int(s.quantity),
+            "cyl_in": 0
+        })
+
+    for p in payments:
+        ledger_entries.append({
+            "id": str(p.id),
+            "date": p.date,
+            "type": "PAYMENT",
+            "description": f"Payment - {p.display_id} ({p.method})",
+            "debit": 0.0,
+            "credit": float(p.amount),
+            "cyl_out": 0,
+            "cyl_in": 0
+        })
+
+    for c in cyl_txns:
+        ledger_entries.append({
+            "id": str(c.id),
+            "date": c.date,
+            "type": c.transaction_type,
+            "description": f"Cylinder Movement - {c.display_id}",
+            "debit": 0.0,
+            "credit": 0.0,
+            "cyl_out": int(c.qty_out),
+            "cyl_in": int(c.qty_in)
+        })
+
+    # Date wise sort
+    ledger_entries.sort(key=lambda x: x["date"])
+
+    # Calculate Running Balances
+    running_cash = float(customer.opening_balance or 0)
+    running_cyl = 0
+
+    formatted_ledger = []
+    for entry in ledger_entries:
+        running_cash += (entry["debit"] - entry["credit"])
+        running_cyl += (entry["cyl_out"] - entry["cyl_in"])
+
+        entry["cash_balance"] = running_cash
+        entry["cyl_balance"] = running_cyl
+        formatted_ledger.append(entry)
+
+    return {
+        "customer_name": customer.name,
+        "opening_balance": float(customer.opening_balance or 0),
+        "current_cash_balance": customer.current_balance,
+        "current_cyl_118": customer.cylinder_balance_118,
+        "current_cyl_454": customer.cylinder_balance_454,
+        "ledger": formatted_ledger
+    }

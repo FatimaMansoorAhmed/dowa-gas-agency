@@ -4,28 +4,11 @@ import { PlusCircle, Check, X, AlertCircle } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, Th, Td } from "@/components/ui";
 import { api } from "@/lib/api";
-import { pkr } from "@/lib/format";
+import { pkr, fmtTime, todayLocalInput } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import type { Company, Customer, Product, PaymentAccount, RateEntry, Sale } from "@/lib/types";
 
 const RATIO = 45.4 / 11.8;
-
-function todayLocalInput() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function formatLocalTime(dateStr?: string) {
-  if (!dateStr) return "—";
-  const date = new Date(dateStr);
-  if (isNaN(date.getTime())) return "—";
-  return date.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
-}
 
 function NewSaleBody() {
   const { user } = useAuth();
@@ -701,7 +684,7 @@ function NewSaleBody() {
                       {pkr(s.total_amount)}
                     </Td>
                     <Td right mono>
-                      {formatLocalTime(s.date || (s as any).created_at)}
+                      {fmtTime(s.date || (s as any).created_at)}
                     </Td>
                   </tr>
                 );

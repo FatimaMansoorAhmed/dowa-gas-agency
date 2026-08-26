@@ -7,12 +7,13 @@ import NewPlantModal from "@/components/NewPlantModal";
 import AddPurchaseModal from "@/components/AddPurchaseModal";
 import RecordPlantPaymentModal from "@/components/RecordPlantPaymentModal";
 import { api } from "@/lib/api";
-import { pkr, fmtTime, fmtClock } from "@/lib/format";
+import { pkr, fmtTime, fmtClock, todayLocalInput } from "@/lib/format";
 import type { PlantLedgerSummaryRow, CompanyLedgerSummary } from "@/lib/types";
 
+// Derived from the Asia/Karachi-aware todayLocalInput() ("YYYY-MM-DD"), so
+// "this month" reflects the Karachi calendar even off-Karachi machines.
 function currentMonth() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  return todayLocalInput().slice(0, 7);
 }
 
 function PurchasesBody() {
@@ -54,16 +55,20 @@ function PurchasesBody() {
   const yearOptions = [2025, 2026, 2027];
 
   const totals = summaryRows.reduce(
-    (acc, r) => ({
-      opening: acc.opening + parseFloat(r.opening_balance || "0"),
-      t118: acc.t118 + Number(r.total_118 || 0),
-      t454: acc.t454 + Number(r.total_454 || 0),
-      kg: acc.kg + parseFloat(r.total_kg || "0"),
-      purchases: acc.purchases + parseFloat(r.total_purchases || "0"),
-      payments: acc.payments + parseFloat(r.total_payments || "0"),
-      closing: acc.closing + parseFloat(r.closing_balance || "0"),
-    }),
-    { opening: 0, t118: 0, t454: 0, kg: 0, purchases: 0, payments: 0, closing: 0 }
+    (acc, r) => {
+      const kgSum = acc.kg + parseFloat(r.total_kg || "0");
+      return {
+        opening: acc.opening + parseFloat(r.opening_balance || "0"),
+        t118: acc.t118 + Number(r.total_118 || 0),
+        t454: acc.t454 + Number(r.total_454 || 0),
+        kg: kgSum,
+        ton: kgSum / 1000,
+        purchases: acc.purchases + parseFloat(r.total_purchases || "0"),
+        payments: acc.payments + parseFloat(r.total_payments || "0"),
+        closing: acc.closing + parseFloat(r.closing_balance || "0"),
+      };
+    },
+    { opening: 0, t118: 0, t454: 0, kg: 0, ton: 0, purchases: 0, payments: 0, closing: 0 }
   );
 
   const refreshAfterAction = () => {
@@ -73,9 +78,6 @@ function PurchasesBody() {
     if (selectedCompanyId) api.ledger.companyMonth(selectedCompanyId, month).then(setDetail);
   };
 
-  // Backend already emits one aggregated row per Unified Sale batch (kind
-  // "unified_sale", its own USALE-xxxxx display_id, qty_118/qty_454 summed
-  // across the batch's line items) — no client-side merging needed.
   const displayRows = detail?.rows ?? [];
 
   return (
@@ -93,10 +95,11 @@ function PurchasesBody() {
         }
       />
 
-      <div className="grid grid-cols-4 gap-3.5 mb-4">
+      <div className="grid grid-cols-5 gap-3.5 mb-4">
         <Panel><Eyebrow>Opening Payable</Eyebrow><div className="font-display font-bold text-2xl text-ink">{pkr(totals.opening)}</div></Panel>
         <Panel><Eyebrow>Total Purchases</Eyebrow><div className="font-display font-bold text-2xl text-ink">{pkr(totals.purchases)}</div></Panel>
         <Panel><Eyebrow>Total Payments</Eyebrow><div className="font-display font-bold text-2xl text-brand-green">{pkr(totals.payments)}</div></Panel>
+        <Panel><Eyebrow>Total Ton</Eyebrow><div className="font-display font-bold text-2xl text-ink">{totals.ton.toFixed(2)}</div></Panel>
         <Panel><Eyebrow>Current Payable</Eyebrow><div className="font-display font-bold text-2xl text-ink">{pkr(totals.closing)}</div></Panel>
       </div>
 
@@ -132,32 +135,38 @@ function PurchasesBody() {
                   <Th right>11.8 KG</Th>
                   <Th right>45.4 KG</Th>
                   <Th right>Total KG</Th>
+                  <Th right>Total Ton</Th>
                   <Th right>Purchases</Th>
                   <Th right>Payments</Th>
                   <Th right>Closing</Th>
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.map((r, i) => (
-                  <tr
-                    key={r.company.id}
-                    onClick={() => setSelectedCompanyId(r.company.id)}
-                    className={`cursor-pointer ${selectedCompanyId === r.company.id ? "bg-[#EAF6F6]" : ""}`}
-                  >
-                    <Td mono>{i + 1}</Td>
-                    <Td bold>{r.company.name}</Td>
-                    <Td mono>{r.company.mobile || "—"}</Td>
-                    <Td right mono>{pkr(r.opening_balance)}</Td>
-                    <Td right mono>{r.total_118 || 0}</Td>
-                    <Td right mono>{r.total_454 || 0}</Td>
-                    <Td right mono>{parseFloat(r.total_kg || "0").toLocaleString()}</Td>
-                    <Td right mono>{pkr(r.total_purchases)}</Td>
-                    <Td right mono>{pkr(r.total_payments)}</Td>
-                    <Td right mono bold><BalanceTag amount={r.closing_balance} /></Td>
-                  </tr>
-                ))}
+                {filteredRows.map((r, i) => {
+                  const rowKg = parseFloat(r.total_kg || "0");
+                  const rowTon = (rowKg / 1000).toFixed(2);
+                  return (
+                    <tr
+                      key={r.company.id}
+                      onClick={() => setSelectedCompanyId(r.company.id)}
+                      className={`cursor-pointer ${selectedCompanyId === r.company.id ? "bg-[#EAF6F6]" : ""}`}
+                    >
+                      <Td mono>{i + 1}</Td>
+                      <Td bold>{r.company.name}</Td>
+                      <Td mono>{r.company.mobile || "—"}</Td>
+                      <Td right mono>{pkr(r.opening_balance)}</Td>
+                      <Td right mono>{r.total_118 || 0}</Td>
+                      <Td right mono>{r.total_454 || 0}</Td>
+                      <Td right mono>{rowKg.toLocaleString()}</Td>
+                      <Td right mono>{rowTon}</Td>
+                      <Td right mono>{pkr(r.total_purchases)}</Td>
+                      <Td right mono>{pkr(r.total_payments)}</Td>
+                      <Td right mono bold><BalanceTag amount={r.closing_balance} /></Td>
+                    </tr>
+                  );
+                })}
                 {!filteredRows.length && (
-                  <tr><td colSpan={10} className="text-steel font-body text-[13px] py-4 text-center">No plants match.</td></tr>
+                  <tr><td colSpan={11} className="text-steel font-body text-[13px] py-4 text-center">No plants match.</td></tr>
                 )}
                 <tr className="bg-ink">
                   <Td bold color="#fff">—</Td>
@@ -167,6 +176,7 @@ function PurchasesBody() {
                   <Td right mono bold color="#fff">{totals.t118}</Td>
                   <Td right mono bold color="#fff">{totals.t454}</Td>
                   <Td right mono bold color="#fff">{totals.kg.toLocaleString()}</Td>
+                  <Td right mono bold color="#fff">{totals.ton.toFixed(2)}</Td>
                   <Td right mono bold color="#fff">{pkr(totals.purchases)}</Td>
                   <Td right mono bold color="#fff">{pkr(totals.payments)}</Td>
                   <Td right mono bold color="#fff">{pkr(totals.closing)}</Td>

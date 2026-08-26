@@ -5,12 +5,13 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.timezone import karachi_month_str
 
 router = APIRouter(prefix="/companies", tags=["companies"])
 
 
 def _current_month() -> str:
-    return datetime.utcnow().strftime("%Y-%m")
+    return karachi_month_str()
 
 
 def _roll_month_if_needed(company: models.Company, db: Session):

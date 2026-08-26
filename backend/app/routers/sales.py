@@ -27,7 +27,7 @@ def list_sales(
     q = db.query(models.Sale).filter(models.Sale.status == "active")
     if customer_id:
         q = q.filter(models.Sale.customer_id == customer_id)
-    rows = q.order_by(models.Sale.date.desc()).all()
+    rows = q.order_by(models.Sale.date.desc(), models.Sale.created_at.desc()).all()
     if month:
         # Filtered in Python rather than SQL so this behaves identically on
         # SQLite (local dev) and Postgres (production) without dialect-specific date functions.

@@ -15,7 +15,7 @@ import {
   Td,
 } from "@/components/ui";
 import { api } from "@/lib/api";
-import { pkr, fmtTime } from "@/lib/format";
+import { pkr, fmtTime, todayLocalInput, toKarachiDateString } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import type {
   ExpenseCategory,
@@ -23,17 +23,14 @@ import type {
   Expense,
 } from "@/lib/types";
 
-function todayLocalInput() {
-  return new Date().toISOString().slice(0, 10);
-}
-
+// Derived from the Asia/Karachi-aware todayLocalInput() ("YYYY-MM-DD"), so
+// "this month" / "this year" defaults match the Karachi calendar too.
 function currentMonth() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  return todayLocalInput().slice(0, 7);
 }
 
 function currentYear() {
-  return String(new Date().getFullYear());
+  return todayLocalInput().slice(0, 4);
 }
 
 type FilterType = "all" | "day" | "month" | "year";
@@ -162,33 +159,21 @@ function ExpensesBody() {
     }
 
     return allExpenses.filter((expense) => {
-      const expenseDate = new Date(expense.date);
-
-      if (isNaN(expenseDate.getTime())) {
-        return false;
-      }
-
-      const year = expenseDate.getFullYear();
-      const monthNumber = String(
-        expenseDate.getMonth() + 1
-      ).padStart(2, "0");
-
-      const monthKey = `${year}-${monthNumber}`;
+      // Asia/Karachi calendar date, not the viewer's own local date — see
+      // toKarachiDateString (§ Day-wise Date Filtering Mismatch).
+      const expenseDay = toKarachiDateString(expense.date);
+      if (!expenseDay) return false;
 
       if (filterType === "day") {
-        const expenseDay = expenseDate
-          .toISOString()
-          .slice(0, 10);
-
         return expenseDay === filterDay;
       }
 
       if (filterType === "month") {
-        return monthKey === filterMonth;
+        return expenseDay.slice(0, 7) === filterMonth;
       }
 
       if (filterType === "year") {
-        return String(year) === filterYear;
+        return expenseDay.slice(0, 4) === filterYear;
       }
 
       return true;
@@ -208,15 +193,8 @@ function ExpensesBody() {
    */
   const monthExpenses = useMemo(() => {
     return allExpenses.filter((expense) => {
-      const d = new Date(expense.date);
-
-      if (isNaN(d.getTime())) return false;
-
-      const expenseMonth = `${d.getFullYear()}-${String(
-        d.getMonth() + 1
-      ).padStart(2, "0")}`;
-
-      return expenseMonth === month;
+      const expenseDay = toKarachiDateString(expense.date);
+      return !!expenseDay && expenseDay.slice(0, 7) === month;
     });
   }, [allExpenses, month]);
 
@@ -1124,6 +1102,7 @@ function ExpensesBody() {
                 <tr className="border-b border-hairline">
                   <Th>ID</Th>
                   <Th>Category</Th>
+                  <Th>Customer</Th>
                   <Th right>Amount</Th>
                   <Th right>Date</Th>
                 </tr>
@@ -1162,6 +1141,16 @@ function ExpensesBody() {
                         </div>
                       </Td>
 
+                      <Td>
+                        {expense.customer_name ? (
+                          <span className="font-body text-[12px] text-ink">
+                            {expense.customer_name}
+                          </span>
+                        ) : (
+                          <span className="font-body text-[12px] text-steel">—</span>
+                        )}
+                      </Td>
+
                       <Td
                         right
                         mono
@@ -1184,7 +1173,7 @@ function ExpensesBody() {
 
                 {!recentExpenses.length && (
                   <tr>
-                    <td colSpan={4}>
+                    <td colSpan={5}>
 
                       <div className="py-10 text-center">
 

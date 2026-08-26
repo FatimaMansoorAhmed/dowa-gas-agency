@@ -42,11 +42,16 @@ export type Customer = {
   last_overpayment_amount: string | null;
   last_overpayment_date: string | null;
   account_credit: string;
+  cylinder_balance_118: string;
+  cylinder_balance_454: string;
+  empty_cylinders: string;
+  empty_cylinders_118: string;
+  empty_cylinders_454: string;
 };
 
 export type Product = { id: string; name: string; weight_kg: string; active: string };
 
-export type AccountType = "cash" | "office_cash" | "owner_home" | "dowa_account";
+export type AccountType = "office_cash" | "owner_home" | "dowa_account";
 
 export type PaymentAccount = {
   id: string;
@@ -96,19 +101,32 @@ export type Expense = {
   description: string | null; vendor: string | null; reference_no: string | null;
   status: string; entered_by: string; created_at: string;
   unified_sale_id?: string | null;
+  // Set only when this expense was funded straight out of a customer's
+  // payment (bypassing a Dowa account) — null for ordinary account-funded expenses.
+  customer_id?: string | null;
+  customer_name?: string | null;
 };
 
 export type LedgerRow = {
-  date: string; kind: "sale" | "payment" | "unified_sale"; ref_id: string; display_id: string;
+  date: string; kind: "sale" | "payment" | "unified_sale" | "empty_cylinder_sale" | "cylinder_transaction"; ref_id: string; display_id: string;
   description: string; sale_amount: string; payment_amount: string; running_balance: string;
-  qty_118: string; qty_454: string;
+  qty_118: string; qty_454: string; qty_empty: string;
+  cyl_out: string; cyl_in: string;
 };
 
 export type CustomerLedgerSummary = {
   customer: Customer; month: string;
   opening_balance: string; total_sales: string; total_payments: string;
   total_118: string; total_454: string; total_kg: string; total_ton: string; total_transactions: number;
-  closing_balance: string; rows: LedgerRow[];
+  closing_balance: string; flagged: boolean; rows: LedgerRow[];
+};
+
+export type CustomerFlag = {
+  customer: Customer;
+  month: string;
+  opening_balance: string;
+  closing_balance: string;
+  flagged: boolean;
 };
 
 export type Purchase = {
@@ -251,3 +269,48 @@ export type PaymentReceipt = {
   unified_sale_id?: string;
   entered_by: string;
 };
+export interface CylinderTransactionCreate {
+  customer_id: string;
+  product_id?: string;
+  qty_out: number;
+  qty_in: number;
+  transaction_type: string;
+  notes?: string;
+  entered_by: string;
+}
+
+export type EmptyCylinderSale = {
+  id: string;
+  display_id: string;
+  date: string;
+  customer_id: string;
+  cylinder_size: "118" | "454";
+  quantity: string;
+  amount: string;
+  notes: string | null;
+  status: string;
+  entered_by: string;
+  created_at: string;
+};
+
+export interface LedgerEntry {
+  id: string;
+  date: string;
+  type: string;
+  description: string;
+  debit: number;
+  credit: number;
+  cyl_out: number;
+  cyl_in: number;
+  cash_balance: number;
+  cyl_balance: number;
+}
+
+export interface CustomerCombinedLedger {
+  customer_name: string;
+  opening_balance: number;
+  current_cash_balance: number;
+  current_cyl_118: number;
+  current_cyl_454: number;
+  ledger: LedgerEntry[];
+}

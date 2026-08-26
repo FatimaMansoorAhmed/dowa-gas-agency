@@ -4,7 +4,7 @@ import type { AccountType, PaymentAccount } from "./types";
 // be routed to when the destination isn't a plant — kept in one place so
 // every page renders the exact same label for the exact same value.
 export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
-  cash: "Cash",
+
   office_cash: "Office Cash",
   owner_home: "Owner Home",
   dowa_account: "Dawa Account",
@@ -42,24 +42,75 @@ export const pkr = (n: number | string) => {
 // local time correctly — every date parse in the app should go through this.
 export const parseServerDate = (iso: string): Date => {
   if (!iso) return new Date();
+  
   const hasTimezone = /Z$|[+-]\d{2}:?\d{2}$/.test(iso);
-  // Agar ISO string mein pehle se Z ya offset nahi hai, toh local input handle karein
-  return new Date(hasTimezone ? iso : iso.replace(" ", "T"));
+  
+  // ✅ Agar timezone marker na ho, to "T" lagayein aur aakhir mein "Z" append karein taake UTC treat ho
+  const cleanIso = iso.replace(" ", "T");
+  return new Date(hasTimezone ? iso : `${cleanIso}Z`);
 };
 
-export const fmtTime = (iso: string) => {
-  if (!iso) return "—";
+// "Today" for <input type="date"> defaults and similar — computed in
+// Asia/Karachi explicitly, so it's correct even when the viewer's own
+// machine clock/timezone isn't Karachi. `new Date().toISOString().slice(0,
+// 10)` is the wrong tool here: that's the UTC calendar date, which runs a
+// day behind Karachi's between midnight and 5am PKT (§ Karachi Timezone Fix).
+export const todayLocalInput = (): string =>
+  new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi" }).format(new Date());
+
+// Formats a server timestamp as its Asia/Karachi calendar date
+// ("YYYY-MM-DD") — the correct basis for comparing against a date
+// picker's value, or for deriving a "YYYY-MM" / "YYYY" filter key. Every
+// day/month/year "Day"/"Month"/"Year" list filter in the app should
+// compare through this. Never derive these via
+// `new Date(iso).getFullYear()/getMonth()/getDate()` or
+// `.toISOString().slice(...)`: a marker-less backend timestamp handed
+// straight to `new Date()` is parsed as the *viewer's own* local time, not
+// UTC (see parseServerDate) — so a "Day" filter comparing that against a
+// picker value can silently return zero matches (§ Day-wise Date Filtering
+// Mismatch).
+export const toKarachiDateString = (iso: string): string => {
+  if (!iso) return "";
   const d = parseServerDate(iso);
-  if (isNaN(d.getTime())) return "—";
+  if (isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi" }).format(d);
+};
+
+// True when a server timestamp and `reference` (default: now) fall on the
+// same Asia/Karachi calendar day — for "is this today" checks.
+export const isSameKarachiDay = (iso: string, reference: Date = new Date()): boolean => {
+  if (!iso) return false;
+  const day = toKarachiDateString(iso);
+  if (!day) return false;
+  return day === new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi" }).format(reference);
+};
+
+// The single canonical "display a server timestamp" helper — every date
+// shown in the UI should go through this (§ Double Timezone Offset Fix:
+// Global Frontend Formatting Helper). Deliberately parses via
+// parseServerDate rather than `new Date(dateString)` directly: the backend
+// returns naive timestamps (no 'Z'/offset — see app/timezone.py's
+// to_naive_utc), and a marker-less string handed straight to `new Date()`
+// is parsed as the *viewer's own* local time instead of UTC, which would
+// reintroduce the exact double-offset bug this fixes at the display layer.
+export function formatTimestamp(dateString: string): string {
+  if (!dateString) return "";
+  const d = parseServerDate(dateString);
+  if (isNaN(d.getTime())) return "";
   return d.toLocaleString("en-US", {
-    day: "2-digit",
+    timeZone: "Asia/Karachi",
     month: "short",
+    day: "numeric",
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
-    timeZone: "Asia/Karachi",
   });
-};
+}
+
+// fmtTime is formatTimestamp's established name throughout the app — kept
+// as an alias so there is exactly one implementation, never two that can
+// drift apart.
+export const fmtTime = formatTimestamp;
 
 export const fmtClock = (iso: string) => {
   if (!iso) return "—";

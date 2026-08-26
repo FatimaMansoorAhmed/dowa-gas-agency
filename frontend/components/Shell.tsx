@@ -16,22 +16,26 @@ import {
   LogOut, 
   ChevronRight,
   ShoppingBag, // Unified Sale ke liye naya icon
-  CreditCard
+  CreditCard,
+  PackageOpen
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { CylinderStripe } from "./ui";
 
 const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutGrid },
-  { href: "/new-rate", label: "New Rate Entry", icon: PlusCircle },
+  // { href: "/new-rate", label: "New Rate Entry", icon: PlusCircle },
   { href: "/rate-dashboard", label: "Rate Dashboard", icon: Radio },
+  { href: "/unified-sale", label: " Sale", icon: ShoppingBag }, // <-- Naya link yahan add kiya gaya hai
+   { href: "/payments", label: "Payments", icon: CreditCard },
   { href: "/purchases", label: "Purchases", icon: Truck },
-  { href: "/new-sale", label: "New Sale", icon: ReceiptText },
-  { href: "/unified-sale", label: "Unified Sale", icon: ShoppingBag }, // <-- Naya link yahan add kiya gaya hai
-  { href: "/payments", label: "Payments", icon: CreditCard },
+  // { href: "/new-sale", label: "New Sale", icon: ReceiptText },
+  
+  { href: "/customers", label: "Customers", icon: Users },
   { href: "/customer-ledger", label: "Customer Ledger", icon: BookOpenText },
   // { href: "/cylinder-ledger", label: "Cylinder Ledger", icon: CircleGauge },
-  { href: "/customers", label: "Customers", icon: Users },
+  { href: "/empty-cylinders", label: "Empty Cylinders", icon: PackageOpen },
+ 
   { href: "/expenses", label: "Expenses", icon: Wallet },
    { href: "/cash-managment", label: "Cash Book", icon: Wallet },
   
@@ -119,7 +123,7 @@ export default function Shell({ children }: { children: ReactNode }) {
               Phase 2 — <span className="text-slate-900 font-bold">Rates &amp; Customers</span>, live from Postgres.
             </div>
             <div className="font-mono text-[12px] font-semibold text-slate-800 bg-paper px-3.5 py-1.5 rounded-full border border-hairline">
-              {new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}
+              {new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Karachi" })}
             </div>
           </div>
           <CylinderStripe />

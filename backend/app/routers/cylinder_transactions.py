@@ -22,7 +22,7 @@ def list_cylinder_transactions(
         q = q.filter(models.CylinderTransaction.customer_id == customer_id)
     if product_id:
         q = q.filter(models.CylinderTransaction.product_id == product_id)
-    rows = q.order_by(models.CylinderTransaction.date.desc()).all()
+    rows = q.order_by(models.CylinderTransaction.date.desc(), models.CylinderTransaction.created_at.desc()).all()
     if month:
         rows = [r for r in rows if r.date.strftime("%Y-%m") == month]
     return rows
@@ -54,7 +54,7 @@ def create_cylinder_transaction(payload: schemas.CylinderTransactionCreate, db: 
 
     txn = models.CylinderTransaction(
         display_id=next_display_id(db, models.CylinderTransaction, "CYL", width=6),
-        date=payload.date,
+        date=payload.date or datetime.utcnow(),
         customer_id=payload.customer_id,
         product_id=payload.product_id,
         qty_out=payload.qty_out,

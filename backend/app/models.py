@@ -9,7 +9,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.types import TypeDecorator, CHAR
 
 from app.database import Base
-
+from app.timezone import karachi_month_str
 
 class GUID(TypeDecorator):
     """Platform-independent UUID: Postgres UUID, or CHAR(36) on SQLite (for local dev)."""
@@ -50,7 +50,7 @@ class Company(Base):
     opening_balance = Column(Numeric(14, 2), nullable=False, default=0)
     opening_balance_date = Column(DateTime, nullable=False, default=datetime.utcnow)
     current_balance = Column(Numeric(14, 2), nullable=False, default=0)
-    opening_balance_month = Column(String, nullable=False, default=lambda: datetime.utcnow().strftime("%Y-%m"))
+    opening_balance_month = Column(String, nullable=False, default=karachi_month_str)
     last_overpayment_amount = Column(Numeric(14, 2), nullable=True)
     last_overpayment_date = Column(DateTime, nullable=True)
     account_credit = Column(Numeric(14, 2), nullable=False, default=0)
@@ -113,7 +113,7 @@ class Customer(Base):
     status = Column(String, nullable=False, default="active")  # active | inactive
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     last_transaction_at = Column(DateTime, nullable=True)
-    opening_balance_month = Column(String, nullable=False, default=lambda: datetime.utcnow().strftime("%Y-%m"))
+    opening_balance_month = Column(String, nullable=False, default=karachi_month_str)
 
     # Advance convention: a NEGATIVE current_balance means the customer has
     # paid ahead of what they owe. It must never be treated as a debt.
@@ -124,6 +124,25 @@ class Customer(Base):
     # sales (§18 Overpayment). Kept separate from current_balance so a
     # credit is always visible as its own number, not folded silently in.
     account_credit = Column(Numeric(14, 2), nullable=False, default=0)
+    
+    cylinder_balance_118 = Column(Numeric(10, 0), nullable=False, default=0)
+    cylinder_balance_454 = Column(Numeric(10, 0), nullable=False, default=0)
+
+    # Empty cylinders the customer currently holds and can sell back to the
+    # agency — separate from cylinder_balance_118/454, which track filled
+    # cylinders out on loan per size. Kept as the generic running total used
+    # by the Sell Empty Cylinders flow (which doesn't split by size).
+    empty_cylinders = Column(Numeric(10, 0), nullable=False, default=0)
+
+    # Opening empty-cylinder balances, captured per size at customer
+    # creation (Add New Customer form) — independent of empty_cylinders'
+    # undifferentiated running total, so the 11.8kg / 45.4kg split is never
+    # lost even though sales/purchases only ever move the generic total.
+    empty_cylinders_118 = Column(Numeric(10, 0), nullable=False, default=0)
+    empty_cylinders_454 = Column(Numeric(10, 0), nullable=False, default=0)
+
+    # Relationships
+    cylinder_transactions = relationship("CylinderTransaction", back_populates="customer", cascade="all, delete-orphan")
 
 
 class Product(Base):
@@ -454,3 +473,85 @@ class CompanyPayment(Base):
     company = relationship("Company")
     purchase = relationship("Purchase")
     account = relationship("PaymentAccount")
+
+
+class CylinderTransaction(Base):
+    """Tracks physical cylinder movement (In / Out) per customer.
+    Decoupled from Sales/Payments, but optionally linked to one (sale_id /
+    unified_sale_id) when it was created alongside a sale.
+    """
+    __tablename__ = "cylinder_transactions"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    display_id = Column(String, unique=True, nullable=False)  # e.g. CYL-000123
+    date = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
+    product_id = Column(GUID(), ForeignKey("products.id"), nullable=True)
+
+    # Single flow linkages (optional: link to a unified sale or sale entry if created via sale)
+    sale_id = Column(GUID(), ForeignKey("sales.id"), nullable=True)
+    unified_sale_id = Column(GUID(), ForeignKey("unified_sale_batches.id"), nullable=True)
+
+    # Quantities
+    qty_out = Column(Numeric(10, 2), nullable=False, default=0)  # Filled cylinders delivered to customer
+    qty_in = Column(Numeric(10, 2), nullable=False, default=0)   # Empty cylinders returned by customer
+
+    # Transaction Types: 'SALE_RETURN', 'EMPTY_RECEIPT', 'EMPTY_SALE', 'ADJUSTMENT'
+    transaction_type = Column(String(50), nullable=False, default="SALE_RETURN")
+
+    notes = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="active")  # active | cancelled
+    modified_at = Column(DateTime, nullable=True)
+    modified_by = Column(String, nullable=True)
+
+    entered_by = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    customer = relationship("Customer", back_populates="cylinder_transactions")
+    product = relationship("Product")
+    sale = relationship("Sale")
+
+
+class CustomerCylinderBalance(Base):
+    """Running per-customer, per-product filled-cylinder balance — how many
+    of a given product a customer currently holds (delivered minus
+    returned). Kept as its own table (rather than folded into Customer)
+    because a customer can carry a separate balance per product/size."""
+    __tablename__ = "customer_cylinder_balances"
+    __table_args__ = (UniqueConstraint("customer_id", "product_id", name="uq_cylinder_balance_per_product"),)
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
+    product_id = Column(GUID(), ForeignKey("products.id"), nullable=False)
+    balance = Column(Numeric(10, 2), nullable=False, default=0)
+
+    customer = relationship("Customer")
+    product = relationship("Product")
+
+
+class EmptyCylinderSale(Base):
+    """One 'Sell Empty Cylinders' transaction — the agency selling a
+    customer's surplus empty cylinders. Kept as its own lightweight table,
+    mirroring OwnerDrawings/Expense, since a generic empty-cylinder sale has
+    no fixed product/weight the way a real Sale does."""
+    __tablename__ = "empty_cylinder_sales"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    display_id = Column(String, unique=True, nullable=False)  # e.g. ECS-000123
+    date = Column(DateTime, nullable=False, default=datetime.utcnow)
+    customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
+
+    # Which categorized balance (Customer.empty_cylinders_118 /
+    # empty_cylinders_454) this sale draws down — "118" or "454".
+    cylinder_size = Column(String(10), nullable=False, default="118")
+    quantity = Column(Numeric(10, 0), nullable=False)
+    amount = Column(Numeric(14, 2), nullable=False)
+    notes = Column(String, nullable=True)
+
+    status = Column(String, nullable=False, default="active")  # active | cancelled
+    entered_by = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    customer = relationship("Customer")

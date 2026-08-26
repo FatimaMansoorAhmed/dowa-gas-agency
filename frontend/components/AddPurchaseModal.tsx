@@ -4,13 +4,10 @@ import { X, Check, PlusCircle } from "lucide-react";
 import { Field, inputClass, Button } from "./ui";
 import NewPlantModal from "./NewPlantModal";
 import { api } from "@/lib/api";
-import { pkr } from "@/lib/format";
+import { pkr, todayLocalInput } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import type { Company, Product, PaymentAccount, RateEntry } from "@/lib/types";
 
-function todayLocalInput() {
-  return new Date().toISOString().slice(0, 10);
-}
 const MULTIPLIER_454 = 45.4 / 11.8;
 
 export default function AddPurchaseModal({

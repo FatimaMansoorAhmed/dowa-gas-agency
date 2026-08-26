@@ -1,17 +1,18 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { TrendingUp, TrendingDown, Clock } from "lucide-react";
+import { Flag, Clock } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption } from "@/components/ui";
-import { pkr, fmtTime, monthKey } from "@/lib/format";
+import { pkr, fmtTime, todayLocalInput } from "@/lib/format";
 import { api } from "@/lib/api";
-import type { Company, Party, RateEntry, Customer, Sale, Expense } from "@/lib/types";
+import type { Company, Party, RateEntry, Customer, Sale, Expense, CustomerFlag } from "@/lib/types";
 
 const POLL_MS = 30000;
 
+// Derived from the Asia/Karachi-aware todayLocalInput() ("YYYY-MM-DD"), so
+// "this month" reflects the Karachi calendar even off-Karachi machines.
 function currentMonth() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  return todayLocalInput().slice(0, 7);
 }
 
 function DashboardBody() {
@@ -21,22 +22,25 @@ function DashboardBody() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [salesMTD, setSalesMTD] = useState<Sale[]>([]);
   const [expensesMTD, setExpensesMTD] = useState<Expense[]>([]);
+  const [flags, setFlags] = useState<CustomerFlag[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const inFlight = useRef(false);
+  const month = currentMonth();
 
   const loadAll = useCallback(async (isInitial = false) => {
     if (inFlight.current) return;
     inFlight.current = true;
     try {
       const month = currentMonth();
-      const [c, p, r, cu, sales, expenses] = await Promise.all([
+      const [c, p, r, cu, sales, expenses, fl] = await Promise.all([
         api.companies.list(),
         api.parties.list(),
         api.rates.latest(),
         api.customers.list(),
         api.sales.list({ month }),
         api.expenses.list({ month }),
+        api.ledger.customerFlags(month),
       ]);
 
       setCompanies(c);
@@ -45,6 +49,7 @@ function DashboardBody() {
       setCustomers(cu);
       setSalesMTD(sales);
       setExpensesMTD(expenses);
+      setFlags(fl);
       setLastSynced(new Date());
     } finally {
       inFlight.current = false;
@@ -65,11 +70,9 @@ function DashboardBody() {
   const latestCompany = companies.find((c) => c.id === latestEntry?.company_id);
   const latestParty = parties.find((p) => p.id === latestEntry?.party_id);
 
-  const movement = customers.map((c) => {
-    const change = parseFloat(c.current_balance) - parseFloat(c.opening_balance);
-    return { ...c, change, growing: change > 0 };
-  });
-  const flagged = movement.filter((c) => c.growing);
+  // Flag Rule: this month's Closing Balance > this month's Opening Balance
+  // (itself rolled over from the prior month's closing) -> Flagged.
+  const flaggedAccounts = flags.filter((f) => f.flagged);
   const overpaid = customers.filter((c) => c.last_overpayment_amount && parseFloat(c.last_overpayment_amount) > 0);
 
   const totalSalesMTD = salesMTD.reduce((s, x) => s + parseFloat(x.total_amount), 0);
@@ -118,7 +121,7 @@ function DashboardBody() {
 
         <Panel className="min-h-[96px]">
           <Eyebrow>Customers Flagged</Eyebrow>
-          <div className={`font-display font-bold text-2xl ${flagged.length ? "text-brand-amber" : "text-ink"}`}>{flagged.length}</div>
+          <div className={`font-display font-bold text-2xl ${flaggedAccounts.length ? "text-brand-amber" : "text-ink"}`}>{flaggedAccounts.length}</div>
         </Panel>
 
         <Panel className="min-h-[96px]">
@@ -130,7 +133,7 @@ function DashboardBody() {
         </Panel>
 
         <Panel className="min-h-[96px]">
-          <Eyebrow>Purchase Summary (MTD)</Eyebrow>
+          <Eyebrow>Total Expense </Eyebrow>
           <div className="font-display font-bold text-2xl text-ink">{pkr(totalExpensesMTD)}</div>
           <div className="font-body text-[11px] text-steel mt-1">
             {hasExpenseData ? "Expenses recorded this month" : "No purchases recorded yet — awaiting Purchase module"}
@@ -145,7 +148,7 @@ function DashboardBody() {
             <div className="flex items-center gap-1.5 pb-1.5">
               <span className="live-dot" />
               <span className="font-mono text-[9.5px] text-steel">
-                {lastSynced ? `synced ${lastSynced.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : "syncing…"}
+                {lastSynced ? `synced ${lastSynced.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Asia/Karachi" })}` : "syncing…"}
               </span>
             </div>
           </div>
@@ -176,24 +179,31 @@ function DashboardBody() {
         </Panel>
 
         <Panel>
-          <Eyebrow>Customer Balance Movement — {monthKey(new Date().toISOString())}</Eyebrow>
-          <SectionCaption>Flags any customer whose balance is running above where the month opened.</SectionCaption>
+          <Eyebrow>Flagged Accounts — {month}</Eyebrow>
+          <SectionCaption>
+            Customers whose Closing Balance this month is above the Opening Balance it rolled over with —
+            review these first.
+          </SectionCaption>
           <div className="flex flex-col gap-2">
-            {movement.map((c) => (
-              <div key={c.id} className={`flex justify-between items-center px-3 py-2.5 rounded-lg border ${c.growing ? "bg-[#FBF3E3] border-[#EBD9AE]" : "bg-paper border-hairline"}`}>
+            {flaggedAccounts.map((f) => (
+              <div key={f.customer.id} className="flex justify-between items-center px-3 py-2.5 rounded-lg border bg-[#FBF3E3] border-[#EBD9AE]">
                 <div>
-                  <div className="font-body text-[13px] font-semibold text-ink">{c.name}</div>
-                  <div className="font-mono text-[10.5px] text-steel">{c.mobile}</div>
+                  <div className="font-body text-[13px] font-semibold text-ink flex items-center gap-1.5">
+                    <Flag size={13} color="#D98E04" /> {f.customer.name}
+                  </div>
+                  <div className="font-mono text-[10.5px] text-steel">{f.customer.mobile}</div>
                 </div>
                 <div className="text-right">
-                  <div className="flex items-center gap-1 justify-end">
-                    {c.growing ? <TrendingUp size={13} color="#D98E04" /> : <TrendingDown size={13} color="#1E8A5F" />}
-                    <span className={`font-mono text-[12.5px] font-semibold ${c.growing ? "text-brand-amber" : "text-brand-green"}`}>{pkr(Math.abs(c.change))}</span>
-                  </div>
-                  <div className="font-mono text-[10px] text-steel">opened {pkr(c.opening_balance)}</div>
+                  <div className="font-mono text-[12.5px] font-semibold text-brand-amber">{pkr(f.closing_balance)}</div>
+                  <div className="font-mono text-[10px] text-steel">opened {pkr(f.opening_balance)}</div>
                 </div>
               </div>
             ))}
+            {!flaggedAccounts.length && (
+              <div className="font-body text-[13px] text-steel py-4 text-center">
+                No flagged customers this month.
+              </div>
+            )}
           </div>
           {overpaid.length > 0 && (
             <div className="mt-3 px-3 py-2.5 bg-[#FBEAEA] rounded-lg border border-[#EFC3C3]">

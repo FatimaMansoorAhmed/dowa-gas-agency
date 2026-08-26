@@ -65,7 +65,7 @@ def list_payment_receipts(
     )
     if customer_id:
         q = q.filter(models.Payment.customer_id == customer_id)
-    rows = q.order_by(models.Payment.date.desc()).all()
+    rows = q.order_by(models.Payment.date.desc(), models.Payment.created_at.desc()).all()
     if month:
         rows = [r for r in rows if r.date.strftime("%Y-%m") == month]
     return rows

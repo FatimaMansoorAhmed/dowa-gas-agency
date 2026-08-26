@@ -30,6 +30,14 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     ("company_payments", "source_payment_id", "GUID"),
     ("expenses", "source_payment_id", "GUID"),
     ("owner_drawings", "source_payment_id", "GUID"),
+    ("customers", "cylinder_balance_118", "NUMERIC(10, 0) NOT NULL DEFAULT 0"),
+    ("customers", "cylinder_balance_454", "NUMERIC(10, 0) NOT NULL DEFAULT 0"),
+    ("customers", "empty_cylinders", "NUMERIC(10, 0) NOT NULL DEFAULT 0"),
+    ("customers", "empty_cylinders_118", "NUMERIC(10, 0) NOT NULL DEFAULT 0"),
+    ("customers", "empty_cylinders_454", "NUMERIC(10, 0) NOT NULL DEFAULT 0"),
+    ("empty_cylinder_sales", "cylinder_size", "VARCHAR(10) NOT NULL DEFAULT '118'"),
+    ("cylinder_transactions", "transaction_type", "VARCHAR(50) NOT NULL DEFAULT 'SALE_RETURN'"),
+    ("cylinder_transactions", "unified_sale_id", "GUID"),
 ]
 
 
@@ -59,3 +67,13 @@ def run_startup_migrations(engine: Engine) -> None:
             payments_columns = {c["name"]: c for c in inspector.get_columns("payments")}
             if payments_columns.get("account_id", {}).get("nullable") is False:
                 conn.execute(text("ALTER TABLE payments ALTER COLUMN account_id DROP NOT NULL"))
+
+        # cylinder_transactions.product_id was NOT NULL on some existing
+        # databases from before generic (non-product-specific) cylinder
+        # entries existed — models.CylinderTransaction.product_id has always
+        # been nullable=True, so this brings the DB back in line with the
+        # model. Postgres only, same reasoning as payments.account_id above.
+        if "cylinder_transactions" in existing_tables and engine.dialect.name == "postgresql":
+            cyl_txn_columns = {c["name"]: c for c in inspector.get_columns("cylinder_transactions")}
+            if cyl_txn_columns.get("product_id", {}).get("nullable") is False:
+                conn.execute(text("ALTER TABLE cylinder_transactions ALTER COLUMN product_id DROP NOT NULL"))

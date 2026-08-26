@@ -5,7 +5,7 @@ import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, Th, Td } from "@/components/ui";
 import NewPlantModal from "@/components/NewPlantModal";
 import { api } from "@/lib/api";
-import { pkr, fmtTime, ACCOUNT_TYPE_LABELS, resolveAccountLabel } from "@/lib/format";
+import { pkr, fmtTime, todayLocalInput, toKarachiDateString, ACCOUNT_TYPE_LABELS, resolveAccountLabel } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import type {
   Company, Customer, Product, ExpenseCategory, RateEntry, PaymentAccount,
@@ -13,10 +13,6 @@ import type {
 } from "@/lib/types";
 
 const EPSILON = 0.01;
-
-function todayLocalInput() {
-  return new Date().toISOString().slice(0, 10);
-}
 
 type ItemRow = { qty: string; purchaseRate: string; sellingRate: string };
 
@@ -36,6 +32,11 @@ function StatusBadge({ status }: { status: string }) {
 
 function UnifiedSaleBody() {
   const { user } = useAuth();
+  // Date Filter States
+const [filterType, setFilterType] = useState<"24h" | "day" | "month" | "year">("24h");
+const [filterDate, setFilterDate] = useState(todayLocalInput()); // format: YYYY-MM-DD
+const [filterMonth, setFilterMonth] = useState(() => todayLocalInput().slice(0, 7)); // format: YYYY-MM
+const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)); // format: YYYY
 
   const [companies, setCompanies] = useState<Company[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -57,6 +58,7 @@ function UnifiedSaleBody() {
   const [customerId, setCustomerId] = useState("");
   const [customerSearch, setCustomerSearch] = useState("");
   const [companyId, setCompanyId] = useState("");
+  const [companySearch, setCompanySearch] = useState("");
   const [gatePassNo, setGatePassNo] = useState("");
   const [vehicleNo, setVehicleNo] = useState("");
   const [notes, setNotes] = useState("");
@@ -106,6 +108,10 @@ function UnifiedSaleBody() {
     c.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
     c.mobile.includes(customerSearch) ||
     c.display_id.toLowerCase().includes(customerSearch.toLowerCase())
+  );
+
+  const filteredCompanies = companies.filter((c) =>
+    !companySearch.trim() || c.name.toLowerCase().includes(companySearch.toLowerCase())
   );
 
   useEffect(() => {
@@ -196,8 +202,8 @@ function UnifiedSaleBody() {
     setTotalCreditReceived(""); setPaymentMethod("cash"); setReferenceNo("");
     setHomeExpenseAmount(""); setHomeExpenseCategoryId(""); setOwnerDrawingsAmount("");
     setGatePassNo(""); setVehicleNo(""); setNotes("");
-    setCustomerId(""); setCustomerSearch(""); setCompanyId("");
-    setDestinationType("plant"); setTargetPlantId(""); setAccountCategory("cash");
+    setCustomerId(""); setCustomerSearch(""); setCompanyId(""); setCompanySearch("");
+    setDestinationType("plant"); setTargetPlantId(""); setAccountCategory("owner_home");
     setEditingId(null); setEditingDisplayId(null);
     setShowSaleForm(false);
   };
@@ -225,6 +231,7 @@ function UnifiedSaleBody() {
       setDate(full.date.slice(0, 10));
       setCustomerId(full.customer_id);
       setCompanyId(full.company_id);
+      setCompanySearch("");
 
       setDestinationType(full.destination_type || "plant");
       setTargetPlantId(full.target_plant_id || "");
@@ -340,7 +347,46 @@ function UnifiedSaleBody() {
   };
 
   const pendingOrders = useMemo(() => recent.filter((r) => r.status === "pending"), [recent]);
-  const completedOrders = useMemo(() => recent.filter((r) => r.status === "approved").slice(0, 10), [recent]);
+  // BEFORE:
+// AFTER:
+const completedOrders = useMemo(() => {
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+
+  return recent.filter((r) => {
+    if (r.status !== "approved") return false;
+
+    // Use approved date/timestamp or order date
+    const rawDate = r.approved_at || r.date;
+    const orderTime = new Date(rawDate).getTime();
+
+    // Asia/Karachi calendar date, not the viewer's own local date — raw
+    // `new Date(rawDate).getFullYear()/getMonth()/getDate()` misparses a
+    // marker-less backend timestamp as local time instead of UTC, which
+    // made the "Day" filter return zero matches (§ Day-wise Date Filtering
+    // Mismatch).
+    const localYYYYMMDD = toKarachiDateString(rawDate); // e.g. "2026-08-22"
+
+    if (filterType === "24h") {
+      return now - orderTime < ONE_DAY_MS;
+    }
+
+    if (filterType === "day") {
+      // Compares local date against selected filter date
+      return localYYYYMMDD === filterDate;
+    }
+
+    if (filterType === "month") {
+      return localYYYYMMDD.slice(0, 7) === filterMonth;
+    }
+
+    if (filterType === "year") {
+      return localYYYYMMDD.slice(0, 4) === filterYear;
+    }
+
+    return true;
+  });
+}, [recent, filterType, filterDate, filterMonth, filterYear]);
 
   const getDestinationLabel = (r: UnifiedSaleBatch) => {
     if (r.destination_type === "account") {
@@ -435,12 +481,37 @@ function UnifiedSaleBody() {
                   <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} />
                 </Field>
                 <Field label="Purchase Plant">
-                  <div className="flex gap-1.5">
-                    <select value={companyId} onChange={(e) => setCompanyId(e.target.value)} className={`${inputClass} flex-1`}>
-                      <option value="">Select plant</option>
-                      {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
-                    <Button variant="outline" onClick={() => setShowNewPlant(true)}><PlusCircle size={14} /></Button>
+                  <div className="relative">
+                    <div className="flex gap-1.5">
+                      <input
+                        value={selectedCompany ? selectedCompany.name : companySearch}
+                        onChange={(e) => { setCompanyId(""); setCompanySearch(e.target.value); }}
+                        placeholder="Type to search or add a plant"
+                        className={`${inputClass} flex-1`}
+                      />
+                      <Button variant="outline" onClick={() => setShowNewPlant(true)}><PlusCircle size={14} /></Button>
+                    </div>
+                    {!companyId && companySearch.trim() && (
+                      <div className="absolute z-20 top-full left-0 right-0 bg-white border border-hairline rounded-md mt-1 max-h-52 overflow-y-auto shadow-lg">
+                        {filteredCompanies.slice(0, 8).map((c) => (
+                          <button
+                            key={c.id}
+                            onClick={() => { setCompanyId(c.id); setCompanySearch(""); }}
+                            className="w-full text-left px-3 py-2 hover:bg-paper font-body text-[13px]"
+                          >
+                            <span className="font-semibold text-ink">{c.name}</span>
+                          </button>
+                        ))}
+                        {!filteredCompanies.length && (
+                          <button
+                            onClick={() => setShowNewPlant(true)}
+                            className="w-full text-left px-3 py-2 hover:bg-paper font-body text-[13px] text-teal"
+                          >
+                            + Add "{companySearch.trim()}" as a new plant
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </Field>
               </div>
@@ -583,6 +654,8 @@ function UnifiedSaleBody() {
                     >
                       <Wallet size={14} /> Account Deposit
                     </button>
+
+                    
                   </div>
 
                   {destinationType === "plant" ? (
@@ -964,9 +1037,58 @@ function UnifiedSaleBody() {
           <Panel>
             <Eyebrow>Processed Unified Sales</Eyebrow>
             <SectionCaption>Recent approved and cancelled transactions.</SectionCaption>
-
+              
             <div className="mt-3">
               <div className="overflow-x-auto">
+                {/* Filter Toolbar */}
+    <div className="flex flex-wrap items-center gap-2">
+      <select
+        value={filterType}
+        onChange={(e) => setFilterType(e.target.value as any)}
+        className="px-2.5 py-1 bg-paper border border-hairline rounded-md text-xs font-semibold text-ink focus:outline-none"
+      >
+        <option value="24h">Last 24 Hours</option>
+        <option value="day">By Specific Day</option>
+        <option value="month">By Month</option>
+        <option value="year">By Year</option>
+      </select>
+
+      {/* Dynamic Date Inputs based on Filter Selection */}
+      {filterType === "day" && (
+        <input
+          type="date"
+          value={filterDate}
+          onChange={(e) => setFilterDate(e.target.value)}
+          className="px-2 py-1 bg-white border border-hairline rounded-md text-xs font-mono text-ink"
+        />
+      )}
+
+      {filterType === "month" && (
+        <input
+          type="month"
+          value={filterMonth}
+          onChange={(e) => setFilterMonth(e.target.value)}
+          className="px-2 py-1 bg-white border border-hairline rounded-md text-xs font-mono text-ink"
+        />
+      )}
+
+      {filterType === "year" && (
+        <input
+          type="number"
+          min="2020"
+          max="2099"
+          value={filterYear}
+          onChange={(e) => setFilterYear(e.target.value)}
+          placeholder="YYYY"
+          className="w-20 px-2 py-1 bg-white border border-hairline rounded-md text-xs font-mono text-ink"
+        />
+      )}
+    </div>
+  </div>
+
+  <div className="mt-3">
+    {/* Table renders `completedOrders` here */}
+    ...
                 <table className="w-full min-w-[850px] border-collapse">
                   <thead>
                     <tr className="border-b border-hairline text-left">
@@ -1142,7 +1264,11 @@ function UnifiedSaleBody() {
       )}
 
       {showNewPlant && (
-        <NewPlantModal onClose={() => setShowNewPlant(false)} onCreated={(c) => { setCompanies((prev) => [...prev, c]); setCompanyId(c.id); setShowNewPlant(false); }} />
+        <NewPlantModal
+          initialName={companySearch}
+          onClose={() => setShowNewPlant(false)}
+          onCreated={(c) => { setCompanies((prev) => [...prev, c]); setCompanyId(c.id); setCompanySearch(""); setShowNewPlant(false); }}
+        />
       )}
     </div>
   );

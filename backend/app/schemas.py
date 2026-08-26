@@ -789,10 +789,21 @@
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional, Literal
+from typing import Annotated, Optional, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AfterValidator, BaseModel, ConfigDict
+
+from app.timezone import to_naive_utc
+
+# Every inbound "when did this happen" field goes through this — see
+# to_naive_utc's docstring for why: the Postgres session's `timezone` GUC
+# is Asia/Karachi, so an aware datetime bound to one of this app's naive
+# DateTime columns gets silently shifted by Postgres before storage, then
+# shifted again on display, producing a +5h "double timezone offset" bug
+# (§ Double Timezone Offset Fix). Every *Create/*Update schema's date /
+# timestamp field below uses this instead of plain `datetime`.
+UtcDateTime = Annotated[datetime, AfterValidator(to_naive_utc)]
 
 
 # ---------- Company ----------
@@ -800,7 +811,7 @@ class CompanyCreate(BaseModel):
     name: str
     mobile: Optional[str] = None
     opening_balance: Decimal = Decimal("0")
-    opening_balance_date: Optional[datetime] = None
+    opening_balance_date: Optional[UtcDateTime] = None
 
 
 class CompanyOut(BaseModel):
@@ -836,7 +847,7 @@ class RateCreate(BaseModel):
     party_id: UUID
     rate_118: Decimal
     entered_by: str
-    timestamp: Optional[datetime] = None  # defaults to now if omitted; editable for backdating
+    timestamp: Optional[UtcDateTime] = None  # defaults to now if omitted; editable for backdating
 
 
 class RateOut(BaseModel):
@@ -859,7 +870,11 @@ class CustomerCreate(BaseModel):
     address: Optional[str] = None
     city_area: Optional[str] = None
     opening_balance: Decimal = Decimal("0")
-    opening_balance_date: Optional[datetime] = None
+    opening_balance_date: Optional[UtcDateTime] = None
+    # Opening empty-cylinder balances, entered per size on the Add New
+    # Customer form — replaces the old single generic `empty_cylinders` input.
+    empty_cylinders_118: Decimal = Decimal("0")
+    empty_cylinders_454: Decimal = Decimal("0")
 
 
 class CustomerOut(BaseModel):
@@ -882,6 +897,11 @@ class CustomerOut(BaseModel):
     last_overpayment_amount: Optional[Decimal] = None
     last_overpayment_date: Optional[datetime] = None
     account_credit: Decimal
+    cylinder_balance_118: Decimal = Decimal("0")
+    cylinder_balance_454: Decimal = Decimal("0")
+    empty_cylinders: Decimal = Decimal("0")
+    empty_cylinders_118: Decimal = Decimal("0")
+    empty_cylinders_454: Decimal = Decimal("0")
 
 
 class CustomerAdjust(BaseModel):
@@ -954,7 +974,7 @@ class ExpenseCategoryOut(BaseModel):
 
 # ---------- Sale ----------
 class SaleCreate(BaseModel):
-    date: datetime
+    date: UtcDateTime
     customer_id: UUID
     product_id: UUID
     company_id: Optional[UUID] = None
@@ -990,7 +1010,7 @@ class SaleOut(BaseModel):
 
 # ---------- Payment ----------
 class PaymentCreate(BaseModel):
-    date: datetime
+    date: UtcDateTime
     customer_id: UUID
     sale_id: Optional[UUID] = None
     amount: Decimal
@@ -1030,7 +1050,7 @@ class PaymentReceiptCreate(BaseModel):
     owner_drawings — is routed per destination_type, exactly like
     UnifiedSaleSettlement. The customer's balance always drops by the full
     `amount`, regardless of how it's routed afterward."""
-    date: datetime
+    date: UtcDateTime
     customer_id: UUID
     amount: Decimal
     method: Literal["cash", "bank_transfer", "cheque", "online", "other"]
@@ -1068,7 +1088,7 @@ class PaymentReceiptOut(BaseModel):
 
 # ---------- Expense ----------
 class ExpenseCreate(BaseModel):
-    date: datetime
+    date: UtcDateTime
     category_id: UUID
     amount: Decimal
     account_id: Optional[UUID] = None  # null = funded directly from field-collected cash, no account debited
@@ -1092,6 +1112,12 @@ class ExpenseOut(BaseModel):
     vendor: Optional[str]
     reference_no: Optional[str]
     unified_sale_id: Optional[UUID] = None
+    # Set only when this expense bypassed a Dowa account and was funded
+    # straight out of a customer's payment (source_payment_id from a Payment
+    # Receipt's home-expense deduction, or unified_sale_id from a Unified
+    # Sale's) — never set for an expense paid from a real PaymentAccount.
+    customer_id: Optional[UUID] = None
+    customer_name: Optional[str] = None
     status: str
     entered_by: str
     created_at: datetime
@@ -1102,7 +1128,10 @@ class LedgerRow(BaseModel):
     date: datetime
     # "unified_sale" = one aggregated row for an entire approved Unified
     # Sale batch — its child Sale rows are never emitted individually (§ ledger aggregation).
-    kind: Literal["sale", "payment", "unified_sale"]
+    # "empty_cylinder_sale" = one Sell Empty Cylinders transaction.
+    # "cylinder_transaction" = one standalone cylinder movement (e.g. the
+    # Customer Ledger's Cyl Return/Entry action) not tied to a Sale.
+    kind: Literal["sale", "payment", "unified_sale", "empty_cylinder_sale", "cylinder_transaction"]
     ref_id: UUID
     display_id: str
     description: str
@@ -1111,6 +1140,13 @@ class LedgerRow(BaseModel):
     running_balance: Decimal
     qty_118: Decimal = Decimal("0")
     qty_454: Decimal = Decimal("0")
+    qty_empty: Decimal = Decimal("0")
+    # Generic cylinder movement for this row, independent of size —
+    # filled cylinders delivered (cyl_out) vs. cylinders received back
+    # (cyl_in, includes empty-cylinder sales), for the ledger table's
+    # combined "Cyl Out" / "Cyl In" columns.
+    cyl_out: Decimal = Decimal("0")
+    cyl_in: Decimal = Decimal("0")
 
 
 class CustomerLedgerSummary(BaseModel):
@@ -1125,12 +1161,27 @@ class CustomerLedgerSummary(BaseModel):
     total_ton: Decimal = Decimal("0")
     total_transactions: int
     closing_balance: Decimal
+    # Flag Rule (§ Monthly Rollover & Flag Rule): closing_balance > this
+    # month's opening_balance (itself rolled over from the prior month's
+    # closing) -> Flagged; closing_balance <= opening_balance -> Normal.
+    flagged: bool = False
     rows: list[LedgerRow]
+
+
+class CustomerFlagOut(BaseModel):
+    """One row of the Flagged Accounts widget / ledger sidebar flags —
+    same Flag Rule as CustomerLedgerSummary.flagged, computed in bulk
+    across every customer for one month."""
+    customer: CustomerOut
+    month: str
+    opening_balance: Decimal
+    closing_balance: Decimal
+    flagged: bool
 
 
 # ---------- Purchase ----------
 class PurchaseCreate(BaseModel):
-    date: datetime
+    date: UtcDateTime
     company_id: UUID
     product_id: UUID
     quantity: Decimal
@@ -1174,7 +1225,7 @@ class PurchaseOut(BaseModel):
 
 # ---------- Company Payment ----------
 class CompanyPaymentCreate(BaseModel):
-    date: datetime
+    date: UtcDateTime
     company_id: UUID
     purchase_id: Optional[UUID] = None
     amount: Decimal
@@ -1251,7 +1302,7 @@ class PlantLedgerSummaryRow(BaseModel):
 
 # ---------- Owner Drawings ----------
 class OwnerDrawingsCreate(BaseModel):
-    date: datetime
+    date: UtcDateTime
     amount: Decimal
     account_id: Optional[UUID] = None  # null = funded directly from field-collected cash
     notes: Optional[str] = None
@@ -1305,7 +1356,7 @@ class UnifiedSaleSettlement(BaseModel):
 
 
 class UnifiedSaleCreate(BaseModel):
-    date: datetime
+    date: UtcDateTime
     customer_id: UUID
     plant_id: UUID  # maps to Company.id
     items: list[UnifiedSaleItem] = []
@@ -1384,12 +1435,14 @@ class UnifiedSaleOut(BaseModel):
     
     
 # ---------- Cylinder Tracking ----------
+# Cylinder entry create request model
 class CylinderTransactionCreate(BaseModel):
-    date: datetime
     customer_id: UUID
-    product_id: UUID
-    qty_out: Decimal = Decimal("0")
-    qty_in: Decimal = Decimal("0")
+    product_id: Optional[UUID] = None
+    date: Optional[UtcDateTime] = None  # defaults to now if omitted
+    qty_out: Decimal = Decimal("0")  # Delivered (filled)
+    qty_in: Decimal = Decimal("0")   # Returned (empty)
+    transaction_type: str = "SALE_RETURN"  # SALE_RETURN | EMPTY_RECEIPT | EMPTY_SALE | ADJUSTMENT
     notes: Optional[str] = None
     entered_by: str
 
@@ -1400,10 +1453,11 @@ class CylinderTransactionOut(BaseModel):
     display_id: str
     date: datetime
     customer_id: UUID
-    product_id: UUID
+    product_id: Optional[UUID]
     sale_id: Optional[UUID]
     qty_out: Decimal
     qty_in: Decimal
+    transaction_type: str
     notes: Optional[str]
     status: str
     entered_by: str
@@ -1417,12 +1471,28 @@ class CylinderBalanceOut(BaseModel):
     balance: Decimal
 
 
-class PlantLedgerSummaryRow(BaseModel):
-    company: CompanyOut
-    opening_balance: Decimal
-    total_118: Decimal
-    total_454: Decimal
-    total_kg: Decimal
-    total_purchases: Decimal
-    total_payments: Decimal
-    closing_balance: Decimal
+# ---------- Empty Cylinder Sale (Sell Empty Cylinders action) ----------
+class EmptyCylinderSaleCreate(BaseModel):
+    # customer_id is NOT here — it comes from the URL path
+    # (/customers/{customer_id}/empty-cylinders/sell), not the request body.
+    date: Optional[UtcDateTime] = None  # defaults to now if omitted
+    cylinder_size: Literal["118", "454"]
+    quantity: Decimal
+    amount: Decimal
+    notes: Optional[str] = None
+    entered_by: str
+
+
+class EmptyCylinderSaleOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    display_id: str
+    date: datetime
+    customer_id: UUID
+    cylinder_size: str
+    quantity: Decimal
+    amount: Decimal
+    notes: Optional[str]
+    status: str
+    entered_by: str
+    created_at: datetime

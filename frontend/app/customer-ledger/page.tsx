@@ -4,13 +4,14 @@ import { Search, PlusCircle } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Th, Td, inputClass, BalanceTag, Button } from "@/components/ui";
 import { api } from "@/lib/api";
-import { pkr, fmtTime } from "@/lib/format";
+import { pkr, fmtTime, todayLocalInput } from "@/lib/format";
 import ReceivePaymentModal from "@/components/ReceivePaymentModal";
-import type { Customer, CustomerLedgerSummary } from "@/lib/types";
+import type { Customer, CustomerLedgerSummary, CustomerFlag } from "@/lib/types";
 
+// Derived from the Asia/Karachi-aware todayLocalInput() ("YYYY-MM-DD"), so
+// "this month" reflects the Karachi calendar even off-Karachi machines.
 function currentMonth() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  return todayLocalInput().slice(0, 7);
 }
 
 function CustomerLedgerBody() {
@@ -21,6 +22,7 @@ function CustomerLedgerBody() {
   const [summary, setSummary] = useState<CustomerLedgerSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
+  const [flags, setFlags] = useState<CustomerFlag[]>([]);
 
   const loadCustomers = () => {
     api.customers.list().then(setCustomers);
@@ -43,6 +45,14 @@ function CustomerLedgerBody() {
     loadLedger();
   }, [customerId, month]);
 
+  // Powers the 🚩 badge in the sidebar for every customer, for the
+  // currently-selected month — same Flag Rule as the detail panel above.
+  useEffect(() => {
+    api.ledger.customerFlags(month).then(setFlags);
+  }, [month]);
+
+  const flaggedIds = new Set(flags.filter((f) => f.flagged).map((f) => f.customer.id));
+
   const filtered = customers.filter(
     (c) =>
       !search.trim() ||
@@ -60,10 +70,11 @@ function CustomerLedgerBody() {
       <PageHeader
         eyebrow="Customer Ledger"
         title="Monthly statement, running balance"
-        caption="Opening balance is always derived from the ledger, never edited by hand — pick a customer and a month to see exactly how the balance moved."
+        caption="Opening balance is derived from the ledger — select a customer to view cash & cylinder balances."
       />
 
       <div className="grid grid-cols-[0.65fr_1.5fr] gap-4">
+        {/* Customer Sidebar */}
         <Panel>
           <Eyebrow>Customers</Eyebrow>
           <div className="flex items-center gap-1.5 border border-hairline rounded-md px-2.5 mb-3">
@@ -84,20 +95,27 @@ function CustomerLedgerBody() {
                   customerId === c.id ? "border-teal bg-[#EAF6F6]" : "border-hairline bg-paper"
                 }`}
               >
-                <div className="font-body text-[13px] font-semibold text-ink">{c.name}</div>
+                <div className="font-body text-[13px] font-semibold text-ink flex items-center gap-1">
+                  {c.name}
+                  {flaggedIds.has(c.id) && <span title="Flagged this month">🚩</span>}
+                </div>
                 <div className="font-mono text-[10.5px] text-steel">
                   {c.display_id ?? ""} · {c.mobile}
                 </div>
-                <div className="mt-1">
-                 <BalanceTag 
-  amount={customerId === c.id && summary ? summary.closing_balance : c.current_balance} 
-/>
+                <div className="mt-1 flex items-center justify-between">
+                  <BalanceTag
+                    amount={customerId === c.id && summary ? summary.closing_balance : c.current_balance}
+                  />
+                  <span className="font-mono text-[10px] text-steel">
+                    11.8k: {c.cylinder_balance_118 || 0}
+                  </span>
                 </div>
               </button>
             ))}
           </div>
         </Panel>
 
+        {/* Ledger Details */}
         <div>
           {!customerId && (
             <Panel>
@@ -115,23 +133,33 @@ function CustomerLedgerBody() {
                     <div className="font-mono text-[10.5px] text-steel tracking-wide uppercase mb-0.5">
                       DOWA Gas Agency
                     </div>
-                    <div className="font-display font-bold text-xl text-ink">{summary?.customer.name}</div>
+                    <div className="font-display font-bold text-xl text-ink flex items-center gap-2">
+                      {summary?.customer.name}
+                      {summary?.flagged && (
+                        <span
+                          title="Flagged — this month's closing balance is above its opening balance"
+                          className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[#FBEAEA] text-brand-red border border-[#EFC3C3]"
+                        >
+                          🚩 Flagged
+                        </span>
+                      )}
+                    </div>
                     <div className="font-mono text-xs text-steel mt-1">
                       {summary?.customer.display_id ?? ""} · {summary?.customer.mobile}{" "}
                       {summary?.customer.shop_name ? `· ${summary.customer.shop_name}` : ""}
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
                     <Button variant="teal" onClick={() => setIsPayModalOpen(true)}>
                       <PlusCircle size={15} /> Receive Payment
                     </Button>
 
-                    <div className="flex gap-2">
+                    <div className="flex gap-1.5 ml-1">
                       <select
                         value={mo}
                         onChange={(e) => setMonth(`${year}-${e.target.value}`)}
-                        className={`${inputClass} w-[100px]`}
+                        className={`${inputClass} w-[75px]`}
                       >
                         {monthOptions.map((m) => (
                           <option key={m} value={m}>
@@ -142,7 +170,7 @@ function CustomerLedgerBody() {
                       <select
                         value={year}
                         onChange={(e) => setMonth(`${e.target.value}-${mo}`)}
-                        className={`${inputClass} w-[100px]`}
+                        className={`${inputClass} w-[85px]`}
                       >
                         {yearOptions.map((y) => (
                           <option key={y} value={y}>
@@ -163,6 +191,7 @@ function CustomerLedgerBody() {
 
               {!loading && summary && (
                 <>
+                  {/* Financial Stats */}
                   <div className="grid grid-cols-4 gap-3 mb-4">
                     <Panel>
                       <Eyebrow>Opening Balance</Eyebrow>
@@ -179,37 +208,48 @@ function CustomerLedgerBody() {
                       </div>
                     </Panel>
                     <Panel>
-                      <Eyebrow>Closing Balance ({mo}/{year})</Eyebrow>
+                      <Eyebrow>Closing Cash Balance</Eyebrow>
                       <div className="font-display font-bold text-lg text-ink">{pkr(summary.closing_balance)}</div>
                     </Panel>
                   </div>
+
+                  {/* Cylinder Inventory Stats */}
                   <div className="grid grid-cols-5 gap-3 mb-4">
                     <Panel>
                       <Eyebrow>11.8 KG Sold</Eyebrow>
-                      <div className="font-mono font-semibold text-base text-ink">{summary.total_118}</div>
+                      <div className="font-mono font-semibold text-base text-amber-600">
+                        {summary.total_118 || 0}
+                      </div>
                     </Panel>
                     <Panel>
                       <Eyebrow>45.4 KG Sold</Eyebrow>
-                      <div className="font-mono font-semibold text-base text-ink">{summary.total_454}</div>
+                      <div className="font-mono font-semibold text-base text-purple-600">
+                        {summary.total_454 || 0}
+                      </div>
                     </Panel>
                     <Panel>
-                      <Eyebrow>Total KG</Eyebrow>
+                      <Eyebrow>Total KG Sold</Eyebrow>
                       <div className="font-mono font-semibold text-base text-ink">{summary.total_kg}</div>
                     </Panel>
                     <Panel>
                       <Eyebrow>Total Ton</Eyebrow>
-                      <div className="font-mono font-semibold text-base text-ink">{parseFloat(summary.total_ton || "0").toFixed(2)}</div>
+                      <div className="font-mono font-semibold text-base text-ink">
+                        {parseFloat(summary.total_ton || "0").toFixed(2)}
+                      </div>
                     </Panel>
                     <Panel>
-                      <Eyebrow>Transactions</Eyebrow>
-                      <div className="font-mono font-semibold text-base text-ink">{summary.total_transactions}</div>
+                      <Eyebrow>Empty Cylinders</Eyebrow>
+                      <div className="font-mono font-semibold text-base text-ink">
+                        11.8k: {summary.customer.empty_cylinders_118 || 0} · 45.4k: {summary.customer.empty_cylinders_454 || 0}
+                      </div>
                     </Panel>
                   </div>
 
+                  {/* Combined Ledger Table */}
                   <Panel>
                     <Eyebrow>Daily Running Balance</Eyebrow>
                     <SectionCaption>
-                      Every row carries the balance forward — click any total above and this is what it's built from.
+                      Tracks cash flow along with cylinder movements for this month.
                     </SectionCaption>
                     <table className="w-full border-collapse">
                       <thead>
@@ -217,8 +257,8 @@ function CustomerLedgerBody() {
                           <Th>Date</Th>
                           <Th>ID</Th>
                           <Th>Description</Th>
-                          <Th right>11.8 KG</Th>
-                          <Th right>45.4 KG</Th>
+                          <Th right>11.8 KG Sold</Th>
+                          <Th right>45.4 KG Sold</Th>
                           <Th right>Sale</Th>
                           <Th right>Payment</Th>
                           <Th right>Balance</Th>
@@ -251,7 +291,9 @@ function CustomerLedgerBody() {
                         ))}
                         {!summary.rows.length && (
                           <tr>
-                            <td className="text-steel font-body text-[13px] py-4">No transactions this month.</td>
+                            <td colSpan={8} className="text-steel font-body text-[13px] py-4 text-center">
+                              No transactions this month.
+                            </td>
                           </tr>
                         )}
                       </tbody>
@@ -264,6 +306,7 @@ function CustomerLedgerBody() {
         </div>
       </div>
 
+      {/* Receive Payment Modal */}
       <ReceivePaymentModal
         isOpen={isPayModalOpen}
         onClose={() => setIsPayModalOpen(false)}

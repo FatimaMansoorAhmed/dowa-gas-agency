@@ -5,7 +5,7 @@ import { Wallet, Home, Landmark, ArrowRightLeft, Building2, Send, Users, X, Cale
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, Field, inputClass, Th, Td } from "@/components/ui";
 import { api } from "@/lib/api";
-import { pkr, fmtTime } from "@/lib/format";
+import { pkr, fmtTime, todayLocalInput, toKarachiDateString } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import { BUCKET_ACCOUNTS, findBucketAccount, type BucketType } from "@/lib/accounts";
 import type { PaymentAccount, Company, OwnerDrawing, UnifiedSaleBatch, Customer } from "@/lib/types";
@@ -186,25 +186,28 @@ function CashManagementBody() {
     }
   };
 
-  // Filtered Owner Drawings based on selected timeframe or custom date
+  // Filtered Owner Drawings based on selected timeframe or custom date.
+  // Compares Asia/Karachi calendar dates, not the viewer's own local date —
+  // `new Date(d.date)` misparses a marker-less backend timestamp as local
+  // time instead of UTC (§ Day-wise Date Filtering Mismatch).
   const filteredOwnerDrawings = useMemo(() => {
-    const now = new Date();
+    const today = todayLocalInput();
     return ownerDrawings
       .filter((d) => {
-        const dDate = new Date(d.date);
+        const day = toKarachiDateString(d.date);
+        if (!day) return false;
 
         if (drawingFilter === "today") {
-          return dDate.toDateString() === now.toDateString();
+          return day === today;
         }
         if (drawingFilter === "monthly") {
-          return dDate.getMonth() === now.getMonth() && dDate.getFullYear() === now.getFullYear();
+          return day.slice(0, 7) === today.slice(0, 7);
         }
         if (drawingFilter === "yearly") {
-          return dDate.getFullYear() === now.getFullYear();
+          return day.slice(0, 4) === today.slice(0, 4);
         }
         if (drawingFilter === "custom" && customDate) {
-          const dFormatted = dDate.toISOString().split("T")[0];
-          return dFormatted === customDate;
+          return day === customDate;
         }
         return true; // "all"
       })

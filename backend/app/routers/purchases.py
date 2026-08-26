@@ -19,7 +19,7 @@ def list_purchases(
     q = db.query(models.Purchase).filter(models.Purchase.status == "active")
     if company_id:
         q = q.filter(models.Purchase.company_id == company_id)
-    rows = q.order_by(models.Purchase.date.desc()).all()
+    rows = q.order_by(models.Purchase.date.desc(), models.Purchase.created_at.desc()).all()
     if month:
         rows = [r for r in rows if r.date.strftime("%Y-%m") == month]
     return rows

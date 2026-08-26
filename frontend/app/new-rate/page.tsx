@@ -4,7 +4,7 @@ import { PlusCircle, Check, X } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, Th, Td } from "@/components/ui";
 import { api } from "@/lib/api";
-import { fmtTime } from "@/lib/format";
+import { fmtTime, isSameKarachiDay } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import type { Company, Party, RateEntry } from "@/lib/types";
 
@@ -55,17 +55,19 @@ function NewRateBody() {
   const companyParties = parties.filter((p) => p.company_id === companyId);
   const rate454Preview = rate118 ? Math.round(parseFloat(rate118) * RATIO * 100) / 100 : null;
 
-  // FIX 2: Compare dates in local string format for accurate Today's entries
+  // Compare Asia/Karachi calendar days, not the viewer's own local day —
+  // raw `new Date(r.timestamp).toLocaleDateString()` misreads a naive
+  // (marker-less) backend timestamp as local time instead of UTC.
   const todayEntries = useMemo(
     () => rates
-      .filter((r) => new Date(r.timestamp).toLocaleDateString() === new Date().toLocaleDateString())
+      .filter((r) => isSameKarachiDay(r.timestamp))
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
     [rates]
   );
 
   const handleAddCompany = async () => {
     if (!newCompanyName.trim()) return;
-    const c = await api.companies.create(newCompanyName.trim());
+    const c = await api.companies.create({ name: newCompanyName.trim() });
     setCompanies((prev) => [...prev, c]);
     setCompanyId(c.id);
     setPartyId("");

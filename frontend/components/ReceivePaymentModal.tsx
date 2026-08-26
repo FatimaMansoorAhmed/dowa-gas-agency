@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { X, Check, AlertCircle, Wallet } from "lucide-react";
 import { Field, inputClass, Button } from "@/components/ui";
 import { api } from "@/lib/api";
-import { pkr } from "@/lib/format";
+import { pkr, todayLocalInput } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import type { Customer, PaymentAccount } from "@/lib/types";
 
@@ -24,7 +24,7 @@ export default function ReceivePaymentModal({
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
 
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(todayLocalInput());
   const [customerId, setCustomerId] = useState(defaultCustomerId || "");
   const [customerSearch, setCustomerSearch] = useState("");
   const [amount, setAmount] = useState("");

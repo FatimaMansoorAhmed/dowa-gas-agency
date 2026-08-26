@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
@@ -441,11 +441,13 @@ def approve_unified_sale(
             db.add(owner_drawing)
 
         batch.status = "approved"
-        # Timezone-aware so the API response carries a UTC offset — a naive
-        # timestamp gets misread as local wall-clock time by the frontend's
-        # `new Date(...)` and displays hours off (e.g. 5 AM PKT instead of
-        # the actual approval time).
-        batch.approved_at = datetime.now(timezone.utc)
+        # Naive UTC — matches every other DateTime column's storage
+        # convention (datetime.utcnow()). An AWARE datetime bound to this
+        # naive column would get silently shifted by Postgres's
+        # Asia/Karachi session timezone before storage, then shifted AGAIN
+        # by the frontend's UTC->Asia/Karachi display conversion — a +5h
+        # double offset (§ Double Timezone Offset Fix). See app/timezone.py.
+        batch.approved_at = datetime.utcnow()
         batch.approved_by = by
         db.add(batch)
 

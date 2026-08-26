@@ -15,7 +15,7 @@ def list_owner_drawings(
     db: Session = Depends(get_db),
 ):
     q = db.query(models.OwnerDrawings).filter(models.OwnerDrawings.status == "active")
-    rows = q.order_by(models.OwnerDrawings.date.desc()).all()
+    rows = q.order_by(models.OwnerDrawings.date.desc(), models.OwnerDrawings.created_at.desc()).all()
     if month:
         rows = [r for r in rows if r.date.strftime("%Y-%m") == month]
     return rows

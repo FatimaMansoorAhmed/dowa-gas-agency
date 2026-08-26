@@ -6,9 +6,9 @@ import { api } from "@/lib/api";
 import type { Company } from "@/lib/types";
 
 export default function NewPlantModal({
-  onClose, onCreated,
-}: { onClose: () => void; onCreated: (c: Company) => void }) {
-  const [name, setName] = useState("");
+  onClose, onCreated, initialName,
+}: { onClose: () => void; onCreated: (c: Company) => void; initialName?: string }) {
+  const [name, setName] = useState(initialName || "");
   const [mobile, setMobile] = useState("");
   const [openingBalance, setOpeningBalance] = useState("");
   const [saving, setSaving] = useState(false);
