@@ -454,9 +454,15 @@ def company_monthly_ledger(
             pay: models.CompanyPayment = e["obj"]
             running -= pay.amount
             total_payments += pay.amount
+            # Plant Settlement Ledger source label (§ Re-Investment / Owner
+            # Capital) — a CompanyPayment auto-created by a Direct Plant
+            # Payment re-investment always carries method="owner_capital".
+            description = (
+                "Owner Capital (Direct)" if pay.method == "owner_capital" else f"Payment · {pay.method}"
+            )
             rows.append(schemas.CompanyLedgerRow(
                 date=pay.date, kind="payment", ref_id=pay.id, display_id=pay.display_id,
-                description=f"Payment · {pay.method}",
+                description=description,
                 purchase_amount=0, payment_amount=pay.amount, running_balance=running,
                 qty_118=Decimal("0"), qty_454=Decimal("0"),
             ))

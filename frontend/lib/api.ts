@@ -17,7 +17,8 @@ import type {
   Company, Party, RateEntry, Customer, Product, PaymentAccount, ExpenseCategory,
   Sale, Payment, Expense, CustomerLedgerSummary, CustomerFlag, Purchase, CompanyPayment,
   CompanyLedgerSummary, PlantLedgerSummaryRow, CylinderTransaction, CylinderBalance, OwnerDrawing, UnifiedSaleBatch, UnifiedSaleResult, DestinationType,
-  AccountType, AccountTransferResult, CylinderTransactionCreate, CustomerCombinedLedger, EmptyCylinderSale
+  AccountType, AccountTransferResult, CylinderTransactionCreate, CustomerCombinedLedger, EmptyCylinderSale,
+  OwnerCapital, OwnerCapitalDestination
 } from "./types";
 
 export const api = {
@@ -202,6 +203,27 @@ export const api = {
     list: (month?: string) => request<OwnerDrawing[]>(`/owner-drawings${month ? `?month=${month}` : ""}`),
     create: (payload: { date: string; amount: number; account_id?: string; notes?: string; entered_by: string }) =>
       request<OwnerDrawing>("/owner-drawings", { method: "POST", body: JSON.stringify(payload) }),
+  },
+  // Owner Capital / Re-Investment: fresh capital injected by the owner,
+  // routed either straight to one PaymentAccount ("account") or straight
+  // to a plant's payable via the existing plant-payment accounting
+  // ("plant") — never mixed with Sale/Payment logic.
+  ownerCapital: {
+    list: (params?: { destination_type?: OwnerCapitalDestination; month?: string }) => {
+      const q = new URLSearchParams(params as Record<string, string>).toString();
+      return request<OwnerCapital[]>(`/owner-capital${q ? `?${q}` : ""}`);
+    },
+    create: (payload: {
+      date: string;
+      amount: number;
+      destination_type: OwnerCapitalDestination;
+      account_id?: string;
+      target_plant_id?: string;
+      notes?: string;
+      entered_by: string;
+    }) => request<OwnerCapital>("/owner-capital", { method: "POST", body: JSON.stringify(payload) }),
+    cancel: (id: string, by: string) =>
+      request<OwnerCapital>(`/owner-capital/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
   },
   unifiedSale: { 
     list: (params?: { customer_id?: string; month?: string }) => { 

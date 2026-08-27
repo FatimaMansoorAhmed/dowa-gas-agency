@@ -323,6 +323,45 @@ class OwnerDrawings(Base):
     account = relationship("PaymentAccount")
 
 
+class OwnerCapital(Base):
+    """Fresh capital the owner injects into the business — the reverse of
+    OwnerDrawings, and deliberately kept just as separate from Sale/Payment
+    accounting. Two mutually exclusive destinations, chosen at entry time:
+
+    destination_type == "account": the full amount is credited straight to
+    one PaymentAccount (account_id) — Office Cash, Home Cash, or Dowa
+    Account. No Sale/Expense is created; only that one account balance moves.
+
+    destination_type == "plant": the full amount settles a plant's payable
+    directly via a linked CompanyPayment (found by
+    CompanyPayment.source_owner_capital_id) — reusing the exact same
+    plant-payment accounting as an ordinary CompanyPayment (excess ->
+    advance/account_credit), with account_id left null so the money never
+    touches Office Cash, Home Cash, or the Dowa Account.
+    """
+    __tablename__ = "owner_capital"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    display_id = Column(String, unique=True, nullable=False)  # e.g. RCAP-000123
+    date = Column(DateTime, nullable=False)
+    amount = Column(Numeric(14, 2), nullable=False)
+
+    destination_type = Column(String(50), nullable=False, default="account")  # account | plant
+    account_id = Column(GUID(), ForeignKey("payment_accounts.id"), nullable=True)
+    target_plant_id = Column(GUID(), ForeignKey("companies.id"), nullable=True)
+
+    notes = Column(String, nullable=True)
+
+    status = Column(String, nullable=False, default="active")  # active | cancelled
+    entered_by = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    modified_at = Column(DateTime, nullable=True)
+    modified_by = Column(String, nullable=True)
+
+    account = relationship("PaymentAccount")
+    target_plant = relationship("Company", foreign_keys=[target_plant_id])
+
+
 class UnifiedSaleBatch(Base):
     """One 'Unified Sale' submission. Not itself a ledger entry — a
     lightweight grouping row so the Sale(s), Purchase(s), Payment, Expense,
@@ -363,6 +402,8 @@ class UnifiedSaleBatch(Base):
 
     # Optional delivery reference for the whole batch — never required to save.
     vehicle_no = Column(String, nullable=True)
+    gate_pass_no = Column(String, nullable=True)
+    notes = Column(String, nullable=True)
 
     # pending -> approved | canceled. Ledger effects only apply on approval —
     # a pending batch's child Sale/Purchase/Payment/Expense/OwnerDrawings
@@ -463,6 +504,11 @@ class CompanyPayment(Base):
     # Receipt's "plant" destination routing (3-way settlement) — lets
     # cancelling that receipt find and reverse this row.
     source_payment_id = Column(GUID(), ForeignKey("payments.id"), nullable=True)
+    # Set when this CompanyPayment was auto-created by a Direct Plant
+    # Payment Re-Investment (OwnerCapital.destination_type == "plant") —
+    # mirrors source_payment_id's linkage pattern, lets cancelling that
+    # Owner Capital entry find and reverse this row.
+    source_owner_capital_id = Column(GUID(), ForeignKey("owner_capital.id"), nullable=True)
 
     status = Column(String, nullable=False, default="active")
     entered_by = Column(String, nullable=False)

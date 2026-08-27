@@ -195,6 +195,22 @@ export type OwnerDrawing = {
   created_at: string;
 };
 
+export type OwnerCapitalDestination = "account" | "plant";
+
+export type OwnerCapital = {
+  id: string;
+  display_id: string;
+  date: string;
+  amount: string;
+  destination_type: OwnerCapitalDestination;
+  account_id: string | null;
+  target_plant_id: string | null;
+  notes: string | null;
+  status: string;
+  entered_by: string;
+  created_at: string;
+};
+
 export type UnifiedSaleItem = {
   product_id: string;
   quantity: number;
@@ -233,6 +249,8 @@ export type UnifiedSaleBatch = {
   target_plant_id?: string | null;
   account_id?: string | null;
   vehicle_no?: string | null;
+  gate_pass_no?: string | null;
+  notes?: string | null;
   qty_11_8kg: string;
   qty_45_4kg: string;
   total_kg: string;

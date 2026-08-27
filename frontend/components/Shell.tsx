@@ -17,7 +17,8 @@ import {
   ChevronRight,
   ShoppingBag, // Unified Sale ke liye naya icon
   CreditCard,
-  PackageOpen
+  PackageOpen,
+  Banknote
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { CylinderStripe } from "./ui";
@@ -38,7 +39,8 @@ const NAV = [
  
   { href: "/expenses", label: "Expenses", icon: Wallet },
    { href: "/cash-managment", label: "Cash Book", icon: Wallet },
-  
+  { href: "/owner-capital", label: "Owner Investment", icon: Banknote },
+
 ];
 
 export default function Shell({ children }: { children: ReactNode }) {
@@ -120,7 +122,7 @@ export default function Shell({ children }: { children: ReactNode }) {
         <div className="bg-panel border-b border-hairline">
           <div className="flex items-center justify-between px-8 py-3.5">
             <div className="font-body text-[13.5px] font-medium text-slate-800">
-              Phase 2 — <span className="text-slate-900 font-bold">Rates &amp; Customers</span>, live from Postgres.
+              Dowa gas Agency — <span className="text-slate-900 font-bold">Rates &amp; Customers</span>, Purchases , Sales.
             </div>
             <div className="font-mono text-[12px] font-semibold text-slate-800 bg-paper px-3.5 py-1.5 rounded-full border border-hairline">
               {new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Karachi" })}

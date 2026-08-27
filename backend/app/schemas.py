@@ -1300,6 +1300,38 @@ class PlantLedgerSummaryRow(BaseModel):
     closing_balance: Decimal
 
 
+# ---------- Owner Capital / Re-Investment ----------
+class OwnerCapitalCreate(BaseModel):
+    """destination_type == "account": account_id is required — either a real
+    PaymentAccount UUID (as text) or one of the fixed bucket keys
+    (office_cash | owner_home | dowa_account), resolved the same way as
+    Payment Receipt / Unified Sale routing (see resolve_account_or_bucket).
+    destination_type == "plant": target_plant_id is required instead —
+    account_id is ignored, the amount never touches a Dowa account."""
+    date: UtcDateTime
+    amount: Decimal
+    destination_type: Literal["account", "plant"]
+    account_id: Optional[str] = None
+    target_plant_id: Optional[UUID] = None
+    notes: Optional[str] = None
+    entered_by: str
+
+
+class OwnerCapitalOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    display_id: str
+    date: datetime
+    amount: Decimal
+    destination_type: str
+    account_id: Optional[UUID] = None
+    target_plant_id: Optional[UUID] = None
+    notes: Optional[str] = None
+    status: str
+    entered_by: str
+    created_at: datetime
+
+
 # ---------- Owner Drawings ----------
 class OwnerDrawingsCreate(BaseModel):
     date: UtcDateTime
@@ -1392,6 +1424,8 @@ class UnifiedSaleBatchOut(BaseModel):
     target_plant_id: Optional[UUID] = None
     account_id: Optional[str] = None
     vehicle_no: Optional[str] = None
+    gate_pass_no: Optional[str] = None
+    notes: Optional[str] = None
     # --- ADD THESE NEW FIELDS ---
     qty_11_8kg: Decimal = Decimal("0")
     qty_45_4kg: Decimal = Decimal("0")
@@ -1421,6 +1455,8 @@ class UnifiedSaleOut(BaseModel):
     target_plant_id: Optional[UUID] = None
     account_id: Optional[str] = None
     vehicle_no: Optional[str] = None
+    gate_pass_no: Optional[str] = None
+    notes: Optional[str] = None
     status: str
     approved_at: Optional[datetime] = None
     approved_by: Optional[str] = None

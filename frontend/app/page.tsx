@@ -125,7 +125,7 @@ function DashboardBody() {
         </Panel>
 
         <Panel className="min-h-[96px]">
-          <Eyebrow>Sale P&amp;L (MTD)</Eyebrow>
+          <Eyebrow>Total Sale Amount</Eyebrow>
           <div className="font-display font-bold text-2xl text-ink">{pkr(totalSalesMTD)}</div>
           <div className="font-body text-[11px] text-steel mt-1">
             {hasSalesData ? `${salesMTD.length} sale${salesMTD.length === 1 ? "" : "s"} this month` : "No sales recorded yet"}

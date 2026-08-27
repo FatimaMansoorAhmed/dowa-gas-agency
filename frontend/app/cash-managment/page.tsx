@@ -1,14 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Wallet, Home, Landmark, ArrowRightLeft, Building2, Send, Users, X, Calendar } from "lucide-react";
+import { Wallet, Home, Landmark, ArrowRightLeft, Building2, Send, Users, X, Calendar, Banknote } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, Field, inputClass, Th, Td } from "@/components/ui";
 import { api } from "@/lib/api";
 import { pkr, fmtTime, todayLocalInput, toKarachiDateString } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import { BUCKET_ACCOUNTS, findBucketAccount, type BucketType } from "@/lib/accounts";
-import type { PaymentAccount, Company, OwnerDrawing, UnifiedSaleBatch, Customer } from "@/lib/types";
+import type { PaymentAccount, Company, OwnerDrawing, OwnerCapital, UnifiedSaleBatch, Customer } from "@/lib/types";
 
 type DateFilter = "all" | "today" | "monthly" | "yearly" | "custom";
 
@@ -25,6 +25,7 @@ function CashManagementBody() {
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [ownerDrawings, setOwnerDrawings] = useState<OwnerDrawing[]>([]);
+  const [ownerCapital, setOwnerCapital] = useState<OwnerCapital[]>([]);
   const [unifiedSales, setUnifiedSales] = useState<UnifiedSaleBatch[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
@@ -54,10 +55,11 @@ function CashManagementBody() {
 
   const loadData = async () => {
     try {
-      let [accList, compList, drawList, usList, custList] = await Promise.all([
+      let [accList, compList, drawList, capList, usList, custList] = await Promise.all([
         api.paymentAccounts.list(),
         api.companies.list(),
         api.ownerDrawings.list(),
+        api.ownerCapital.list({ destination_type: "account" }),
         api.unifiedSale.list(),
         api.customers.list(),
       ]);
@@ -80,6 +82,7 @@ function CashManagementBody() {
       setAccounts(accList);
       setCompanies(compList);
       setOwnerDrawings(drawList);
+      setOwnerCapital(capList.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
       setUnifiedSales(usList);
       setCustomers(custList);
       setLoadError(null);
@@ -434,6 +437,57 @@ function CashManagementBody() {
                     </Td>
                     <Td right mono bold color="#2B5854">
                       {pkr(row.amount)}
+                    </Td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
+      {/* OWNER CAPITAL INFLOW AUDIT TABLE */}
+      <Panel>
+        <Eyebrow>Owner Capital Inflow (Re-Investment — Deposit to Account)</Eyebrow>
+        <div className="overflow-x-auto mt-3">
+          <table className="w-full border-collapse">
+            <thead>
+              <tr className="border-b border-slate-200 text-left">
+                <Th>ID</Th>
+                <Th>Date</Th>
+                <Th>Account</Th>
+                <Th>Source</Th>
+                <Th right>Amount</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {ownerCapital.length === 0 ? (
+                <tr>
+                  <Td colSpan={5} center color="#8E8E93">
+                    {loading ? "Loading…" : "No Owner Capital deposits recorded yet."}
+                  </Td>
+                </tr>
+              ) : (
+                ownerCapital.map((c) => (
+                  <tr key={c.id}>
+                    <Td mono color="#2B5854" bold>
+                      {c.display_id}
+                    </Td>
+                    <Td color="#64748B" mono>
+                      {fmtTime(c.date)}
+                    </Td>
+                    <Td>
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                        {accounts.find((a) => a.id === c.account_id)?.name || "—"}
+                      </span>
+                    </Td>
+                    <Td>
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-[#E4F3F3] text-tealdeep border border-[#A8D0CD]">
+                        <Banknote size={11} /> Owner Capital Inflow
+                      </span>
+                    </Td>
+                    <Td right mono bold color="#2B5854">
+                      {pkr(c.amount)}
                     </Td>
                   </tr>
                 ))

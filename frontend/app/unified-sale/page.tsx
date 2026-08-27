@@ -68,7 +68,6 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
   // Payment Format & Settlement Amounts
   const [totalCreditReceived, setTotalCreditReceived] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<"cash" | "online" | "cheque" | "deposit">("cash");
-  const [referenceNo, setReferenceNo] = useState("");
 
   const [homeExpenseAmount, setHomeExpenseAmount] = useState("");
   const [homeExpenseCategoryId, setHomeExpenseCategoryId] = useState("");
@@ -193,13 +192,14 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
 
   const canSubmit =
     !!customerId && !!companyId && !!date &&
+    !!vehicleNo.trim() &&
     (activeItems.length > 0 || totalCreditNum > 0) &&
     settlementValid &&
     (homeExpenseNum <= 0 || !!homeExpenseCategoryId);
 
   const resetForm = () => {
     setItems({});
-    setTotalCreditReceived(""); setPaymentMethod("cash"); setReferenceNo("");
+    setTotalCreditReceived(""); setPaymentMethod("cash");
     setHomeExpenseAmount(""); setHomeExpenseCategoryId(""); setOwnerDrawingsAmount("");
     setGatePassNo(""); setVehicleNo(""); setNotes("");
     setCustomerId(""); setCustomerSearch(""); setCompanyId(""); setCompanySearch("");
@@ -305,7 +305,6 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
     try {
       const combinedNotes = [
         `Format: ${paymentMethod.toUpperCase()}`,
-        referenceNo ? `Ref: ${referenceNo}` : "",
         destinationType === "account" ? `Category: ${accountCategory}` : "",
         notes,
       ].filter(Boolean).join(" | ");
@@ -579,6 +578,24 @@ const completedOrders = useMemo(() => {
                 )}
               </div>
 
+              {/* Delivery Details */}
+              <div className="border-t border-hairline pt-4">
+                <Eyebrow>Delivery Details</Eyebrow>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
+                  <Field label="Vehicle No *">
+                    <input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} required className={inputClass} />
+                  </Field>
+                  <Field label="Gate Pass No">
+                    <input value={gatePassNo} onChange={(e) => setGatePassNo(e.target.value)} className={inputClass} />
+                  </Field>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+                  <Field label="Notes">
+                    <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Remarks" className={inputClass} />
+                  </Field>
+                </div>
+              </div>
+
               {/* Settlement Section */}
               <div className="border-t border-hairline pt-4 space-y-3">
                 <Eyebrow>Payment & Settlement Routing</Eyebrow>
@@ -693,27 +710,6 @@ const completedOrders = useMemo(() => {
                 )}
               </div>
 
-              {/* Delivery & Reference Details */}
-              <div className="border-t border-hairline pt-4">
-                <Eyebrow>Delivery & Reference Details (optional)</Eyebrow>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
-                  <Field label="Ref / Cheque #">
-                    <input value={referenceNo} onChange={(e) => setReferenceNo(e.target.value)} placeholder="Ref #" className={inputClass} />
-                  </Field>
-                  <Field label="Gate Pass No">
-                    <input value={gatePassNo} onChange={(e) => setGatePassNo(e.target.value)} className={inputClass} />
-                  </Field>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
-                  <Field label="Vehicle No">
-                    <input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} className={inputClass} />
-                  </Field>
-                  <Field label="Notes">
-                    <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Remarks" className={inputClass} />
-                  </Field>
-                </div>
-              </div>
-
               {(selectedCustomer || selectedCompany) && (
                 <div className="font-body text-xs text-steel border-t border-hairline pt-3">
                   <div className="text-[10px] uppercase text-steel/70 mb-1">Projected on approval, not immediately</div>
@@ -804,7 +800,7 @@ const completedOrders = useMemo(() => {
 <div className="overflow-x-auto mt-3 -mx-1 px-1">
 
 
-  <table className="w-full min-w-[1100px] border-collapse">
+  <table className="w-full min-w-[1300px] border-collapse">
     <thead>
       <tr className="border-b border-hairline text-left">
         <Th>ID</Th>
@@ -815,7 +811,9 @@ const completedOrders = useMemo(() => {
         <Th right>SALE</Th>
         <Th right>SETTLED</Th>
         <Th>DESTINATION</Th>
+        <Th>GATE PASS</Th>
         <Th>VEHICLE</Th>
+        <Th>NOTES</Th>
         <Th right>ACTIONS</Th>
       </tr>
     </thead>
@@ -920,9 +918,19 @@ const completedOrders = useMemo(() => {
               </span>
             </Td>
 
+            {/* GATE PASS */}
+            <Td mono color="#8E8E93">
+              {r.gate_pass_no || "—"}
+            </Td>
+
             {/* VEHICLE */}
             <Td mono color="#8E8E93">
               {r.vehicle_no || "—"}
+            </Td>
+
+            {/* NOTES */}
+            <Td color="#8E8E93">
+              <span className="whitespace-nowrap">{r.notes || "—"}</span>
             </Td>
 
             {/* ACTIONS */}
@@ -1021,7 +1029,7 @@ const completedOrders = useMemo(() => {
       {!pendingOrders.length && (
         <tr>
           <td
-            colSpan={9}
+            colSpan={12}
             className="text-steel font-body text-[13px] py-6 text-center"
           >
             No pending sales awaiting approval.
@@ -1089,7 +1097,7 @@ const completedOrders = useMemo(() => {
   <div className="mt-3">
     {/* Table renders `completedOrders` here */}
     ...
-                <table className="w-full min-w-[850px] border-collapse">
+                <table className="w-full min-w-[1050px] border-collapse">
                   <thead>
                     <tr className="border-b border-hairline text-left">
                       <Th>ID</Th>
@@ -1100,7 +1108,9 @@ const completedOrders = useMemo(() => {
                       <Th right>SALE</Th>
                       <Th right>SETTLED</Th>
                       <Th>DESTINATION</Th>
+                      <Th>GATE PASS</Th>
                       <Th>VEHICLE</Th>
+                      <Th>NOTES</Th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-hairline">
@@ -1133,13 +1143,15 @@ const completedOrders = useMemo(() => {
                               {getDestinationLabel(r)}
                             </span>
                           </Td>
+                          <Td mono color="#8E8E93">{r.gate_pass_no || "—"}</Td>
                           <Td mono color="#8E8E93">{r.vehicle_no || "—"}</Td>
+                          <Td color="#8E8E93"><span className="whitespace-nowrap">{r.notes || "—"}</span></Td>
                         </tr>
                       );
                     })}
                     {!completedOrders.length && (
                       <tr>
-                        <td colSpan={8} className="text-steel font-body text-[13px] py-6 text-center">
+                        <td colSpan={10} className="text-steel font-body text-[13px] py-6 text-center">
                           No approved sales found.
                         </td>
                       </tr>

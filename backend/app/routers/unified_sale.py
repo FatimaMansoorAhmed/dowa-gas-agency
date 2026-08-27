@@ -179,7 +179,7 @@ def _batch_to_out(batch, sales, purchases, plant_payment, expense, owner_drawing
         total_credit_received=batch.total_credit_received, net_plant_payment=batch.net_plant_payment,
         home_expense_amount=batch.home_expense_amount, owner_drawings_amount=batch.owner_drawings_amount,
         destination_type=batch.destination_type, target_plant_id=batch.target_plant_id, account_id=batch.account_id,
-        vehicle_no=batch.vehicle_no,
+        vehicle_no=batch.vehicle_no, gate_pass_no=batch.gate_pass_no, notes=batch.notes,
         status=batch.status, approved_at=batch.approved_at, approved_by=batch.approved_by,
         entered_by=batch.entered_by, created_at=batch.created_at,
         sales=[schemas.SaleOut.model_validate(x) for x in sales],
@@ -282,6 +282,8 @@ def create_unified_sale(payload: schemas.UnifiedSaleCreate, db: Session = Depend
             target_plant_id=target_plant_id,
             account_id=account_id,
             vehicle_no=payload.vehicle_no,
+            gate_pass_no=payload.gate_pass_no,
+            notes=payload.notes,
             status="pending",
             entered_by=payload.entered_by,
         )
@@ -337,6 +339,8 @@ def edit_unified_sale(unified_sale_id: UUID, payload: schemas.UnifiedSaleEdit, d
         batch.target_plant_id = target_plant_id
         batch.account_id = account_id
         batch.vehicle_no = payload.vehicle_no
+        batch.gate_pass_no = payload.gate_pass_no
+        batch.notes = payload.notes
         db.add(batch)
         db.flush()
 
