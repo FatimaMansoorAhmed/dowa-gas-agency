@@ -141,6 +141,21 @@ class Customer(Base):
     empty_cylinders_118 = Column(Numeric(10, 0), nullable=False, default=0)
     empty_cylinders_454 = Column(Numeric(10, 0), nullable=False, default=0)
 
+    # Cross / PSO breakdown WITHIN each size (§ Empty Cylinders — Size +
+    # Type Model). Cross/PSO is a cylinder TYPE, never a separate size —
+    # for a type-aware customer, cross + pso == the size's total above
+    # (empty_cylinders_118 / _454, which stays the source of truth read
+    # everywhere else: the untyped Sell Empty Cylinders flow, the ledger,
+    # the dashboard). Customers created before this feature existed keep
+    # their original size totals untouched here with cross/pso left at 0 —
+    # that stock was never guessable into a type, so it's preserved as-is
+    # and stays fully sellable via the untyped legacy path; the breakdown
+    # only ever reflects transactions entered after typed tracking existed.
+    empty_cylinders_118_cross = Column(Numeric(10, 0), nullable=False, default=0)
+    empty_cylinders_118_pso = Column(Numeric(10, 0), nullable=False, default=0)
+    empty_cylinders_454_cross = Column(Numeric(10, 0), nullable=False, default=0)
+    empty_cylinders_454_pso = Column(Numeric(10, 0), nullable=False, default=0)
+
     # Relationships
     cylinder_transactions = relationship("CylinderTransaction", back_populates="customer", cascade="all, delete-orphan")
 
@@ -614,6 +629,12 @@ class EmptyCylinderSale(Base):
     # Which categorized balance (Customer.empty_cylinders_118 /
     # empty_cylinders_454) this sale draws down — "118" or "454".
     cylinder_size = Column(String(10), nullable=False, default="118")
+    # "cross" or "pso" — which type within cylinder_size this sale draws
+    # down (Customer.empty_cylinders_{size}_{type}). Nullable: sales
+    # recorded before typed tracking existed have no reliable type to
+    # backfill, so they're left NULL (legacy/unclassified) rather than
+    # guessed; every sale recorded through the typed flow sets this.
+    cylinder_type = Column(String(10), nullable=True)
     quantity = Column(Numeric(10, 0), nullable=False)
     amount = Column(Numeric(14, 2), nullable=False)
     notes = Column(String, nullable=True)

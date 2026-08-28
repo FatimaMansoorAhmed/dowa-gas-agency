@@ -873,8 +873,17 @@ class CustomerCreate(BaseModel):
     opening_balance_date: Optional[UtcDateTime] = None
     # Opening empty-cylinder balances, entered per size on the Add New
     # Customer form — replaces the old single generic `empty_cylinders` input.
+    # Kept for backward compatibility with callers that only pass a size
+    # total (no Cross/PSO split) — the router derives the total from
+    # Cross + PSO instead whenever either of those is provided (§ Empty
+    # Cylinders — Size + Type Model), so there is never a second,
+    # independently-editable "Total" to fall out of sync.
     empty_cylinders_118: Decimal = Decimal("0")
     empty_cylinders_454: Decimal = Decimal("0")
+    empty_cylinders_118_cross: Decimal = Decimal("0")
+    empty_cylinders_118_pso: Decimal = Decimal("0")
+    empty_cylinders_454_cross: Decimal = Decimal("0")
+    empty_cylinders_454_pso: Decimal = Decimal("0")
 
 
 class CustomerOut(BaseModel):
@@ -902,6 +911,10 @@ class CustomerOut(BaseModel):
     empty_cylinders: Decimal = Decimal("0")
     empty_cylinders_118: Decimal = Decimal("0")
     empty_cylinders_454: Decimal = Decimal("0")
+    empty_cylinders_118_cross: Decimal = Decimal("0")
+    empty_cylinders_118_pso: Decimal = Decimal("0")
+    empty_cylinders_454_cross: Decimal = Decimal("0")
+    empty_cylinders_454_pso: Decimal = Decimal("0")
 
 
 class CustomerAdjust(BaseModel):
@@ -1271,6 +1284,7 @@ class CompanyLedgerRow(BaseModel):
     running_balance: Decimal
     qty_118: Decimal = Decimal("0")
     qty_454: Decimal = Decimal("0")
+    vehicle_no: Optional[str] = None
 
 
 class CompanyLedgerSummary(BaseModel):
@@ -1298,6 +1312,9 @@ class PlantLedgerSummaryRow(BaseModel):
     total_purchases: Decimal
     total_payments: Decimal
     closing_balance: Decimal
+    # Vehicle from the most recent Purchase this plant received this month
+    # (Purchase.vehicle_no) — never a second, independently-entered value.
+    # vehicle_no: Optional[str] = None
 
 
 # ---------- Owner Capital / Re-Investment ----------
@@ -1534,6 +1551,11 @@ class EmptyCylinderSaleCreate(BaseModel):
     # (/customers/{customer_id}/empty-cylinders/sell), not the request body.
     date: Optional[UtcDateTime] = None  # defaults to now if omitted
     cylinder_size: Literal["118", "454"]
+    # Optional for backward compatibility: omitted means the untyped
+    # legacy sell path (deducts only the size total, same as before this
+    # feature existed). Provided means the exact size+type combination is
+    # checked and deducted (§ Empty Cylinder Sale).
+    cylinder_type: Optional[Literal["cross", "pso"]] = None
     quantity: Decimal
     amount: Decimal
     notes: Optional[str] = None
@@ -1547,6 +1569,7 @@ class EmptyCylinderSaleOut(BaseModel):
     date: datetime
     customer_id: UUID
     cylinder_size: str
+    cylinder_type: Optional[str] = None
     quantity: Decimal
     amount: Decimal
     notes: Optional[str]

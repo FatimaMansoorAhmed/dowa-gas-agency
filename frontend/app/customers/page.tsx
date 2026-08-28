@@ -18,7 +18,7 @@ function CustomerBody() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [form, setForm] = useState({
     name: "", mobile: "", shopName: "", address: "", openingBalance: "",
-    emptyCylinders118: "", emptyCylinders454: "",
+    cross118: "", pso118: "", cross454: "", pso454: "",
   });
 
   const [payModal, setPayModal] = useState<Customer | null>(null);
@@ -36,17 +36,22 @@ function CustomerBody() {
     return () => clearTimeout(t);
   }, [search]);
 
+  const cross118Num = parseFloat(form.cross118) || 0;
+  const pso118Num = parseFloat(form.pso118) || 0;
+  const cross454Num = parseFloat(form.cross454) || 0;
+  const pso454Num = parseFloat(form.pso454) || 0;
+
   const handleAdd = async () => {
     if (!form.name.trim() || !form.mobile.trim()) return;
     await api.customers.create({
       name: form.name.trim(), mobile: form.mobile.trim(), shop_name: form.shopName.trim() || undefined,
       address: form.address.trim() || undefined, opening_balance: parseFloat(form.openingBalance) || 0,
-      empty_cylinders_118: parseFloat(form.emptyCylinders118) || 0,
-      empty_cylinders_454: parseFloat(form.emptyCylinders454) || 0,
+      empty_cylinders_118_cross: cross118Num, empty_cylinders_118_pso: pso118Num,
+      empty_cylinders_454_cross: cross454Num, empty_cylinders_454_pso: pso454Num,
     });
     setForm({
       name: "", mobile: "", shopName: "", address: "", openingBalance: "",
-      emptyCylinders118: "", emptyCylinders454: "",
+      cross118: "", pso118: "", cross454: "", pso454: "",
     });
     setIsAddModalOpen(false);
     load(search || undefined);
@@ -147,8 +152,25 @@ function CustomerBody() {
               <Field label="Shop / Business Name (optional)"><input value={form.shopName} onChange={(e) => setForm({ ...form, shopName: e.target.value })} className={inputClass} /></Field>
               <Field label="Address (optional)"><input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className={inputClass} /></Field>
               <Field label="Opening Balance"><input type="number" value={form.openingBalance} onChange={(e) => setForm({ ...form, openingBalance: e.target.value })} placeholder="0" className={inputClass} /></Field>
-              <Field label="Empty Cylinders 11.8 KG (Opening)"><input type="number" min="0" value={form.emptyCylinders118} onChange={(e) => setForm({ ...form, emptyCylinders118: e.target.value })} placeholder="0" className={inputClass} /></Field>
-              <Field label="Empty Cylinders 45.4 KG (Opening)"><input type="number" min="0" value={form.emptyCylinders454} onChange={(e) => setForm({ ...form, emptyCylinders454: e.target.value })} placeholder="0" className={inputClass} /></Field>
+
+              <div className="border-t border-hairline pt-3">
+                <div className="font-mono text-[10.5px] tracking-wide uppercase text-steel mb-2">Empty Cylinders (Opening) — 11.8 KG</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="Cross"><input type="number" min="0" value={form.cross118} onChange={(e) => setForm({ ...form, cross118: e.target.value })} placeholder="0" className={inputClass} /></Field>
+                  <Field label="PSO"><input type="number" min="0" value={form.pso118} onChange={(e) => setForm({ ...form, pso118: e.target.value })} placeholder="0" className={inputClass} /></Field>
+                </div>
+                <div className="font-mono text-[11px] text-steel mt-1.5">Total 11.8 KG: <b className="text-ink">{cross118Num + pso118Num}</b></div>
+              </div>
+
+              <div className="border-t border-hairline pt-3">
+                <div className="font-mono text-[10.5px] tracking-wide uppercase text-steel mb-2">Empty Cylinders (Opening) — 45.4 KG</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="Cross"><input type="number" min="0" value={form.cross454} onChange={(e) => setForm({ ...form, cross454: e.target.value })} placeholder="0" className={inputClass} /></Field>
+                  <Field label="PSO"><input type="number" min="0" value={form.pso454} onChange={(e) => setForm({ ...form, pso454: e.target.value })} placeholder="0" className={inputClass} /></Field>
+                </div>
+                <div className="font-mono text-[11px] text-steel mt-1.5">Total 45.4 KG: <b className="text-ink">{cross454Num + pso454Num}</b></div>
+              </div>
+
               <div className="mt-2 flex gap-2 justify-end">
                 <Button variant="outline" onClick={() => setIsAddModalOpen(false)}>Cancel</Button>
                 <Button variant="primary" onClick={handleAdd} disabled={!form.name.trim() || !form.mobile.trim()}>Add Customer</Button>

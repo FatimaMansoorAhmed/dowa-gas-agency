@@ -47,6 +47,14 @@ export type Customer = {
   empty_cylinders: string;
   empty_cylinders_118: string;
   empty_cylinders_454: string;
+  // Cross/PSO breakdown within each size — cross + pso == the size total
+  // above for any customer entered through the typed flow; 0/0 for
+  // customers created before this feature existed (their size total is
+  // preserved but unclassified).
+  empty_cylinders_118_cross: string;
+  empty_cylinders_118_pso: string;
+  empty_cylinders_454_cross: string;
+  empty_cylinders_454_pso: string;
 };
 
 export type Product = { id: string; name: string; weight_kg: string; active: string };
@@ -154,6 +162,9 @@ export type CompanyLedgerRow = {
   date: string; kind: "purchase" | "payment" | "unified_sale"; ref_id: string; display_id: string;
   description: string; purchase_amount: string; payment_amount: string; running_balance: string;
   qty_118: string; qty_454: string;
+  // The specific vehicle for this individual purchase/unified-sale
+  // transaction — absent for payment rows.
+  vehicle_no?: string | null;
 };
 
 export type CompanyLedgerSummary = {
@@ -167,6 +178,8 @@ export type PlantLedgerSummaryRow = {
   company: Company;
   opening_balance: string; total_118: string; total_454: string; total_kg: string;
   total_purchases: string; total_payments: string; closing_balance: string;
+  // Vehicle from the most recent Purchase this plant received this month.
+  vehicle_no?: string | null;
 };
 
 export type CylinderTransaction = {
@@ -310,12 +323,16 @@ export interface CylinderTransactionCreate {
   entered_by: string;
 }
 
+export type CylinderType = "cross" | "pso";
+
 export type EmptyCylinderSale = {
   id: string;
   display_id: string;
   date: string;
   customer_id: string;
   cylinder_size: "118" | "454";
+  // Absent/null on sales recorded before typed tracking existed.
+  cylinder_type: CylinderType | null;
   quantity: string;
   amount: string;
   notes: string | null;

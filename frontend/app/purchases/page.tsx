@@ -215,6 +215,7 @@ function PurchasesBody() {
                       <Th>Time</Th>
                       <Th>ID</Th>
                       <Th>Description</Th>
+                      <Th>Vehicle</Th>
                       <Th right>11.8 KG</Th>
                       <Th right>45.4 KG</Th>
                       <Th right>Purchase</Th>
@@ -224,7 +225,7 @@ function PurchasesBody() {
                   </thead>
                   <tbody>
                     <tr>
-                      <Td colSpan={8}>Opening balance</Td>
+                      <Td colSpan={9}>Opening balance</Td>
                       <Td right mono bold>{pkr(detail.opening_balance)}</Td>
                     </tr>
                     {displayRows.map((r: any) => {
@@ -241,6 +242,7 @@ function PurchasesBody() {
                           <Td mono color="#2D3748">{timePart}</Td>
                           <Td mono>{r.display_id}</Td>
                           <Td>{r.description}</Td>
+                          <Td mono>{r.vehicle_no || "—"}</Td>
                           <Td right mono>{q118 ? q118 : "—"}</Td>
                           <Td right mono>{q454 ? q454 : "—"}</Td>
                           <Td right mono>{parseFloat(r.purchase_amount) ? pkr(r.purchase_amount) : "—"}</Td>
@@ -250,7 +252,7 @@ function PurchasesBody() {
                       );
                     })}
                     {!displayRows.length && (
-                      <tr><td colSpan={9} className="text-steel font-body text-[13px] py-4 text-center">No transactions this month.</td></tr>
+                      <tr><td colSpan={10} className="text-steel font-body text-[13px] py-4 text-center">No transactions this month.</td></tr>
                     )}
                   </tbody>
                 </table>

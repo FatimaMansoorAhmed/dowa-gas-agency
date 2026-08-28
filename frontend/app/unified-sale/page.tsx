@@ -139,8 +139,23 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
     });
   }, [companyId, rates, products]);
 
+  // 45.4 KG selling price is always derived from the 11.8 KG selling price
+  // by the actual weight ratio — never hard-coded, never entered
+  // independently as a second source of truth (§6 45.4 KG Selling Rate).
+  const product118 = products.find((p) => Math.abs(parseFloat(p.weight_kg) - 11.8) < 0.01);
+  const product454 = products.find((p) => Math.abs(parseFloat(p.weight_kg) - 45.4) < 0.01);
+  const RATIO_454 = 45.4 / 11.8;
+
   const setItemField = (productId: string, field: keyof ItemRow, value: string) => {
-    setItems((prev) => ({ ...prev, [productId]: { ...(prev[productId] || { qty: "", purchaseRate: "", sellingRate: "" }), [field]: value } }));
+    setItems((prev) => {
+      const next = { ...prev, [productId]: { ...(prev[productId] || { qty: "", purchaseRate: "", sellingRate: "" }), [field]: value } };
+      if (field === "sellingRate" && product118 && product454 && productId === product118.id) {
+        const num = parseFloat(value);
+        const computed454 = !isNaN(num) && num > 0 ? (num * RATIO_454).toFixed(2) : "";
+        next[product454.id] = { ...(next[product454.id] || { qty: "", purchaseRate: "", sellingRate: "" }), sellingRate: computed454 };
+      }
+      return next;
+    });
   };
 
   const activeItems = useMemo(
@@ -975,10 +990,11 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
               </span>
             </div>
             <div className="overflow-x-auto mt-3 -mx-1 px-1">
-              <table className="w-full min-w-[950px] border-collapse">
+              <table className="w-full min-w-[1050px] border-collapse">
                 <thead>
                   <tr className="border-b border-hairline text-left">
                     <Th>ID</Th>
+                    <Th>PLANT</Th>
                     <Th>SALE</Th>
                     <Th right>SETTLED</Th>
                     <Th>DESTINATION</Th>
@@ -991,6 +1007,7 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
                 <tbody className="divide-y divide-hairline">
                   {paymentPendingOrders.map((r) => {
                     const c = customers.find((x) => x.id === r.customer_id);
+                    const plant = companies.find((x) => x.id === r.company_id);
                     const busy = actionBusyId === r.id;
                     const canEditOrCancel = r.sale_status === "pending";
                     const netAmount = Number(r.net_plant_payment || 0) || Number(r.total_credit_received || 0);
@@ -1005,6 +1022,11 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
                           >
                             {r.display_id}
                           </button>
+                        </Td>
+                        <Td>
+                          <span className="inline-flex items-center px-2 py-1 rounded-md bg-slate-100 text-slate-800 text-[11px] font-medium border border-slate-200 whitespace-nowrap">
+                            {plant?.name || r.company_id || "—"}
+                          </span>
                         </Td>
                         <Td bold>
                           <div className="whitespace-nowrap" title={c?.name || "—"}>{c?.name || "—"}</div>
@@ -1070,7 +1092,7 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
 
                   {!paymentPendingOrders.length && (
                     <tr>
-                      <td colSpan={7} className="text-steel font-body text-[13px] py-6 text-center">
+                      <td colSpan={8} className="text-steel font-body text-[13px] py-6 text-center">
                         No plant payments/settlements awaiting approval.
                       </td>
                     </tr>

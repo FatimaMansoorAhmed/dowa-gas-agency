@@ -207,9 +207,11 @@ def customer_monthly_ledger(
             ecs: models.EmptyCylinderSale = e["obj"]
             running += ecs.amount
             total_sales += ecs.amount
+            size_label = "45.4" if ecs.cylinder_size == "454" else "11.8"
+            type_label = f" {ecs.cylinder_type.upper()}" if ecs.cylinder_type else ""
             rows.append(schemas.LedgerRow(
                 date=ecs.date, kind="empty_cylinder_sale", ref_id=ecs.id, display_id=ecs.display_id,
-                description=f"Empty Cylinders Sold × {ecs.quantity}",
+                description=f"Empty Cylinders Sold ({size_label} KG{type_label}) × {ecs.quantity}",
                 sale_amount=ecs.amount, payment_amount=0, running_balance=running,
                 qty_empty=ecs.quantity, cyl_in=ecs.quantity,
             ))
@@ -466,7 +468,7 @@ def company_monthly_ledger(
                 description=f"{product.name if product else 'Product'} × {pu.quantity}"
                 + (f" · GP {pu.gate_pass_no}" if pu.gate_pass_no else ""),
                 purchase_amount=pu.total_amount, payment_amount=0, running_balance=running,
-                qty_118=q118, qty_454=q454,
+                qty_118=q118, qty_454=q454, vehicle_no=pu.vehicle_no,
             ))
         elif e["kind"] == "payment":
             pay: models.CompanyPayment = e["obj"]
@@ -521,7 +523,7 @@ def company_monthly_ledger(
                 date=b.payment_approved_at or b.sale_approved_at or b.date, kind="unified_sale", ref_id=b.id, display_id=b.display_id,
                 description=description,
                 purchase_amount=purchase_amt, payment_amount=settle,
-                running_balance=running, qty_118=q118, qty_454=q454,
+                running_balance=running, qty_118=q118, qty_454=q454, vehicle_no=b.vehicle_no,
             ))
         else:
             # Purchased from a different plant, settled to this one — payment only.
@@ -600,9 +602,17 @@ def plant_ledger_summary(
         total_kg = sum((p.total_kg for p in month_purchases), start=0)
         closing = opening + total_purchases - total_payments
 
+        # Vehicle from the most recent purchase this plant received this
+        # month — never a second, independently-entered value (§13
+        # Purchases — Plant Summary Vehicle).
+        vehicle_no = None
+        dated_purchases = [p for p in month_purchases if p.vehicle_no]
+        if dated_purchases:
+            vehicle_no = max(dated_purchases, key=lambda p: p.date).vehicle_no
+
         out.append(schemas.PlantLedgerSummaryRow(
             company=company, opening_balance=opening, total_118=total_118, total_454=total_454,
             total_kg=total_kg, total_purchases=total_purchases, total_payments=total_payments,
-            closing_balance=closing,
+            closing_balance=closing, vehicle_no=vehicle_no,
         ))
     return out

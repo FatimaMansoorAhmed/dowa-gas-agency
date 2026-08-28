@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Flag, Clock } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption } from "@/components/ui";
@@ -16,6 +17,7 @@ function currentMonth() {
 }
 
 function DashboardBody() {
+  const router = useRouter();
   const [companies, setCompanies] = useState<Company[]>([]);
   const [parties, setParties] = useState<Party[]>([]);
   const [latestRates, setLatestRates] = useState<RateEntry[]>([]);
@@ -182,22 +184,34 @@ function DashboardBody() {
           <Eyebrow>Flagged Accounts — {month}</Eyebrow>
           <SectionCaption>
             Customers whose Closing Balance this month is above the Opening Balance it rolled over with —
-            review these first.
+            review these first. Click a customer to open their ledger.
           </SectionCaption>
           <div className="flex flex-col gap-2">
             {flaggedAccounts.map((f) => (
-              <div key={f.customer.id} className="flex justify-between items-center px-3 py-2.5 rounded-lg border bg-[#FBF3E3] border-[#EBD9AE]">
-                <div>
-                  <div className="font-body text-[13px] font-semibold text-ink flex items-center gap-1.5">
-                    <Flag size={13} color="#D98E04" /> {f.customer.name}
+              <button
+                key={f.customer.id}
+                type="button"
+                onClick={() => router.push(`/customer-ledger?id=${f.customer.id}`)}
+                className="flex justify-between items-center px-3 py-2.5 rounded-lg border bg-[#FBF3E3] border-[#EBD9AE] text-left cursor-pointer w-full"
+              >
+                <div className="font-body text-[13px] font-semibold text-ink flex items-center gap-1.5">
+                  <Flag size={13} color="#D98E04" /> {f.customer.name}
+                </div>
+                <div className="flex items-center gap-4 text-right">
+                  <div>
+                    <div className="font-mono text-[9px] text-steel uppercase tracking-wide">Opening</div>
+                    <div className="font-mono text-[11.5px] font-semibold text-ink">{pkr(f.opening_balance)}</div>
                   </div>
-                  <div className="font-mono text-[10.5px] text-steel">{f.customer.mobile}</div>
+                  <div>
+                    <div className="font-mono text-[9px] text-steel uppercase tracking-wide">Closing</div>
+                    <div className="font-mono text-[11.5px] font-semibold text-ink">{pkr(f.closing_balance)}</div>
+                  </div>
+                  <div>
+                    <div className="font-mono text-[9px] text-steel uppercase tracking-wide">Shortage</div>
+                    <div className="font-mono text-[12.5px] font-bold text-brand-amber">{pkr(Math.max(0, Number(f.closing_balance) - Number(f.opening_balance)))}</div>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <div className="font-mono text-[12.5px] font-semibold text-brand-amber">{pkr(f.closing_balance)}</div>
-                  <div className="font-mono text-[10px] text-steel">opened {pkr(f.opening_balance)}</div>
-                </div>
-              </div>
+              </button>
             ))}
             {!flaggedAccounts.length && (
               <div className="font-body text-[13px] text-steel py-4 text-center">

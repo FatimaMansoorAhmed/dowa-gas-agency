@@ -63,6 +63,20 @@ def create_customer(payload: schemas.CustomerCreate, db: Session = Depends(get_d
                 except ValueError:
                     parsed_date = datetime.utcnow().date()
 
+        # Cross/PSO breakdown per size (§ Empty Cylinders — Size + Type
+        # Model). Whenever either is provided for a size, that size's total
+        # is DERIVED as cross + pso — never accepted as a separate,
+        # independently-editable value, so the two can never disagree.
+        # A caller that only sends the old flat total (no cross/pso) keeps
+        # the pre-existing legacy behavior: total as given, cross/pso at 0.
+        cross_118 = payload.empty_cylinders_118_cross or 0
+        pso_118 = payload.empty_cylinders_118_pso or 0
+        total_118 = (cross_118 + pso_118) if (cross_118 or pso_118) else (payload.empty_cylinders_118 or 0)
+
+        cross_454 = payload.empty_cylinders_454_cross or 0
+        pso_454 = payload.empty_cylinders_454_pso or 0
+        total_454 = (cross_454 + pso_454) if (cross_454 or pso_454) else (payload.empty_cylinders_454 or 0)
+
         new_customer = models.Customer(
             display_id=disp_id,
             name=payload.name,
@@ -74,11 +88,15 @@ def create_customer(payload: schemas.CustomerCreate, db: Session = Depends(get_d
             opening_balance=opening_bal,
             current_balance=opening_bal,
             opening_balance_date=parsed_date,
-            empty_cylinders_118=payload.empty_cylinders_118 or 0,
-            empty_cylinders_454=payload.empty_cylinders_454 or 0,
+            empty_cylinders_118=total_118,
+            empty_cylinders_454=total_454,
+            empty_cylinders_118_cross=cross_118,
+            empty_cylinders_118_pso=pso_118,
+            empty_cylinders_454_cross=cross_454,
+            empty_cylinders_454_pso=pso_454,
             # Generic running total (drives the Sell Empty Cylinders flow,
             # which doesn't split by size) starts as the sum of both.
-            empty_cylinders=(payload.empty_cylinders_118 or 0) + (payload.empty_cylinders_454 or 0),
+            empty_cylinders=total_118 + total_454,
         )
         
         db.add(new_customer)
@@ -234,11 +252,27 @@ def sell_empty_cylinders(
         raise HTTPException(400, "Amount must be greater than 0")
 
     is_454 = payload.cylinder_size == "454"
-    available = (customer.empty_cylinders_454 if is_454 else customer.empty_cylinders_118) or 0
-    if payload.quantity > available:
+    size_label = "45.4" if is_454 else "11.8"
+    size_total = (customer.empty_cylinders_454 if is_454 else customer.empty_cylinders_118) or 0
+
+    # When cylinder_type is given, the exact size+type balance is checked
+    # and deducted (§ Empty Cylinder Sale) — Cross and PSO are tracked
+    # completely independently, selling one must never touch the other.
+    # Omitted means the untyped legacy path: only the size total is
+    # checked/deducted, unchanged from before this feature existed.
+    if payload.cylinder_type:
+        type_attr = f"empty_cylinders_{'454' if is_454 else '118'}_{payload.cylinder_type}"
+        type_available = getattr(customer, type_attr) or 0
+        if payload.quantity > type_available:
+            raise HTTPException(
+                400,
+                f"Quantity exceeds the customer's available {size_label} KG {payload.cylinder_type.upper()} empty cylinder balance",
+            )
+        setattr(customer, type_attr, type_available - payload.quantity)
+    elif payload.quantity > size_total:
         raise HTTPException(
             400,
-            f"Quantity exceeds the customer's available {'45.4' if is_454 else '11.8'} KG empty cylinder balance",
+            f"Quantity exceeds the customer's available {size_label} KG empty cylinder balance",
         )
 
     sale = models.EmptyCylinderSale(
@@ -246,6 +280,7 @@ def sell_empty_cylinders(
         date=payload.date or datetime.utcnow(),
         customer_id=customer_id,
         cylinder_size=payload.cylinder_size,
+        cylinder_type=payload.cylinder_type,
         quantity=payload.quantity,
         amount=payload.amount,
         notes=payload.notes,
@@ -255,9 +290,9 @@ def sell_empty_cylinders(
     db.add(sale)
 
     if is_454:
-        customer.empty_cylinders_454 = (customer.empty_cylinders_454 or 0) - payload.quantity
+        customer.empty_cylinders_454 = size_total - payload.quantity
     else:
-        customer.empty_cylinders_118 = (customer.empty_cylinders_118 or 0) - payload.quantity
+        customer.empty_cylinders_118 = size_total - payload.quantity
     customer.empty_cylinders = (customer.empty_cylinders or 0) - payload.quantity
     # Same core formula as a regular Sale (§13): a sale only ever adds to
     # what the customer owes.

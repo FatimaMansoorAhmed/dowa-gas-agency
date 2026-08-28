@@ -49,6 +49,8 @@ export const api = {
       name: string; mobile: string; alt_mobile?: string; shop_name?: string; address?: string;
       city_area?: string; opening_balance: number; opening_balance_date?: string;
       empty_cylinders_118?: number; empty_cylinders_454?: number;
+      empty_cylinders_118_cross?: number; empty_cylinders_118_pso?: number;
+      empty_cylinders_454_cross?: number; empty_cylinders_454_pso?: number;
     }) => request<Customer>("/customers/", { method: "POST", body: JSON.stringify(payload) }),
     adjust: (id: string, kind: "payment" | "charge", amount: number) =>
       request<Customer>(`/customers/${id}/adjust`, { method: "PATCH", body: JSON.stringify({ kind, amount }) }),
@@ -62,7 +64,10 @@ export const api = {
     // cylinder balance and posts the sale amount to the Customer Ledger.
     sellEmptyCylinders: (
       customerId: string,
-      payload: { cylinder_size: "118" | "454"; quantity: number; amount: number; notes?: string; entered_by: string }
+      payload: {
+        cylinder_size: "118" | "454"; cylinder_type?: "cross" | "pso";
+        quantity: number; amount: number; notes?: string; entered_by: string;
+      }
     ) =>
       request<EmptyCylinderSale>(`/customers/${customerId}/empty-cylinders/sell`, {
         method: "POST",

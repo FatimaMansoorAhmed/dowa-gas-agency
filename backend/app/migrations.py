@@ -38,7 +38,18 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     ("customers", "empty_cylinders", "NUMERIC(10, 0) NOT NULL DEFAULT 0"),
     ("customers", "empty_cylinders_118", "NUMERIC(10, 0) NOT NULL DEFAULT 0"),
     ("customers", "empty_cylinders_454", "NUMERIC(10, 0) NOT NULL DEFAULT 0"),
+    # Cross / PSO breakdown within each size (§ Empty Cylinders — Size +
+    # Type Model). Every existing customer gets 0/0 from the column
+    # default — their pre-existing empty_cylinders_118/454 totals are left
+    # exactly as they were, never guessed into a type.
+    ("customers", "empty_cylinders_118_cross", "NUMERIC(10, 0) NOT NULL DEFAULT 0"),
+    ("customers", "empty_cylinders_118_pso", "NUMERIC(10, 0) NOT NULL DEFAULT 0"),
+    ("customers", "empty_cylinders_454_cross", "NUMERIC(10, 0) NOT NULL DEFAULT 0"),
+    ("customers", "empty_cylinders_454_pso", "NUMERIC(10, 0) NOT NULL DEFAULT 0"),
     ("empty_cylinder_sales", "cylinder_size", "VARCHAR(10) NOT NULL DEFAULT '118'"),
+    # Nullable — existing empty_cylinder_sales rows have no reliable type
+    # to backfill, so they stay NULL (legacy/unclassified) rather than guessed.
+    ("empty_cylinder_sales", "cylinder_type", "VARCHAR(10)"),
     ("cylinder_transactions", "transaction_type", "VARCHAR(50) NOT NULL DEFAULT 'SALE_RETURN'"),
     ("cylinder_transactions", "unified_sale_id", "GUID"),
     # Independent Sale/Load vs Plant Payment/Settlement approval (see

@@ -1,5 +1,6 @@
 "use client";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Search, PlusCircle } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Th, Td, inputClass, BalanceTag, Button } from "@/components/ui";
@@ -15,9 +16,18 @@ function currentMonth() {
 }
 
 function CustomerLedgerBody() {
+  const searchParams = useSearchParams();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [search, setSearch] = useState("");
   const [customerId, setCustomerId] = useState("");
+
+  // Deep-link from elsewhere in the app (e.g. Dashboard's Flagged
+  // Accounts) — /customer-ledger?id=<customer-id> opens that exact
+  // customer's ledger directly, by ID, never by name.
+  useEffect(() => {
+    const id = searchParams.get("id");
+    if (id) setCustomerId(id);
+  }, [searchParams]);
   const [month, setMonth] = useState(currentMonth());
   const [summary, setSummary] = useState<CustomerLedgerSummary | null>(null);
   const [loading, setLoading] = useState(false);
@@ -323,7 +333,9 @@ function CustomerLedgerBody() {
 export default function CustomerLedgerPage() {
   return (
     <AuthGate>
-      <CustomerLedgerBody />
+      <Suspense fallback={null}>
+        <CustomerLedgerBody />
+      </Suspense>
     </AuthGate>
   );
 }

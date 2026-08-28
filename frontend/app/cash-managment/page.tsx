@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Wallet, Home, Landmark, ArrowRightLeft, Building2, Send, Users, X, Calendar, Banknote } from "lucide-react";
+import { Wallet, Home, Landmark, ArrowRightLeft, Building2, Send, X, Calendar, Banknote, ArrowDownRight, Layers } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
-import { PageHeader, Panel, Eyebrow, Field, inputClass, Th, Td } from "@/components/ui";
+import { Panel, Eyebrow, Field, inputClass, Th, Td, Button } from "@/components/ui";
 import { api } from "@/lib/api";
 import { pkr, fmtTime, todayLocalInput, toKarachiDateString } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
@@ -76,7 +76,6 @@ function CashManagementBody() {
         accList = await api.paymentAccounts.list();
       }
 
-      // Sort Owner Drawings: Latest First (Newest at top)
       drawList.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
       setAccounts(accList);
@@ -189,10 +188,6 @@ function CashManagementBody() {
     }
   };
 
-  // Filtered Owner Drawings based on selected timeframe or custom date.
-  // Compares Asia/Karachi calendar dates, not the viewer's own local date —
-  // `new Date(d.date)` misparses a marker-less backend timestamp as local
-  // time instead of UTC (§ Day-wise Date Filtering Mismatch).
   const filteredOwnerDrawings = useMemo(() => {
     const today = todayLocalInput();
     return ownerDrawings
@@ -200,21 +195,13 @@ function CashManagementBody() {
         const day = toKarachiDateString(d.date);
         if (!day) return false;
 
-        if (drawingFilter === "today") {
-          return day === today;
-        }
-        if (drawingFilter === "monthly") {
-          return day.slice(0, 7) === today.slice(0, 7);
-        }
-        if (drawingFilter === "yearly") {
-          return day.slice(0, 4) === today.slice(0, 4);
-        }
-        if (drawingFilter === "custom" && customDate) {
-          return day === customDate;
-        }
-        return true; // "all"
+        if (drawingFilter === "today") return day === today;
+        if (drawingFilter === "monthly") return day.slice(0, 7) === today.slice(0, 7);
+        if (drawingFilter === "yearly") return day.slice(0, 4) === today.slice(0, 4);
+        if (drawingFilter === "custom" && customDate) return day === customDate;
+        return true;
       })
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()); // Latest First
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [ownerDrawings, drawingFilter, customDate]);
 
   const totalOwnerDrawings = useMemo(
@@ -239,39 +226,94 @@ function CashManagementBody() {
           amount: parseFloat(d.amount || "0"),
         };
       })
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()); // Ensures Latest First
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [filteredOwnerDrawings, unifiedSales, customers, accounts]);
 
   return (
-    <div className="max-w-[1400px] mx-auto w-full space-y-6 px-4 sm:px-6 py-4">
-      <PageHeader
-        eyebrow="LIQUIDITY & TREASURY"
-        title="Cash Management"
-        caption="Live balances across Office Cash, Home Cash, and the Dowa Account — move money between them, pay plants, and audit owner drawings."
-      />
+    <div className="space-y-5">
+      {/* HEADER CARD WITH DARK NAVY (#0b2138) */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-[#0b2138] text-white p-5 rounded-lg shadow-sm">
+        <div>
+          <span className="text-[10px] font-mono tracking-widest uppercase text-blue-200">Liquidity & Treasury</span>
+          <h1 className="text-2xl font-display font-bold mt-0.5">Cash Management Operations</h1>
+          <p className="text-xs text-blue-100/80 mt-1 max-w-xl">
+            Monitor liquidity across office cash, owner home vault, and bank accounts. Direct transfers and plant payments.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIsTransferOpen(true)}
+            className="flex items-center gap-2 px-3.5 py-2 bg-white/15 hover:bg-white/25 text-white rounded border border-white/20 transition-all text-xs font-semibold cursor-pointer"
+          >
+            <ArrowRightLeft size={14} /> Transfer
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsPlantPaymentOpen(true)}
+            className="flex items-center gap-2 px-3.5 py-2 bg-[#061423] hover:bg-[#040c17] text-white rounded border border-blue-400/30 transition-all text-xs font-semibold shadow-sm cursor-pointer"
+          >
+            <Building2 size={14} /> Pay Plant
+          </button>
+        </div>
+      </div>
 
       {loadError && (
-        <div className="px-3 py-2.5 rounded-lg border border-red-200 bg-red-50 text-red-600 text-xs font-medium">
+        <div className="p-3 rounded border border-red-200 bg-red-50 text-red-600 text-xs font-body">
           {loadError}
         </div>
       )}
 
-      {/* TOP SECTION: OWNER DRAWINGS KPI & FILTER CONTROLS */}
-      <div className="p-5 bg-white border border-slate-200/80 rounded-xl shadow-xs space-y-4">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+      {/* TOP GRID: LIQUIDITY ACCOUNTS & SUMMARY KPI */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+        {BUCKET_ACCOUNTS.map(({ type, label }) => {
+          const Icon = BUCKET_ICONS[type];
+          return (
+            <div key={type} className="bg-white border border-hairline rounded-lg p-4 flex flex-col justify-between shadow-xs">
+              <div className="flex items-center justify-between border-b border-hairline/60 pb-2 mb-3">
+                <span className="text-[11px] font-mono font-semibold uppercase tracking-wider text-steel">{label}</span>
+                <div className="p-1.5 rounded bg-[#e8eef4] text-[#0b2138]">
+                  <Icon size={14} />
+                </div>
+              </div>
+              <div className="font-display font-bold text-2xl text-ink">
+                {loading ? "—" : pkr(balanceOf(type))}
+              </div>
+            </div>
+          );
+        })}
+
+        {/* SUMMARY CARD: TOTAL DRAWINGS */}
+        <div className="bg-white border border-blue-200 rounded-lg p-4 flex flex-col justify-between shadow-xs">
+          <div className="flex items-center justify-between border-b border-hairline/60 pb-2 mb-3">
+            <span className="text-[11px] font-mono font-semibold uppercase tracking-wider text-[#0b2138]">Total Drawings</span>
+            <div className="p-1.5 rounded bg-amber-100 text-amber-800">
+              <ArrowDownRight size={14} />
+            </div>
+          </div>
+          <div>
+            <div className="font-display font-bold text-2xl text-ink">
+              {loading ? "—" : pkr(totalOwnerDrawings)}
+            </div>
+            <div className="text-[11px] text-steel font-mono mt-1 capitalize">
+              Scope: {drawingFilter === "custom" && customDate ? customDate : drawingFilter}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* AUDIT SECTION */}
+      <Panel>
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-hairline pb-3 mb-4">
           <div className="flex items-center gap-2">
-            <div className="p-2 rounded-lg bg-[#A8D0CD]/30 text-[#2B5854]">
-              <Users size={18} />
-            </div>
-            <div>
-              <h2 className="text-sm font-bold uppercase tracking-wider text-slate-700">Owner Drawings</h2>
-              <p className="text-xs text-slate-400">Filter and track drawing amounts by timeframe</p>
-            </div>
+            <Layers size={16} className="text-[#0b2138]" />
+            <Eyebrow>Owner Drawings Audit Ledger</Eyebrow>
           </div>
 
           {/* Timeframe & Calendar Picker Controls */}
           <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex p-1 bg-slate-100 rounded-lg text-xs font-semibold text-slate-600">
+            <div className="inline-flex p-0.5 bg-[#F4F1EA] rounded border border-hairline text-xs font-medium">
               {(["today", "monthly", "yearly", "all"] as DateFilter[]).map((f) => (
                 <button
                   key={f}
@@ -280,10 +322,10 @@ function CashManagementBody() {
                     setDrawingFilter(f);
                     setCustomDate("");
                   }}
-                  className={`px-3 py-1.5 rounded-md capitalize transition-all cursor-pointer ${
+                  className={`px-3 py-1 rounded capitalize transition-all cursor-pointer font-body ${
                     drawingFilter === f
-                      ? "bg-[#A8D0CD] text-[#1E403C] shadow-xs font-bold"
-                      : "hover:text-slate-900"
+                      ? "bg-[#0b2138] text-white font-bold"
+                      : "text-steel hover:text-ink"
                   }`}
                 >
                   {f}
@@ -291,9 +333,8 @@ function CashManagementBody() {
               ))}
             </div>
 
-            {/* Custom Date Input */}
             <div className="relative flex items-center">
-              <Calendar size={14} className="absolute left-2.5 text-slate-400 pointer-events-none" />
+              <Calendar size={13} className="absolute left-2.5 text-steel pointer-events-none" />
               <input
                 type="date"
                 value={customDate}
@@ -301,109 +342,16 @@ function CashManagementBody() {
                   setCustomDate(e.target.value);
                   setDrawingFilter(e.target.value ? "custom" : "all");
                 }}
-                className={`pl-8 pr-2 py-1.5 bg-slate-100 rounded-lg text-xs font-semibold text-slate-700 border transition-all cursor-pointer focus:outline-none focus:bg-white focus:border-[#A8D0CD] ${
-                  drawingFilter === "custom"
-                    ? "border-[#A8D0CD] bg-[#A8D0CD] text-[#1E403C] font-bold shadow-xs"
-                    : "border-transparent"
-                }`}
+                className={`${inputClass} pl-8 py-1 text-xs w-[140px]`}
               />
             </div>
           </div>
         </div>
 
-        <div>
-          <span className="font-mono text-[10px] uppercase font-bold tracking-wider text-slate-400">
-            Total Drawn ({drawingFilter === "custom" && customDate ? customDate : drawingFilter})
-          </span>
-          <div className="font-mono text-3xl font-bold text-slate-900">
-            {loading ? "—" : pkr(totalOwnerDrawings)}
-          </div>
-        </div>
-      </div>
-
-      {/* LIQUIDITY KPI CARDS */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {BUCKET_ACCOUNTS.map(({ type, label }) => {
-          const Icon = BUCKET_ICONS[type];
-          return (
-            <div
-              key={type}
-              className="p-4 bg-white border border-slate-200/80 rounded-xl shadow-xs transition-all hover:border-[#A8D0CD]"
-            >
-              <div className="flex justify-between items-center mb-2">
-                <span className="font-mono text-[10px] uppercase font-bold tracking-wider text-slate-500">
-                  {label}
-                </span>
-                <div className="p-1.5 rounded-md bg-[#A8D0CD]/30 text-[#2B5854]">
-                  <Icon size={16} />
-                </div>
-              </div>
-              <div className="font-mono text-2xl font-bold text-slate-900">
-                {loading ? "—" : pkr(balanceOf(type))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* CLICKABLE ACTION BOXES */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* TRANSFER MONEY CARD */}
-        <button
-          type="button"
-          onClick={() => setIsTransferOpen(true)}
-          className="group text-left p-5 bg-white border border-slate-200 rounded-xl shadow-xs transition-all hover:border-[#A8D0CD] hover:shadow-md cursor-pointer flex items-center justify-between"
-        >
-          <div className="flex items-center gap-4">
-            <div className="p-3 rounded-lg bg-[#A8D0CD]/30 text-[#2B5854] group-hover:bg-[#A8D0CD] group-hover:text-[#1E403C] transition-colors">
-              <ArrowRightLeft size={22} />
-            </div>
-            <div>
-              <h3 className="text-base font-semibold text-slate-900 group-hover:text-[#2B5854] transition-colors">
-                Transfer Money
-              </h3>
-              <p className="text-xs text-slate-500">Click to transfer cash between accounts</p>
-            </div>
-          </div>
-          <span className="text-xs font-semibold px-3 py-1.5 rounded-md bg-slate-100 text-slate-700 group-hover:bg-[#A8D0CD] group-hover:text-[#1E403C] transition-colors">
-            Open
-          </span>
-        </button>
-
-        {/* PAY PLANT CARD */}
-        <button
-          type="button"
-          onClick={() => setIsPlantPaymentOpen(true)}
-          className="group text-left p-5 bg-white border border-slate-200 rounded-xl shadow-xs transition-all hover:border-[#A8D0CD] hover:shadow-md cursor-pointer flex items-center justify-between"
-        >
-          <div className="flex items-center gap-4">
-            <div className="p-3 rounded-lg bg-[#A8D0CD]/30 text-[#2B5854] group-hover:bg-[#A8D0CD] group-hover:text-[#1E403C] transition-colors">
-              <Building2 size={22} />
-            </div>
-            <div>
-              <h3 className="text-base font-semibold text-slate-900 group-hover:text-[#2B5854] transition-colors">
-                Pay Plant
-              </h3>
-              <p className="text-xs text-slate-500">Click to record a payment to a plant supplier</p>
-            </div>
-          </div>
-          <span className="text-xs font-semibold px-3 py-1.5 rounded-md bg-slate-100 text-slate-700 group-hover:bg-[#A8D0CD] group-hover:text-[#1E403C] transition-colors">
-            Open
-          </span>
-        </button>
-      </div>
-
-      {/* OWNER DRAWINGS AUDIT TABLE */}
-      <Panel>
-        <Eyebrow>
-          Owner Drawings Audit Ledger (
-          {drawingFilter === "custom" && customDate ? customDate : drawingFilter})
-        </Eyebrow>
-
-        <div className="overflow-x-auto mt-3">
+        <div className="overflow-x-auto">
           <table className="w-full border-collapse">
             <thead>
-              <tr className="border-b border-slate-200 text-left">
+              <tr>
                 <Th>Customer Name</Th>
                 <Th>Sale ID</Th>
                 <Th>Date</Th>
@@ -414,30 +362,22 @@ function CashManagementBody() {
             <tbody>
               {drawingRows.length === 0 ? (
                 <tr>
-                  <Td colSpan={5} center color="#8E8E93">
+                  <td colSpan={5} className="text-steel font-body text-[13px] py-6 text-center">
                     {loading ? "Loading…" : "No owner drawings recorded for the selected filter."}
-                  </Td>
+                  </td>
                 </tr>
               ) : (
                 drawingRows.map((row) => (
                   <tr key={row.id}>
-                    <Td bold>
-                      <span className="text-slate-900">{row.customerName}</span>
-                    </Td>
-                    <Td mono color="#2B5854" bold>
-                      {row.saleId}
-                    </Td>
-                    <Td color="#64748B" mono>
-                      {fmtTime(row.date)}
-                    </Td>
+                    <Td bold>{row.customerName}</Td>
+                    <Td mono bold color="#0b2138">{row.saleId}</Td>
+                    <Td mono color="#2D3748">{fmtTime(row.date)}</Td>
                     <Td>
-                      <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-[#F4F1EA] text-ink border border-hairline">
                         {row.sourceAccount}
                       </span>
                     </Td>
-                    <Td right mono bold color="#2B5854">
-                      {pkr(row.amount)}
-                    </Td>
+                    <Td right mono bold color="#0b2138">{pkr(row.amount)}</Td>
                   </tr>
                 ))
               )}
@@ -446,13 +386,17 @@ function CashManagementBody() {
         </div>
       </Panel>
 
-      {/* OWNER CAPITAL INFLOW AUDIT TABLE */}
+      {/* CAPITAL RE-INVESTMENT AUDIT SECTION */}
       <Panel>
-        <Eyebrow>Owner Capital Inflow (Re-Investment — Deposit to Account)</Eyebrow>
-        <div className="overflow-x-auto mt-3">
+        <div className="flex items-center gap-2 border-b border-hairline pb-3 mb-3">
+          <Banknote size={16} className="text-[#0b2138]" />
+          <Eyebrow>Owner Capital Inflow Ledger (Re-Investment Deposits)</Eyebrow>
+        </div>
+
+        <div className="overflow-x-auto">
           <table className="w-full border-collapse">
             <thead>
-              <tr className="border-b border-slate-200 text-left">
+              <tr>
                 <Th>ID</Th>
                 <Th>Date</Th>
                 <Th>Account</Th>
@@ -463,32 +407,26 @@ function CashManagementBody() {
             <tbody>
               {ownerCapital.length === 0 ? (
                 <tr>
-                  <Td colSpan={5} center color="#8E8E93">
+                  <td colSpan={5} className="text-steel font-body text-[13px] py-6 text-center">
                     {loading ? "Loading…" : "No Owner Capital deposits recorded yet."}
-                  </Td>
+                  </td>
                 </tr>
               ) : (
                 ownerCapital.map((c) => (
                   <tr key={c.id}>
-                    <Td mono color="#2B5854" bold>
-                      {c.display_id}
-                    </Td>
-                    <Td color="#64748B" mono>
-                      {fmtTime(c.date)}
-                    </Td>
+                    <Td mono bold color="#0b2138">{c.display_id}</Td>
+                    <Td mono color="#2D3748">{fmtTime(c.date)}</Td>
                     <Td>
-                      <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-[#F4F1EA] text-ink border border-hairline">
                         {accounts.find((a) => a.id === c.account_id)?.name || "—"}
                       </span>
                     </Td>
                     <Td>
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-[#E4F3F3] text-tealdeep border border-[#A8D0CD]">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono bg-[#e8eef4] text-[#0b2138] border border-blue-200">
                         <Banknote size={11} /> Owner Capital Inflow
                       </span>
                     </Td>
-                    <Td right mono bold color="#2B5854">
-                      {pkr(c.amount)}
-                    </Td>
+                    <Td right mono bold color="#0b2138">{pkr(c.amount)}</Td>
                   </tr>
                 ))
               )}
@@ -499,16 +437,16 @@ function CashManagementBody() {
 
       {/* MODAL 1: TRANSFER MONEY */}
       {isTransferOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-xs">
-          <div className="bg-white rounded-xl border border-slate-200 shadow-xl max-w-md w-full p-5 space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-              <span className="inline-flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-[#2B5854]">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white border border-hairline rounded-lg shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div className="flex justify-between items-center border-b border-hairline pb-3">
+              <span className="inline-flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-[#0b2138] font-display">
                 <ArrowRightLeft size={16} /> Internal Money Transfer
               </span>
               <button
                 type="button"
                 onClick={() => setIsTransferOpen(false)}
-                className="text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                className="text-steel hover:text-ink transition-colors cursor-pointer"
               >
                 <X size={18} />
               </button>
@@ -556,27 +494,17 @@ function CashManagementBody() {
               </Field>
 
               {transferError && (
-                <div className="text-xs font-medium text-red-500 bg-red-50 p-2 rounded-md border border-red-100">
+                <div className="text-xs font-body text-red-600 bg-red-50 p-2 rounded border border-red-200">
                   {transferError}
                 </div>
               )}
 
-              <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setIsTransferOpen(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={transferSaving || loading}
-                  className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-[#1E403C] bg-[#A8D0CD] hover:bg-[#92C2BE] rounded-lg shadow-xs transition-colors disabled:opacity-50 cursor-pointer"
-                >
+              <div className="flex justify-end gap-2 pt-2 border-t border-hairline">
+                <Button variant="outline" onClick={() => setIsTransferOpen(false)}>Cancel</Button>
+                <Button variant="primary" type="submit" disabled={transferSaving || loading}>
                   <Send size={14} />
                   {transferSaving ? "Transferring…" : "Execute Transfer"}
-                </button>
+                </Button>
               </div>
             </form>
           </div>
@@ -585,16 +513,16 @@ function CashManagementBody() {
 
       {/* MODAL 2: PAY PLANT */}
       {isPlantPaymentOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-xs">
-          <div className="bg-white rounded-xl border border-slate-200 shadow-xl max-w-md w-full p-5 space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-              <span className="inline-flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-[#2B5854]">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white border border-hairline rounded-lg shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div className="flex justify-between items-center border-b border-hairline pb-3">
+              <span className="inline-flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-[#0b2138] font-display">
                 <Building2 size={16} /> Plant Supplier Payment
               </span>
               <button
                 type="button"
                 onClick={() => setIsPlantPaymentOpen(false)}
-                className="text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                className="text-steel hover:text-ink transition-colors cursor-pointer"
               >
                 <X size={18} />
               </button>
@@ -638,27 +566,17 @@ function CashManagementBody() {
               </Field>
 
               {plantError && (
-                <div className="text-xs font-medium text-red-500 bg-red-50 p-2 rounded-md border border-red-100">
+                <div className="text-xs font-body text-red-600 bg-red-50 p-2 rounded border border-red-200">
                   {plantError}
                 </div>
               )}
 
-              <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setIsPlantPaymentOpen(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={plantSaving || loading}
-                  className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-[#1E403C] bg-[#A8D0CD] hover:bg-[#92C2BE] rounded-lg shadow-xs transition-colors disabled:opacity-50 cursor-pointer"
-                >
+              <div className="flex justify-end gap-2 pt-2 border-t border-hairline">
+                <Button variant="outline" onClick={() => setIsPlantPaymentOpen(false)}>Cancel</Button>
+                <Button variant="primary" type="submit" disabled={plantSaving || loading}>
                   <Send size={14} />
                   {plantSaving ? "Paying…" : "Pay Plant"}
-                </button>
+                </Button>
               </div>
             </form>
           </div>
