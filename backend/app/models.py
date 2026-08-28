@@ -405,13 +405,35 @@ class UnifiedSaleBatch(Base):
     gate_pass_no = Column(String, nullable=True)
     notes = Column(String, nullable=True)
 
-    # pending -> approved | canceled. Ledger effects only apply on approval —
-    # a pending batch's child Sale/Purchase/Payment/Expense/OwnerDrawings
-    # rows exist (so they're editable) but none of them have posted to any
-    # balance yet.
+    # Legacy aggregate — kept for the Payments Register / Cash Management
+    # pages, which only want batches that are FULLY posted. Derived from
+    # sale_status/payment_status below (see _sync_legacy_status in
+    # routers/unified_sale.py): "approved" only once BOTH sides have
+    # posted, "cancelled" if either side was cancelled, else "pending".
+    # Never read directly by the approval logic itself anymore.
     status = Column(String, nullable=False, default="pending")
     approved_at = Column(DateTime, nullable=True)
     approved_by = Column(String, nullable=True)
+
+    # Sale/Load and Plant Payment/Settlement are two independent real-world
+    # events (customer receives goods today, plant may be paid days later)
+    # and are approved independently. sale_status gates Sale/Purchase
+    # posting + the customer ledger + the purchase-plant payable increase.
+    # payment_status gates the settlement routing (plant payable decrease
+    # or Dowa account credit) + CompanyPayment/Expense/OwnerDrawings
+    # posting. Each is pending -> approved | cancelled, and one can be
+    # "approved" while the other is still "pending" — that is a valid,
+    # expected state, not a bug.
+    sale_status = Column(String, nullable=False, default="pending")
+    sale_approved_at = Column(DateTime, nullable=True)
+    sale_approved_by = Column(String, nullable=True)
+    payment_status = Column(String, nullable=False, default="pending")
+    payment_approved_at = Column(DateTime, nullable=True)
+    payment_approved_by = Column(String, nullable=True)
+    # Free-text reference for the settlement (e.g. a bank transfer/cheque
+    # number) — filled in whenever it becomes available, typically right
+    # before payment approval.
+    payment_reference = Column(String, nullable=True)
 
     entered_by = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { PlusCircle, Check, X, AlertTriangle, CheckCircle2, Pencil, Ban, ThumbsUp, Building2, Wallet } from "lucide-react";
+import { PlusCircle, Check, X, AlertTriangle, CheckCircle2, Pencil, Ban, ThumbsUp, Building2, Wallet, ArrowRight } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, Th, Td } from "@/components/ui";
 import NewPlantModal from "@/components/NewPlantModal";
@@ -48,8 +48,12 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
 
   const [showNewPlant, setShowNewPlant] = useState(false);
   const [showSaleForm, setShowSaleForm] = useState(false);
+  const [showApprovedModal, setShowApprovedModal] = useState(false);
   const [addingCategory, setAddingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
+  // Per-row draft for the settlement reference (bank transfer/cheque no.)
+  // typed in just before approving that row's payment — keyed by batch id.
+  const [paymentReferenceDrafts, setPaymentReferenceDrafts] = useState<Record<string, string>>({});
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingDisplayId, setEditingDisplayId] = useState<string | null>(null);
@@ -76,6 +80,7 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
   // Routing State
   const [destinationType, setDestinationType] = useState<DestinationType>("plant");
   const [targetPlantId, setTargetPlantId] = useState("");
+  const [paymentReference, setPaymentReference] = useState("");
   // "account" destination is always one of these 4 fixed buckets — never a
   // dynamically-chosen bank/cash PaymentAccount row.
   const [accountCategory, setAccountCategory] = useState<AccountType>("owner_home"); // was "cash"
@@ -204,6 +209,7 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
     setGatePassNo(""); setVehicleNo(""); setNotes("");
     setCustomerId(""); setCustomerSearch(""); setCompanyId(""); setCompanySearch("");
     setDestinationType("plant"); setTargetPlantId(""); setAccountCategory("owner_home");
+    setPaymentReference("");
     setEditingId(null); setEditingDisplayId(null);
     setShowSaleForm(false);
   };
@@ -257,6 +263,7 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
       setHomeExpenseAmount(String(full.home_expense_amount || ""));
       setHomeExpenseCategoryId(full.expense?.category_id || "");
       setOwnerDrawingsAmount(String(full.owner_drawings_amount || ""));
+      setPaymentReference(full.payment_reference || "");
       setGatePassNo(full.sales[0]?.gate_pass_no || "");
       setVehicleNo(full.sales[0]?.vehicle_no || "");
       setNotes(full.sales[0]?.notes || "");
@@ -266,16 +273,36 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
     }
   };
 
-  const handleApprove = async (id: string) => {
+  // Sale/Load and Plant Payment/Settlement are two independent real-world
+  // events — approving one never posts or approves the other (backend
+  // enforces this too via separate sale_status/payment_status fields).
+  const handleApproveSale = async (id: string) => {
     if (!user || actionBusyId) return;
     setActionBusyId(id);
     try {
-      const result = await api.unifiedSale.approve(id, user.name);
+      const result = await api.unifiedSale.approveSale(id, user.name);
       if (selectedTransaction?.id === id) setSelectedTransaction(result);
       setLastResult((prev) => (prev?.id === id ? result : prev));
       await load();
     } catch (e) {
-      setTransactionError(e instanceof Error ? e.message : "Approval failed.");
+      setTransactionError(e instanceof Error ? e.message : "Sale approval failed.");
+      await load();
+    } finally {
+      setActionBusyId(null);
+    }
+  };
+
+  const handleApprovePayment = async (id: string) => {
+    if (!user || actionBusyId) return;
+    setActionBusyId(id);
+    try {
+      const reference = paymentReferenceDrafts[id]?.trim() || undefined;
+      const result = await api.unifiedSale.approvePayment(id, user.name, reference);
+      if (selectedTransaction?.id === id) setSelectedTransaction(result);
+      setLastResult((prev) => (prev?.id === id ? result : prev));
+      await load();
+    } catch (e) {
+      setTransactionError(e instanceof Error ? e.message : "Payment approval failed.");
       await load();
     } finally {
       setActionBusyId(null);
@@ -326,6 +353,7 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
           destination_type: destinationType,
           target_plant_id: destinationType === "plant" ? (targetPlantId || companyId) : undefined,
           account_id: destinationType === "account" ? accountCategory : undefined,
+          payment_reference: paymentReference.trim() || undefined,
         },
         gate_pass_no: gatePassNo || undefined,
         vehicle_no: vehicleNo || undefined,
@@ -345,18 +373,21 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
     }
   };
 
-  const pendingOrders = useMemo(() => recent.filter((r) => r.status === "pending"), [recent]);
-  // BEFORE:
-// AFTER:
-const completedOrders = useMemo(() => {
+  // Sale/Load and Plant Payment/Settlement are independent — a batch shows
+  // up in one, both, or neither of these two queues depending on which
+  // side(s) are still pending.
+  const salePendingOrders = useMemo(() => recent.filter((r) => r.sale_status === "pending"), [recent]);
+  const paymentPendingOrders = useMemo(() => recent.filter((r) => r.payment_status === "pending"), [recent]);
+
+  const completedOrders = useMemo(() => {
   const ONE_DAY_MS = 24 * 60 * 60 * 1000;
   const now = Date.now();
 
   return recent.filter((r) => {
-    if (r.status !== "approved") return false;
+    if (r.sale_status !== "approved") return false;
 
     // Use approved date/timestamp or order date
-    const rawDate = r.approved_at || r.date;
+    const rawDate = r.sale_approved_at || r.date;
     const orderTime = new Date(rawDate).getTime();
 
     // Asia/Karachi calendar date, not the viewer's own local date — raw
@@ -399,8 +430,8 @@ const completedOrders = useMemo(() => {
     <div className="space-y-6">
       <PageHeader
         eyebrow="Unified Sale"
-        title="Sale & settlement, one atomic entry"
-        caption="Sells product, posts the plant's cost, and splits the customer's payment across home expense, owner drawings, and your choice of plant or cash account. Nothing posts until the order is approved."
+        title="Sale & settlement, entered together, approved independently"
+        caption="The customer sale/load and the plant payment/settlement are two separate real-world events. Each is approved on its own — approving the sale never posts the plant payment, and approving the payment never re-posts the sale."
       />
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -420,22 +451,31 @@ const completedOrders = useMemo(() => {
         </button>
 
         <Panel className="!p-5">
-          <div className="font-mono text-[10px] uppercase text-steel">Pending Approval</div>
-          <div className="mt-2 font-display text-2xl font-bold text-[#8A6D00]">{pendingOrders.length}</div>
-          <div className="mt-1 font-body text-xs text-steel">Orders waiting for review</div>
+          <div className="font-mono text-[10px] uppercase text-steel">Sale / Load</div>
+          <div className="mt-2 font-display text-2xl font-bold text-[#8A6D00]">{salePendingOrders.length}</div>
+          <div className="mt-1 font-body text-xs text-steel">Pending sale/load approvals</div>
         </Panel>
 
         <Panel className="!p-5">
-          <div className="font-mono text-[10px] uppercase text-steel">Recent Approved</div>
+          <div className="font-mono text-[10px] uppercase text-steel">Plant Payments</div>
+          <div className="mt-2 font-display text-2xl font-bold text-[#8A6D00]">{paymentPendingOrders.length}</div>
+          <div className="mt-1 font-body text-xs text-steel">Pending settlement approvals</div>
+        </Panel>
+
+        <button
+          type="button"
+          onClick={() => setShowApprovedModal(true)}
+          className="group rounded-xl border border-hairline bg-panel hover:bg-paper transition-colors p-5 text-left"
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 size={15} className="text-[#1E8A5F]" />
+            <span className="font-mono text-[10px] uppercase tracking-wide text-steel font-semibold">Approved Sales</span>
+          </div>
           <div className="mt-2 font-display text-2xl font-bold text-[#1E8A5F]">{completedOrders.length}</div>
-          <div className="mt-1 font-body text-xs text-steel">Latest approved orders shown below</div>
-        </Panel>
-
-        <Panel className="!p-5">
-          <div className="font-mono text-[10px] uppercase text-steel">Workflow</div>
-          <div className="mt-2 font-display text-sm font-bold text-ink">Save → Review → Approve</div>
-          <div className="mt-1 font-body text-xs text-steel">Nothing posts until approval.</div>
-        </Panel>
+          <div className="mt-1 font-body text-xs text-teal flex items-center gap-1">
+            View approved sales <ArrowRight size={12} />
+          </div>
+        </button>
       </div>
 
       <div className="space-y-6">
@@ -697,6 +737,15 @@ const completedOrders = useMemo(() => {
                   )}
                 </div>
 
+                <Field label="Settlement Reference (optional)">
+                  <input
+                    value={paymentReference}
+                    onChange={(e) => setPaymentReference(e.target.value)}
+                    placeholder="Bank transfer / cheque no. — can be filled in later"
+                    className={inputClass}
+                  />
+                </Field>
+
                 {(homeExpenseAmount || ownerDrawingsAmount || totalCreditReceived) && (
                   <div className={`px-3 py-2.5 rounded-lg border flex items-center gap-2 ${settlementValid ? "bg-[#EAF5EF] border-[#C7E6D3]" : "bg-[#FBEAEA] border-[#EFC3C3]"}`}>
                     {settlementValid ? <CheckCircle2 size={15} className="text-brand-green flex-shrink-0" /> : <AlertTriangle size={15} className="text-brand-red flex-shrink-0" />}
@@ -752,7 +801,12 @@ const completedOrders = useMemo(() => {
                   <CheckCircle2 size={16} className="text-teal" />
                   <Eyebrow>{lastResult.display_id} saved</Eyebrow>
                 </div>
-                <StatusBadge status={lastResult.status} />
+                <div className="flex items-center gap-1.5">
+                  <span className="font-mono text-[9px] uppercase text-steel">Sale</span>
+                  <StatusBadge status={lastResult.sale_status} />
+                  <span className="font-mono text-[9px] uppercase text-steel ml-1.5">Payment</span>
+                  <StatusBadge status={lastResult.payment_status} />
+                </div>
               </div>
               <div className="flex flex-col gap-1 font-body text-xs text-steel">
                 {lastResult.sales.length > 0 && (
@@ -772,280 +826,286 @@ const completedOrders = useMemo(() => {
                 {Number(lastResult.net_plant_payment) > 0 && (
                   <div>Settlement of {pkr(lastResult.net_plant_payment)} routed to <b>{getDestinationLabel(lastResult)}</b></div>
                 )}
-                {lastResult.status === "pending" && (
-                  <div className="mt-3 flex gap-2">
-                    <Button variant="teal" onClick={() => handleApprove(lastResult.id)} disabled={actionBusyId === lastResult.id}>
-                      <ThumbsUp size={13} className="mr-1" /> Approve
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {lastResult.sale_status === "pending" && (
+                    <Button variant="teal" onClick={() => handleApproveSale(lastResult.id)} disabled={actionBusyId === lastResult.id}>
+                      <ThumbsUp size={13} className="mr-1" /> Approve Sale
                     </Button>
+                  )}
+                  {lastResult.payment_status === "pending" && (
+                    <Button variant="teal" onClick={() => handleApprovePayment(lastResult.id)} disabled={actionBusyId === lastResult.id}>
+                      <ThumbsUp size={13} className="mr-1" /> Approve Payment
+                    </Button>
+                  )}
+                  {lastResult.sale_status === "pending" && lastResult.payment_status === "pending" && (
                     <Button variant="outline" onClick={() => handleCancel(lastResult.id)} disabled={actionBusyId === lastResult.id}>
                       <Ban size={13} className="mr-1" /> Cancel
                     </Button>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             </Panel>
           )}
 
-          {/* Pending Queue Section */}
+          {/* SECTION A — Sale / Load pending approval */}
           <Panel>
-         <div className="flex items-center justify-between">
-  <div>
-    <Eyebrow>Pending Approval Queue</Eyebrow>
-    <SectionCaption>Orders awaiting review. Unapproved orders do not affect ledger balances.</SectionCaption>
-  </div>
-  <span className="px-2.5 py-1 rounded-md bg-[#FFF6E0] text-[#8A6D00] font-mono text-xs font-semibold border border-[#FFE7A3]">
-    {pendingOrders.length} Pending
-  </span>
-</div>
-<div className="overflow-x-auto mt-3 -mx-1 px-1">
-
-
-  <table className="w-full min-w-[1300px] border-collapse">
-    <thead>
-      <tr className="border-b border-hairline text-left">
-        <Th>ID</Th>
-        <Th>CUSTOMER</Th>
-        <Th right>11.8 KG</Th>
-        <Th right>45.4 KG</Th>
-        <Th>PLANT</Th>
-        <Th right>SALE</Th>
-        <Th right>SETTLED</Th>
-        <Th>DESTINATION</Th>
-        <Th>GATE PASS</Th>
-        <Th>VEHICLE</Th>
-        <Th>NOTES</Th>
-        <Th right>ACTIONS</Th>
-      </tr>
-    </thead>
-
-    <tbody className="divide-y divide-hairline">
-      {pendingOrders.map((r) => {
-        const c = customers.find((x) => x.id === r.customer_id);
-        const plant = companies.find((x) => x.id === r.company_id);
-        const busy = actionBusyId === r.id;
-
-        return (
-          <tr
-            key={r.id}
-            className="hover:bg-paper/60 transition-colors"
-          >
-            {/* ID */}
-            <Td mono>
-              <button
-                type="button"
-                onClick={() => handleViewTransaction(r.id)}
-                className="
-                  text-teal
-                  hover:underline
-                  font-mono
-                  text-[11px]
-                  font-bold
-                  whitespace-nowrap
-                "
-              >
-                {r.display_id}
-              </button>
-            </Td>
-
-            {/* CUSTOMER */}
-            <Td bold>
-              <div
-                className="whitespace-nowrap"
-                title={c?.name || "—"}
-              >
-                {c?.name || "—"}
+            <div className="flex items-center justify-between">
+              <div>
+                <Eyebrow>Sale / Load — Pending Approval</Eyebrow>
+                <SectionCaption>Has the customer sale/load actually happened? Approving here posts the sale, cylinder movement, and customer/plant ledger — it never touches the plant payment.</SectionCaption>
               </div>
-            </Td>
-
-            {/* 11.8 KG */}
-            <Td right mono bold>
-              {Number(r.qty_11_8kg || 0)}
-            </Td>
-
-            {/* 45.4 KG */}
-            <Td right mono bold>
-              {Number(r.qty_45_4kg || 0)}
-            </Td>
-
-            {/* PLANT */}
-            <Td>
-              <span
-                className="
-                  inline-flex
-                  items-center
-                  px-2
-                  py-1
-                  rounded-md
-                  bg-slate-100
-                  text-slate-800
-                  text-[11px]
-                  font-medium
-                  border
-                  border-slate-200
-                  whitespace-nowrap
-                "
-              >
-                {plant?.name || r.company_id || "—"}
+              <span className="px-2.5 py-1 rounded-md bg-[#FFF6E0] text-[#8A6D00] font-mono text-xs font-semibold border border-[#FFE7A3]">
+                {salePendingOrders.length} Pending
               </span>
-            </Td>
+            </div>
+            <div className="overflow-x-auto mt-3 -mx-1 px-1">
+              <table className="w-full min-w-[1150px] border-collapse">
+                <thead>
+                  <tr className="border-b border-hairline text-left">
+                    <Th>ID</Th>
+                    <Th>CUSTOMER</Th>
+                    <Th right>11.8 KG</Th>
+                    <Th right>45.4 KG</Th>
+                    <Th>PLANT</Th>
+                    <Th right>SALE</Th>
+                    <Th>GATE PASS</Th>
+                    <Th>VEHICLE</Th>
+                    <Th>NOTES</Th>
+                    <Th right>ACTIONS</Th>
+                  </tr>
+                </thead>
 
-            {/* SALE */}
-            <Td right mono color="#0F8B8D">
-              <span className="whitespace-nowrap">
-                {pkr(r.total_selling_amount)}
-              </span>
-            </Td>
+                <tbody className="divide-y divide-hairline">
+                  {salePendingOrders.map((r) => {
+                    const c = customers.find((x) => x.id === r.customer_id);
+                    const plant = companies.find((x) => x.id === r.company_id);
+                    const busy = actionBusyId === r.id;
+                    const canEditOrCancel = r.payment_status === "pending";
 
-            {/* SETTLED */}
-            <Td right mono color="#1E8A5F" bold>
-              <span className="whitespace-nowrap">
-                {pkr(r.total_credit_received)}
-              </span>
-            </Td>
+                    return (
+                      <tr key={r.id} className="hover:bg-paper/60 transition-colors">
+                        <Td mono>
+                          <button
+                            type="button"
+                            onClick={() => handleViewTransaction(r.id)}
+                            className="text-teal hover:underline font-mono text-[11px] font-bold whitespace-nowrap"
+                          >
+                            {r.display_id}
+                          </button>
+                        </Td>
+                        <Td bold>
+                          <div className="whitespace-nowrap" title={c?.name || "—"}>{c?.name || "—"}</div>
+                        </Td>
+                        <Td right mono bold>{Number(r.qty_11_8kg || 0)}</Td>
+                        <Td right mono bold>{Number(r.qty_45_4kg || 0)}</Td>
+                        <Td>
+                          <span className="inline-flex items-center px-2 py-1 rounded-md bg-slate-100 text-slate-800 text-[11px] font-medium border border-slate-200 whitespace-nowrap">
+                            {plant?.name || r.company_id || "—"}
+                          </span>
+                        </Td>
+                        <Td right mono color="#0F8B8D">
+                          <span className="whitespace-nowrap">{pkr(r.total_selling_amount)}</span>
+                        </Td>
+                        <Td mono color="#8E8E93">{r.gate_pass_no || "—"}</Td>
+                        <Td mono color="#8E8E93">{r.vehicle_no || "—"}</Td>
+                        <Td color="#8E8E93"><span className="whitespace-nowrap">{r.notes || "—"}</span></Td>
+                        <Td right>
+                          <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+                            {canEditOrCancel && (
+                              <button
+                                type="button"
+                                title="Edit Transaction"
+                                disabled={busy}
+                                onClick={() => handleEditTransaction(r)}
+                                className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-steel hover:text-ink hover:bg-slate-200/60 border border-hairline transition-colors disabled:opacity-50"
+                              >
+                                <Pencil size={13} />
+                              </button>
+                            )}
 
-            {/* DESTINATION */}
-            <Td>
-              <span
-                className="
-                  whitespace-nowrap
-                  font-body
-                  text-xs
-                  text-slate-700
-                  font-semibold
-                "
-              >
-                {getDestinationLabel(r)}
-              </span>
-            </Td>
+                            <button
+                              type="button"
+                              title="Approve Sale"
+                              disabled={busy}
+                              onClick={() => handleApproveSale(r.id)}
+                              className="h-8 shrink-0 inline-flex items-center justify-center gap-1 px-2.5 rounded-md bg-teal/10 hover:bg-teal/20 text-teal border border-teal/30 font-medium text-xs transition-colors disabled:opacity-50"
+                            >
+                              <CheckCircle2 size={13} />
+                              <span>Approve Sale</span>
+                            </button>
 
-            {/* GATE PASS */}
-            <Td mono color="#8E8E93">
-              {r.gate_pass_no || "—"}
-            </Td>
+                            {canEditOrCancel && (
+                              <button
+                                type="button"
+                                title="Cancel Order"
+                                disabled={busy}
+                                onClick={() => handleCancel(r.id)}
+                                className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-brand-red hover:bg-red-50 border border-transparent hover:border-red-200 transition-colors disabled:opacity-50"
+                              >
+                                <Ban size={13} />
+                              </button>
+                            )}
+                          </div>
+                        </Td>
+                      </tr>
+                    );
+                  })}
 
-            {/* VEHICLE */}
-            <Td mono color="#8E8E93">
-              {r.vehicle_no || "—"}
-            </Td>
-
-            {/* NOTES */}
-            <Td color="#8E8E93">
-              <span className="whitespace-nowrap">{r.notes || "—"}</span>
-            </Td>
-
-            {/* ACTIONS */}
-            <Td right>
-              <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
-
-                {/* Edit */}
-                <button
-                  type="button"
-                  title="Edit Transaction"
-                  disabled={busy}
-                  onClick={() => handleEditTransaction(r)}
-                  className="
-                    h-8
-                    w-8
-                    shrink-0
-                    inline-flex
-                    items-center
-                    justify-center
-                    rounded-md
-                    text-steel
-                    hover:text-ink
-                    hover:bg-slate-200/60
-                    border
-                    border-hairline
-                    transition-colors
-                    disabled:opacity-50
-                  "
-                >
-                  <Pencil size={13} />
-                </button>
-
-                {/* Approve */}
-                <button
-                  type="button"
-                  title="Approve Order"
-                  disabled={busy}
-                  onClick={() => handleApprove(r.id)}
-                  className="
-                    h-8
-                    shrink-0
-                    inline-flex
-                    items-center
-                    justify-center
-                    gap-1
-                    px-2.5
-                    rounded-md
-                    bg-teal/10
-                    hover:bg-teal/20
-                    text-teal
-                    border
-                    border-teal/30
-                    font-medium
-                    text-xs
-                    transition-colors
-                    disabled:opacity-50
-                  "
-                >
-                  <CheckCircle2 size={13} />
-                  <span>Approve</span>
-                </button>
-
-                {/* Cancel */}
-                <button
-                  type="button"
-                  title="Cancel Order"
-                  disabled={busy}
-                  onClick={() => handleCancel(r.id)}
-                  className="
-                    h-8
-                    w-8
-                    shrink-0
-                    inline-flex
-                    items-center
-                    justify-center
-                    rounded-md
-                    text-slate-400
-                    hover:text-brand-red
-                    hover:bg-red-50
-                    border
-                    border-transparent
-                    hover:border-red-200
-                    transition-colors
-                    disabled:opacity-50
-                  "
-                >
-                  <Ban size={13} />
-                </button>
-
-              </div>
-            </Td>
-          </tr>
-        );
-      })}
-
-      {!pendingOrders.length && (
-        <tr>
-          <td
-            colSpan={12}
-            className="text-steel font-body text-[13px] py-6 text-center"
-          >
-            No pending sales awaiting approval.
-          </td>
-        </tr>
-      )}
-    </tbody>
-  </table>
-</div>
+                  {!salePendingOrders.length && (
+                    <tr>
+                      <td colSpan={10} className="text-steel font-body text-[13px] py-6 text-center">
+                        No sales/loads awaiting approval.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </Panel>
 
-          {/* History Panel */}
+          {/* SECTION B — Plant Payment / Settlement pending approval */}
+          <Panel>
+            <div className="flex items-center justify-between">
+              <div>
+                <Eyebrow>Plant Payment / Settlement — Pending Approval</Eyebrow>
+                <SectionCaption>Has the plant payment/settlement actually happened? Approving here posts the settlement routing and plant/account ledger — it never re-approves the sale.</SectionCaption>
+              </div>
+              <span className="px-2.5 py-1 rounded-md bg-[#FFF6E0] text-[#8A6D00] font-mono text-xs font-semibold border border-[#FFE7A3]">
+                {paymentPendingOrders.length} Pending
+              </span>
+            </div>
+            <div className="overflow-x-auto mt-3 -mx-1 px-1">
+              <table className="w-full min-w-[950px] border-collapse">
+                <thead>
+                  <tr className="border-b border-hairline text-left">
+                    <Th>ID</Th>
+                    <Th>SALE</Th>
+                    <Th right>SETTLED</Th>
+                    <Th>DESTINATION</Th>
+                    <Th>REFERENCE</Th>
+                    <Th>NOTES</Th>
+                    <Th right>ACTIONS</Th>
+                  </tr>
+                </thead>
+
+                <tbody className="divide-y divide-hairline">
+                  {paymentPendingOrders.map((r) => {
+                    const c = customers.find((x) => x.id === r.customer_id);
+                    const busy = actionBusyId === r.id;
+                    const canEditOrCancel = r.sale_status === "pending";
+                    const netAmount = Number(r.net_plant_payment || 0) || Number(r.total_credit_received || 0);
+
+                    return (
+                      <tr key={r.id} className="hover:bg-paper/60 transition-colors">
+                        <Td mono>
+                          <button
+                            type="button"
+                            onClick={() => handleViewTransaction(r.id)}
+                            className="text-teal hover:underline font-mono text-[11px] font-bold whitespace-nowrap"
+                          >
+                            {r.display_id}
+                          </button>
+                        </Td>
+                        <Td bold>
+                          <div className="whitespace-nowrap" title={c?.name || "—"}>{c?.name || "—"}</div>
+                        </Td>
+                        <Td right mono color="#1E8A5F" bold>
+                          <span className="whitespace-nowrap">{pkr(netAmount)}</span>
+                        </Td>
+                        <Td>
+                          <span className="whitespace-nowrap font-body text-xs text-slate-700 font-semibold">
+                            {getDestinationLabel(r)}
+                          </span>
+                        </Td>
+                        <Td>
+                          <input
+                            value={paymentReferenceDrafts[r.id] ?? (r.payment_reference || "")}
+                            onChange={(e) => setPaymentReferenceDrafts((prev) => ({ ...prev, [r.id]: e.target.value }))}
+                            placeholder="Bank / cheque ref."
+                            className="font-body text-xs px-2 py-1 rounded-md border border-hairline outline-none text-ink bg-white w-32 focus:border-teal"
+                          />
+                        </Td>
+                        <Td color="#8E8E93"><span className="whitespace-nowrap">{r.notes || "—"}</span></Td>
+                        <Td right>
+                          <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+                            {canEditOrCancel && (
+                              <button
+                                type="button"
+                                title="Edit Transaction"
+                                disabled={busy}
+                                onClick={() => handleEditTransaction(r)}
+                                className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-steel hover:text-ink hover:bg-slate-200/60 border border-hairline transition-colors disabled:opacity-50"
+                              >
+                                <Pencil size={13} />
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              title="Approve Payment"
+                              disabled={busy}
+                              onClick={() => handleApprovePayment(r.id)}
+                              className="h-8 shrink-0 inline-flex items-center justify-center gap-1 px-2.5 rounded-md bg-teal/10 hover:bg-teal/20 text-teal border border-teal/30 font-medium text-xs transition-colors disabled:opacity-50"
+                            >
+                              <CheckCircle2 size={13} />
+                              <span>Approve Payment</span>
+                            </button>
+
+                            {canEditOrCancel && (
+                              <button
+                                type="button"
+                                title="Cancel Order"
+                                disabled={busy}
+                                onClick={() => handleCancel(r.id)}
+                                className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-brand-red hover:bg-red-50 border border-transparent hover:border-red-200 transition-colors disabled:opacity-50"
+                              >
+                                <Ban size={13} />
+                              </button>
+                            )}
+                          </div>
+                        </Td>
+                      </tr>
+                    );
+                  })}
+
+                  {!paymentPendingOrders.length && (
+                    <tr>
+                      <td colSpan={7} className="text-steel font-body text-[13px] py-6 text-center">
+                        No plant payments/settlements awaiting approval.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+
+          {/* Approved Sales — full history, opened from the compact card above */}
+          {showApprovedModal && (
+          <div
+            className="fixed inset-0 z-40 bg-black/40 p-3 sm:p-5 flex items-center justify-center"
+            onMouseDown={(e) => { if (e.target === e.currentTarget) setShowApprovedModal(false); }}
+          >
+          <div className="w-full max-w-6xl max-h-[90vh] overflow-hidden bg-white rounded-xl shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-hairline shrink-0">
+              <div>
+                <Eyebrow>Approved Sales</Eyebrow>
+                <div className="font-body text-xs text-steel mt-1">Sale/load orders that have been approved, regardless of payment status.</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowApprovedModal(false)}
+                className="p-2 rounded-md hover:bg-paper text-steel hover:text-ink"
+                title="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+          <div className="overflow-y-auto p-3 sm:p-5">
           <Panel>
             <Eyebrow>Processed Unified Sales</Eyebrow>
             <SectionCaption>Recent approved and cancelled transactions.</SectionCaption>
-              
+
             <div className="mt-3">
               <div className="overflow-x-auto">
                 {/* Filter Toolbar */}
@@ -1161,6 +1221,10 @@ const completedOrders = useMemo(() => {
               </div>
             </div>
           </Panel>
+          </div>
+          </div>
+          </div>
+          )}
         </div>
       </div>
 
@@ -1185,12 +1249,18 @@ const completedOrders = useMemo(() => {
                     <div className="flex items-center gap-2">
                       <CheckCircle2 size={16} className="text-teal" />
                       <div className="font-mono text-xs text-teal font-semibold">{selectedTransaction.display_id}</div>
-                      <StatusBadge status={selectedTransaction.status} />
+                      <span className="font-mono text-[9px] uppercase text-steel">Sale</span>
+                      <StatusBadge status={selectedTransaction.sale_status} />
+                      <span className="font-mono text-[9px] uppercase text-steel">Payment</span>
+                      <StatusBadge status={selectedTransaction.payment_status} />
                     </div>
                     <div className="font-body text-xs text-steel mt-1">
                       {fmtTime(selectedTransaction.date)}
-                      {selectedTransaction.approved_at && (
-                        <> · approved {fmtTime(selectedTransaction.approved_at)}{selectedTransaction.approved_by ? ` by ${selectedTransaction.approved_by}` : ""}</>
+                      {selectedTransaction.sale_approved_at && (
+                        <> · sale approved {fmtTime(selectedTransaction.sale_approved_at)}{selectedTransaction.sale_approved_by ? ` by ${selectedTransaction.sale_approved_by}` : ""}</>
+                      )}
+                      {selectedTransaction.payment_approved_at && (
+                        <> · payment approved {fmtTime(selectedTransaction.payment_approved_at)}{selectedTransaction.payment_approved_by ? ` by ${selectedTransaction.payment_approved_by}` : ""}</>
                       )}
                     </div>
                   </div>
@@ -1248,22 +1318,29 @@ const completedOrders = useMemo(() => {
                   </div>
 
                   <div className="flex justify-between items-center pt-1">
-                    <div className="flex gap-2">
-                      {selectedTransaction.status === "pending" && (
-                        <>
-                          <Button
-                            variant="outline"
-                            onClick={() => { const row = recent.find((r) => r.id === selectedTransaction.id); if (row) handleEditTransaction(row); setSelectedTransaction(null); }}
-                          >
-                            <Pencil size={13} className="mr-1" /> Edit
-                          </Button>
-                          <Button variant="teal" onClick={() => handleApprove(selectedTransaction.id)} disabled={actionBusyId === selectedTransaction.id}>
-                            <ThumbsUp size={13} className="mr-1" /> Approve
-                          </Button>
-                          <Button variant="outline" onClick={() => handleCancel(selectedTransaction.id)} disabled={actionBusyId === selectedTransaction.id}>
-                            <Ban size={13} className="mr-1" /> Cancel
-                          </Button>
-                        </>
+                    <div className="flex flex-wrap gap-2">
+                      {selectedTransaction.sale_status === "pending" && selectedTransaction.payment_status === "pending" && (
+                        <Button
+                          variant="outline"
+                          onClick={() => { const row = recent.find((r) => r.id === selectedTransaction.id); if (row) handleEditTransaction(row); setSelectedTransaction(null); }}
+                        >
+                          <Pencil size={13} className="mr-1" /> Edit
+                        </Button>
+                      )}
+                      {selectedTransaction.sale_status === "pending" && (
+                        <Button variant="teal" onClick={() => handleApproveSale(selectedTransaction.id)} disabled={actionBusyId === selectedTransaction.id}>
+                          <ThumbsUp size={13} className="mr-1" /> Approve Sale
+                        </Button>
+                      )}
+                      {selectedTransaction.payment_status === "pending" && (
+                        <Button variant="teal" onClick={() => handleApprovePayment(selectedTransaction.id)} disabled={actionBusyId === selectedTransaction.id}>
+                          <ThumbsUp size={13} className="mr-1" /> Approve Payment
+                        </Button>
+                      )}
+                      {selectedTransaction.sale_status === "pending" && selectedTransaction.payment_status === "pending" && (
+                        <Button variant="outline" onClick={() => handleCancel(selectedTransaction.id)} disabled={actionBusyId === selectedTransaction.id}>
+                          <Ban size={13} className="mr-1" /> Cancel
+                        </Button>
                       )}
                     </div>
                     <Button variant="outline" onClick={() => setSelectedTransaction(null)}>Close</Button>

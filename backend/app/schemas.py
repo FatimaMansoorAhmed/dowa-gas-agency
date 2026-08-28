@@ -1385,6 +1385,9 @@ class UnifiedSaleSettlement(BaseModel):
     destination_type: Literal["plant", "account"] = "plant"
     target_plant_id: Optional[UUID] = None
     account_id: Optional[str] = None
+    # Free-text settlement reference (bank transfer/cheque number, etc.) —
+    # optional at any point, typically filled in once it's known.
+    payment_reference: Optional[str] = None
 
 
 class UnifiedSaleCreate(BaseModel):
@@ -1426,16 +1429,25 @@ class UnifiedSaleBatchOut(BaseModel):
     vehicle_no: Optional[str] = None
     gate_pass_no: Optional[str] = None
     notes: Optional[str] = None
+    payment_reference: Optional[str] = None
     # --- ADD THESE NEW FIELDS ---
     qty_11_8kg: Decimal = Decimal("0")
     qty_45_4kg: Decimal = Decimal("0")
     total_kg: Decimal = Decimal("0")
+    # Legacy aggregate — "approved" only once both sale_status and
+    # payment_status are approved. Prefer the two fields below.
     status: str
     approved_at: Optional[datetime] = None
     approved_by: Optional[str] = None
+    sale_status: str
+    sale_approved_at: Optional[datetime] = None
+    sale_approved_by: Optional[str] = None
+    payment_status: str
+    payment_approved_at: Optional[datetime] = None
+    payment_approved_by: Optional[str] = None
     entered_by: str
     created_at: datetime
-    
+
 
 
 class UnifiedSaleOut(BaseModel):
@@ -1457,9 +1469,18 @@ class UnifiedSaleOut(BaseModel):
     vehicle_no: Optional[str] = None
     gate_pass_no: Optional[str] = None
     notes: Optional[str] = None
+    payment_reference: Optional[str] = None
+    # Legacy aggregate — "approved" only once both sale_status and
+    # payment_status are approved. Prefer the two fields below.
     status: str
     approved_at: Optional[datetime] = None
     approved_by: Optional[str] = None
+    sale_status: str
+    sale_approved_at: Optional[datetime] = None
+    sale_approved_by: Optional[str] = None
+    payment_status: str
+    payment_approved_at: Optional[datetime] = None
+    payment_approved_by: Optional[str] = None
     entered_by: str
     created_at: datetime
     # The child records this batch created, for immediate confirmation/traceability

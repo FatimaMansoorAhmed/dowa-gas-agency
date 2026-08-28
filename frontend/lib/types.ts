@@ -231,7 +231,10 @@ export type UnifiedSaleSettlement = {
   destination_type?: DestinationType;
   target_plant_id?: string;
   account_id?: string;
+  payment_reference?: string;
 };
+
+export type ApprovalStatus = "pending" | "approved" | "cancelled";
 
 export type UnifiedSaleBatch = {
   id: string;
@@ -251,12 +254,22 @@ export type UnifiedSaleBatch = {
   vehicle_no?: string | null;
   gate_pass_no?: string | null;
   notes?: string | null;
+  payment_reference?: string | null;
   qty_11_8kg: string;
   qty_45_4kg: string;
   total_kg: string;
-  status: "pending" | "approved" | "cancelled";
+  // Legacy aggregate — "approved" only once both sale_status and
+  // payment_status are approved. Prefer the two fields below for the
+  // Unified Sale page's independent Sale/Payment workflow.
+  status: ApprovalStatus;
   approved_at: string | null;
   approved_by: string | null;
+  sale_status: ApprovalStatus;
+  sale_approved_at: string | null;
+  sale_approved_by: string | null;
+  payment_status: ApprovalStatus;
+  payment_approved_at: string | null;
+  payment_approved_by: string | null;
   entered_by: string;
   created_at: string;
 };

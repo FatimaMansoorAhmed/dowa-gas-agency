@@ -41,6 +41,18 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     ("empty_cylinder_sales", "cylinder_size", "VARCHAR(10) NOT NULL DEFAULT '118'"),
     ("cylinder_transactions", "transaction_type", "VARCHAR(50) NOT NULL DEFAULT 'SALE_RETURN'"),
     ("cylinder_transactions", "unified_sale_id", "GUID"),
+    # Independent Sale/Load vs Plant Payment/Settlement approval (see
+    # models.UnifiedSaleBatch and routers/unified_sale.py). Every existing
+    # row gets 'pending' from the column default; the backfill below then
+    # brings already-resolved batches (approved/cancelled under the old
+    # single-status workflow) up to date in one pass.
+    ("unified_sale_batches", "sale_status", "VARCHAR(50) NOT NULL DEFAULT 'pending'"),
+    ("unified_sale_batches", "sale_approved_at", "TIMESTAMP"),
+    ("unified_sale_batches", "sale_approved_by", "VARCHAR(255)"),
+    ("unified_sale_batches", "payment_status", "VARCHAR(50) NOT NULL DEFAULT 'pending'"),
+    ("unified_sale_batches", "payment_approved_at", "TIMESTAMP"),
+    ("unified_sale_batches", "payment_approved_by", "VARCHAR(255)"),
+    ("unified_sale_batches", "payment_reference", "VARCHAR(255)"),
 ]
 
 
@@ -80,3 +92,32 @@ def run_startup_migrations(engine: Engine) -> None:
             cyl_txn_columns = {c["name"]: c for c in inspector.get_columns("cylinder_transactions")}
             if cyl_txn_columns.get("product_id", {}).get("nullable") is False:
                 conn.execute(text("ALTER TABLE cylinder_transactions ALTER COLUMN product_id DROP NOT NULL"))
+
+        # One-time backfill: bring pre-existing Unified Sale batches (created
+        # under the old single-status workflow) up to date with the new
+        # independent sale_status/payment_status columns, which the ADD
+        # COLUMN loop above defaulted to 'pending' for every row, including
+        # ones that were already approved/cancelled. Guarded by
+        # `sale_status = 'pending'` so it only ever touches a row once —
+        # a batch legitimately approved/cancelled via the new endpoints
+        # already has sale_status != 'pending' and is left untouched.
+        #
+        # Deliberately does NOT re-check `inspector.get_columns(...)` here —
+        # `inspector` was captured before this transaction started, so on
+        # some dialects it can't see the ALTER TABLE statements the loop
+        # above just ran on `conn` in this same still-open transaction. The
+        # columns are guaranteed to exist by this point regardless: either
+        # this is a fresh DB (create_all() already created them) or the
+        # loop above just added them — both covered by the same
+        # `unified_sale_batches` table-existence check.
+        if "unified_sale_batches" in existing_tables:
+            conn.execute(text("""
+                UPDATE unified_sale_batches
+                SET sale_status = status,
+                    payment_status = status,
+                    sale_approved_at = approved_at,
+                    payment_approved_at = approved_at,
+                    sale_approved_by = approved_by,
+                    payment_approved_by = approved_by
+                WHERE status IN ('approved', 'cancelled') AND sale_status = 'pending'
+            """))

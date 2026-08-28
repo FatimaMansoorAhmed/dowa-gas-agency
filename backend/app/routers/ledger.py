@@ -2,6 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -85,12 +86,14 @@ def customer_monthly_ledger(
         .order_by(models.Payment.date)
         .all()
     )
-    # Only approved batches ever posted to customer.current_balance
-    # (see unified_sale.approve_unified_sale) — pending/cancelled batches
-    # must not appear in the ledger either.
+    # Only sale-approved batches ever posted to customer.current_balance
+    # (see unified_sale.approve_unified_sale_sale — total_selling_amount and
+    # total_credit_received both post there; the plant payment/settlement
+    # side never touches the customer's balance) — pending/cancelled
+    # batches must not appear in the ledger either.
     all_batches = (
         db.query(models.UnifiedSaleBatch)
-        .filter(models.UnifiedSaleBatch.customer_id == customer_id, models.UnifiedSaleBatch.status == "approved")
+        .filter(models.UnifiedSaleBatch.customer_id == customer_id, models.UnifiedSaleBatch.sale_status == "approved")
         .order_by(models.UnifiedSaleBatch.date)
         .all()
     )
@@ -195,7 +198,7 @@ def customer_monthly_ledger(
             total_454 += q454
             total_kg += kg
             rows.append(schemas.LedgerRow(
-                date=b.approved_at or b.date, kind="unified_sale", ref_id=b.id, display_id=b.display_id,
+                date=b.sale_approved_at or b.date, kind="unified_sale", ref_id=b.id, display_id=b.display_id,
                 description="Unified Sale — sale & settlement",
                 sale_amount=b.total_selling_amount, payment_amount=b.total_credit_received,
                 running_balance=running, qty_118=q118, qty_454=q454, cyl_out=q118 + q454,
@@ -259,7 +262,7 @@ def _bulk_month_opening_closing(
     for p in db.query(models.Payment).filter(models.Payment.status == "active", models.Payment.unified_sale_id.is_(None)).all():
         payments_by_customer.setdefault(p.customer_id, []).append(p)
     batches_by_customer: dict = {}
-    for b in db.query(models.UnifiedSaleBatch).filter(models.UnifiedSaleBatch.status == "approved").all():
+    for b in db.query(models.UnifiedSaleBatch).filter(models.UnifiedSaleBatch.sale_status == "approved").all():
         batches_by_customer.setdefault(b.customer_id, []).append(b)
     ecs_by_customer: dict = {}
     for e in db.query(models.EmptyCylinderSale).filter(models.EmptyCylinderSale.status == "active").all():
@@ -366,14 +369,30 @@ def company_monthly_ledger(
         .order_by(models.CompanyPayment.date)
         .all()
     )
-    # Only approved batches ever posted to company.current_balance
-    # (see unified_sale.approve_unified_sale).
+    # A batch posts to company.current_balance in two independent pieces
+    # (see unified_sale.approve_unified_sale_sale /
+    # approve_unified_sale_payment): the purchase amount posts on
+    # sale_status=='approved', the settlement (this plant being the
+    # destination) posts on payment_status=='approved'. Either can be true
+    # without the other, so batches are pulled in whenever at least one
+    # side has posted — _purchase_amt/_settle_amt below zero out whichever
+    # side hasn't posted yet.
     all_batches = (
         db.query(models.UnifiedSaleBatch)
-        .filter(models.UnifiedSaleBatch.company_id == company_id, models.UnifiedSaleBatch.status == "approved")
+        .filter(
+            models.UnifiedSaleBatch.company_id == company_id,
+            or_(models.UnifiedSaleBatch.sale_status == "approved", models.UnifiedSaleBatch.payment_status == "approved"),
+        )
         .order_by(models.UnifiedSaleBatch.date)
         .all()
     )
+
+    def _purchase_amt(b) -> Decimal:
+        return b.total_purchase_amount if b.sale_status == "approved" else Decimal("0")
+
+    def _settle_amt(b, cid) -> Decimal:
+        return b.net_plant_payment if (_settles_here(b, cid) and b.payment_status == "approved") else Decimal("0")
+
     # Batches purchased from a DIFFERENT plant but settled to this one — these
     # never show up in the query above (it filters on company_id, the purchase
     # plant). They post only a payment here, never a purchase amount, since the
@@ -384,7 +403,7 @@ def company_monthly_ledger(
             models.UnifiedSaleBatch.target_plant_id == company_id,
             models.UnifiedSaleBatch.company_id != company_id,
             models.UnifiedSaleBatch.destination_type == "plant",
-            models.UnifiedSaleBatch.status == "approved",
+            models.UnifiedSaleBatch.payment_status == "approved",
         )
         .order_by(models.UnifiedSaleBatch.date)
         .all()
@@ -393,8 +412,8 @@ def company_monthly_ledger(
     products = {p.id: p for p in db.query(models.Product).all()}
     all_companies = {c.id: c for c in db.query(models.Company).all()}
 
-    # A batch's net effect mirrors approve_unified_sale exactly:
-    # + purchase amount - net plant payment (payments subtract the liability).
+    # A batch's net effect mirrors the two approval endpoints exactly:
+    # + purchase amount (sale-side) - net plant payment (payment-side).
     opening = company.opening_balance
     for p in all_purchases:
         if p.date < month_start:
@@ -404,8 +423,7 @@ def company_monthly_ledger(
             opening -= pay.amount
     for b in all_batches:
         if b.date < month_start:
-            settle = b.net_plant_payment if _settles_here(b, company_id) else Decimal("0")
-            opening += b.total_purchase_amount - settle
+            opening += _purchase_amt(b) - _settle_amt(b, company_id)
     for b in incoming_settlements:
         if b.date < month_start:
             opening -= b.net_plant_payment
@@ -419,7 +437,7 @@ def company_monthly_ledger(
         [{"date": p.date, "kind": "purchase", "obj": p} for p in month_purchases]
         + [{"date": p.date, "kind": "payment", "obj": p} for p in month_payments]
         + [{"date": b.date, "kind": "unified_sale", "obj": b} for b in month_batches]
-        + [{"date": b.approved_at or b.date, "kind": "unified_sale_incoming", "obj": b} for b in month_incoming]
+        + [{"date": b.payment_approved_at or b.date, "kind": "unified_sale_incoming", "obj": b} for b in month_incoming]
     )
     events.sort(key=lambda e: e["date"])
 
@@ -467,23 +485,42 @@ def company_monthly_ledger(
                 qty_118=Decimal("0"), qty_454=Decimal("0"),
             ))
         elif e["kind"] == "unified_sale":
-            # One row for the whole Unified Sale batch — never split by line item.
+            # One row for the whole Unified Sale batch — never split by line
+            # item. purchase_amt/settle are independently gated (see
+            # _purchase_amt/_settle_amt above) — a batch whose sale is
+            # approved but payment is still pending shows the purchase
+            # amount only, and vice versa.
             b: models.UnifiedSaleBatch = e["obj"]
-            settle = b.net_plant_payment if _settles_here(b, company_id) else Decimal("0")
-            running += b.total_purchase_amount - settle
-            total_purchases += b.total_purchase_amount
+            purchase_amt = _purchase_amt(b)
+            settle = _settle_amt(b, company_id)
+            if purchase_amt == 0 and settle == 0:
+                continue  # nothing from this batch has posted yet
+            running += purchase_amt - settle
+            total_purchases += purchase_amt
             total_payments += settle
-            q118, q454, kg = _batch_cylinder_totals(db, models.Purchase, b.id, products)
+            if purchase_amt:
+                q118, q454, kg = _batch_cylinder_totals(db, models.Purchase, b.id, products)
+            else:
+                q118, q454, kg = Decimal("0"), Decimal("0"), Decimal("0")
             total_118 += q118
             total_454 += q454
             total_kg += kg
             target_plant = all_companies.get(b.target_plant_id)
             target_name = target_plant.name if target_plant else b.target_plant_id
+            if purchase_amt and settle:
+                description = "Unified Sale — purchase & settlement"
+            elif purchase_amt:
+                # Settlement not reflected here either because it hasn't
+                # been approved yet, or because it's routed to a different plant.
+                description = "Unified Sale — purchase" + (
+                    f" (settled elsewhere: {target_name})" if not _settles_here(b, company_id) else " (settlement pending)"
+                )
+            else:
+                description = "Unified Sale — settlement (purchase pending)"
             rows.append(schemas.CompanyLedgerRow(
-                date=b.approved_at or b.date, kind="unified_sale", ref_id=b.id, display_id=b.display_id,
-                description="Unified Sale — purchase & settlement"
-                + ("" if settle else f" (settled elsewhere: {target_name})"),
-                purchase_amount=b.total_purchase_amount, payment_amount=settle,
+                date=b.payment_approved_at or b.sale_approved_at or b.date, kind="unified_sale", ref_id=b.id, display_id=b.display_id,
+                description=description,
+                purchase_amount=purchase_amt, payment_amount=settle,
                 running_balance=running, qty_118=q118, qty_454=q454,
             ))
         else:
@@ -494,7 +531,7 @@ def company_monthly_ledger(
             source_plant = all_companies.get(b.company_id)
             source_name = source_plant.name if source_plant else "Unknown Plant"
             rows.append(schemas.CompanyLedgerRow(
-                date=b.approved_at or b.date, kind="unified_sale", ref_id=b.id, display_id=b.display_id,
+                date=b.payment_approved_at or b.date, kind="unified_sale", ref_id=b.id, display_id=b.display_id,
                 description=f"Unified Sale settlement received (purchased from {source_name})",
                 purchase_amount=Decimal("0"), payment_amount=b.net_plant_payment,
                 running_balance=running, qty_118=Decimal("0"), qty_454=Decimal("0"),

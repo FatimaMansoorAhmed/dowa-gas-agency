@@ -256,15 +256,16 @@ export const api = {
         destination_type?: DestinationType;
         target_plant_id?: string;
         account_id?: string;
-      }; 
-      gate_pass_no?: string; 
-      vehicle_no?: string; 
-      notes?: string; 
-      entered_by?: string; 
+        payment_reference?: string;
+      };
+      gate_pass_no?: string;
+      vehicle_no?: string;
+      notes?: string;
+      entered_by?: string;
     }) => request<UnifiedSaleResult>(
-      "/sales/unified", 
+      "/sales/unified",
       { method: "POST", body: JSON.stringify(payload) }
-    ), 
+    ),
 
     update: (
       id: string, 
@@ -288,21 +289,32 @@ export const api = {
           destination_type?: DestinationType;
           target_plant_id?: string;
           account_id?: string;
-        }; 
-        gate_pass_no?: string; 
-        vehicle_no?: string; 
-        notes?: string; 
-        entered_by?: string; 
+          payment_reference?: string;
+        };
+        gate_pass_no?: string;
+        vehicle_no?: string;
+        notes?: string;
+        entered_by?: string;
       }
     ) => request<UnifiedSaleResult>(`/sales/unified/${id}`, {
       method: "PUT",
       body: JSON.stringify(payload),
     }),
 
-    approve: (id: string, approved_by?: string) =>
-      request<UnifiedSaleResult>(`/sales/unified/${id}/approve${approved_by ? `?by=${encodeURIComponent(approved_by)}` : ""}`, {
+    approveSale: (id: string, approved_by?: string) =>
+      request<UnifiedSaleResult>(`/sales/unified/${id}/approve-sale${approved_by ? `?by=${encodeURIComponent(approved_by)}` : ""}`, {
         method: "POST",
       }),
+
+    approvePayment: (id: string, approved_by?: string, reference?: string) => {
+      const params = new URLSearchParams();
+      if (approved_by) params.set("by", approved_by);
+      if (reference) params.set("reference", reference);
+      const q = params.toString();
+      return request<UnifiedSaleResult>(`/sales/unified/${id}/approve-payment${q ? `?${q}` : ""}`, {
+        method: "POST",
+      });
+    },
 
     cancel: (id: string, cancelled_by?: string) =>
       request<UnifiedSaleResult>(`/sales/unified/${id}/cancel${cancelled_by ? `?by=${encodeURIComponent(cancelled_by)}` : ""}`, {

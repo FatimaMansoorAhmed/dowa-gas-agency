@@ -87,6 +87,23 @@ def _validate_and_load(db: Session, payload: schemas.UnifiedSaleCreate):
     return customer, company, products_by_id, destination_type, target_plant_id, account_id
 
 
+def _sync_legacy_status(batch: models.UnifiedSaleBatch) -> None:
+    """Keeps the legacy aggregate `status` (still read by the Payments
+    Register and Cash Management pages, which only want fully-posted
+    batches) derived from the two independent sub-statuses — 'approved'
+    only once BOTH sides have posted, 'cancelled' if either side was
+    cancelled, else 'pending'. The approval endpoints below never read
+    `status` themselves; only sale_status/payment_status gate posting."""
+    if batch.sale_status == "cancelled" or batch.payment_status == "cancelled":
+        batch.status = "cancelled"
+    elif batch.sale_status == "approved" and batch.payment_status == "approved":
+        batch.status = "approved"
+        batch.approved_at = batch.payment_approved_at or batch.sale_approved_at
+        batch.approved_by = batch.payment_approved_by or batch.sale_approved_by
+    else:
+        batch.status = "pending"
+
+
 def _create_pending_children(db: Session, payload: schemas.UnifiedSaleCreate, batch, products_by_id):
     """Creates Sale/Purchase/CompanyPayment/Expense/OwnerDrawings rows with
     status='pending' and unified_sale_id set — none of these touch any
@@ -180,7 +197,10 @@ def _batch_to_out(batch, sales, purchases, plant_payment, expense, owner_drawing
         home_expense_amount=batch.home_expense_amount, owner_drawings_amount=batch.owner_drawings_amount,
         destination_type=batch.destination_type, target_plant_id=batch.target_plant_id, account_id=batch.account_id,
         vehicle_no=batch.vehicle_no, gate_pass_no=batch.gate_pass_no, notes=batch.notes,
+        payment_reference=batch.payment_reference,
         status=batch.status, approved_at=batch.approved_at, approved_by=batch.approved_by,
+        sale_status=batch.sale_status, sale_approved_at=batch.sale_approved_at, sale_approved_by=batch.sale_approved_by,
+        payment_status=batch.payment_status, payment_approved_at=batch.payment_approved_at, payment_approved_by=batch.payment_approved_by,
         entered_by=batch.entered_by, created_at=batch.created_at,
         sales=[schemas.SaleOut.model_validate(x) for x in sales],
         purchases=[schemas.PurchaseOut.model_validate(x) for x in purchases],
@@ -281,10 +301,13 @@ def create_unified_sale(payload: schemas.UnifiedSaleCreate, db: Session = Depend
             destination_type=destination_type,
             target_plant_id=target_plant_id,
             account_id=account_id,
+            payment_reference=s.payment_reference,
             vehicle_no=payload.vehicle_no,
             gate_pass_no=payload.gate_pass_no,
             notes=payload.notes,
             status="pending",
+            sale_status="pending",
+            payment_status="pending",
             entered_by=payload.entered_by,
         )
         db.add(batch)
@@ -310,8 +333,8 @@ def edit_unified_sale(unified_sale_id: UUID, payload: schemas.UnifiedSaleEdit, d
     batch = db.query(models.UnifiedSaleBatch).get(unified_sale_id)
     if not batch:
         raise HTTPException(404, "Unified sale not found")
-    if batch.status != "pending":
-        raise HTTPException(400, f"Cannot edit a {batch.status} order — only pending orders are editable")
+    if batch.sale_status != "pending" or batch.payment_status != "pending":
+        raise HTTPException(400, "Cannot edit — sale or payment has already been approved/cancelled")
 
     customer, company, products_by_id, destination_type, target_plant_id, account_id = _validate_and_load(db, payload)
 
@@ -338,6 +361,7 @@ def edit_unified_sale(unified_sale_id: UUID, payload: schemas.UnifiedSaleEdit, d
         batch.destination_type = destination_type
         batch.target_plant_id = target_plant_id
         batch.account_id = account_id
+        batch.payment_reference = s.payment_reference
         batch.vehicle_no = payload.vehicle_no
         batch.gate_pass_no = payload.gate_pass_no
         batch.notes = payload.notes
@@ -357,18 +381,22 @@ def edit_unified_sale(unified_sale_id: UUID, payload: schemas.UnifiedSaleEdit, d
     return _batch_to_out(batch, sales, purchases, payment, expense, owner_drawing)
 
 
-@router.post("/unified/{unified_sale_id}/approve", response_model=schemas.UnifiedSaleOut)
-def approve_unified_sale(
-    unified_sale_id: UUID, 
-    by: Optional[str] = Query("system"),  # FIX 1: Made 'by' optional with default 'system'
-    db: Session = Depends(get_db)
+@router.post("/unified/{unified_sale_id}/approve-sale", response_model=schemas.UnifiedSaleOut)
+def approve_unified_sale_sale(
+    unified_sale_id: UUID,
+    by: Optional[str] = Query("system"),
+    db: Session = Depends(get_db),
 ):
-    """The only place a Unified Sale's ledger effects actually get posted."""
+    """Posts ONLY the sale/load side of a Unified Sale: customer ledger,
+    purchase-plant payable, and the Sale/Purchase child rows. Never touches
+    the plant payment/settlement — see approve_unified_sale_payment, which
+    is approved completely independently (§ Independent Sale/Payment
+    Approval). Guarded by sale_status so calling this twice never re-posts."""
     batch = db.query(models.UnifiedSaleBatch).get(unified_sale_id)
     if not batch:
         raise HTTPException(404, "Unified sale not found")
-    if batch.status != "pending":
-        raise HTTPException(400, f"Cannot approve a {batch.status} order — already resolved")
+    if batch.sale_status != "pending":
+        raise HTTPException(400, f"Cannot approve sale — already {batch.sale_status}")
 
     customer = db.query(models.Customer).get(batch.customer_id)
     company = db.query(models.Company).get(batch.company_id)
@@ -377,8 +405,12 @@ def approve_unified_sale(
     try:
         # ---- Customer Balance Adjustment ----
         # New Balance = Current Balance + Selling Amount - Credit Received.
-        # All operands Decimal-coerced — a NULL current_balance (or any other
-        # not-yet-initialized numeric column) must never crash approval.
+        # total_credit_received is money the customer already handed over
+        # at the point of sale/delivery — it settles the customer's side
+        # right away, independent of whether/when that cash later gets
+        # routed on to the plant or a Dowa account (that's the separate
+        # payment/settlement approval below). All operands Decimal-coerced
+        # — a NULL current_balance must never crash approval.
         current_balance = _dec(customer.current_balance)
         selling_amount = _dec(batch.total_selling_amount)
         credit_received = _dec(batch.total_credit_received)
@@ -395,10 +427,63 @@ def approve_unified_sale(
             customer.account_credit = _dec(customer.account_credit) + excess_amount
         db.add(customer)
 
-        # ---- Purchase Plant Balance (always grows by the purchase, regardless
-        # of where the settlement money is routed to) ----
+        # ---- Purchase Plant Balance (grows by the cost of goods loaded —
+        # this is the sale/load event, regardless of where the settlement
+        # money is later routed to) ----
         company.current_balance = _dec(company.current_balance) + _dec(batch.total_purchase_amount)
         db.add(company)
+
+        for sale in sales:
+            sale.status = "active"
+            db.add(sale)
+        for purchase in purchases:
+            purchase.status = "active"
+            db.add(purchase)
+
+        batch.sale_status = "approved"
+        # Naive UTC — matches every other DateTime column's storage
+        # convention (datetime.utcnow()). An AWARE datetime bound to this
+        # naive column would get silently shifted by Postgres's
+        # Asia/Karachi session timezone before storage, then shifted AGAIN
+        # by the frontend's UTC->Asia/Karachi display conversion — a +5h
+        # double offset (§ Double Timezone Offset Fix). See app/timezone.py.
+        batch.sale_approved_at = datetime.utcnow()
+        batch.sale_approved_by = by
+        _sync_legacy_status(batch)
+        db.add(batch)
+
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"Sale approval failed, nothing was changed: {e}")
+
+    db.refresh(batch)
+    return _batch_to_out(batch, sales, purchases, payment, expense, owner_drawing)
+
+
+@router.post("/unified/{unified_sale_id}/approve-payment", response_model=schemas.UnifiedSaleOut)
+def approve_unified_sale_payment(
+    unified_sale_id: UUID,
+    by: Optional[str] = Query("system"),
+    reference: Optional[str] = Query(None, description="Settlement reference (bank transfer/cheque no.), if now known"),
+    db: Session = Depends(get_db),
+):
+    """Posts ONLY the plant payment/settlement side of a Unified Sale: the
+    settlement routing (plant payable decrease or Dowa account credit) and
+    the CompanyPayment/Expense/OwnerDrawings child rows. Never re-posts the
+    sale — see approve_unified_sale_sale, approved completely independently.
+    Guarded by payment_status so calling this twice never double-posts."""
+    batch = db.query(models.UnifiedSaleBatch).get(unified_sale_id)
+    if not batch:
+        raise HTTPException(404, "Unified sale not found")
+    if batch.payment_status != "pending":
+        raise HTTPException(400, f"Cannot approve payment — already {batch.payment_status}")
+
+    sales, purchases, payment, expense, owner_drawing = _load_children(db, batch.id)
+
+    try:
+        if reference:
+            batch.payment_reference = reference
 
         # ---- Settlement Routing ----
         # Net Plant Payment = Credit Received - Home Expense - Owner Drawings
@@ -420,23 +505,14 @@ def approve_unified_sale(
                     db.add(account_row)
             else:
                 target_id = batch.target_plant_id or batch.company_id
-                target_company = company if target_id == batch.company_id else db.query(models.Company).get(target_id)
+                target_company = db.query(models.Company).get(target_id)
                 if target_company:
                     target_company.current_balance = _dec(target_company.current_balance) - net_plant_payment
                     db.add(target_company)
 
-        # ---- Payment Status Update ----
-        # FIX 2: Safely update payment status without querying PaymentAccount since account_id is None
         if payment:
             payment.status = "active"
             db.add(payment)
-
-        for sale in sales:
-            sale.status = "active"
-            db.add(sale)
-        for purchase in purchases:
-            purchase.status = "active"
-            db.add(purchase)
         if expense:
             expense.status = "active"
             db.add(expense)
@@ -444,21 +520,16 @@ def approve_unified_sale(
             owner_drawing.status = "active"
             db.add(owner_drawing)
 
-        batch.status = "approved"
-        # Naive UTC — matches every other DateTime column's storage
-        # convention (datetime.utcnow()). An AWARE datetime bound to this
-        # naive column would get silently shifted by Postgres's
-        # Asia/Karachi session timezone before storage, then shifted AGAIN
-        # by the frontend's UTC->Asia/Karachi display conversion — a +5h
-        # double offset (§ Double Timezone Offset Fix). See app/timezone.py.
-        batch.approved_at = datetime.utcnow()
-        batch.approved_by = by
+        batch.payment_status = "approved"
+        batch.payment_approved_at = datetime.utcnow()
+        batch.payment_approved_by = by
+        _sync_legacy_status(batch)
         db.add(batch)
 
         db.commit()
     except Exception as e:
         db.rollback()
-        raise HTTPException(500, f"Approval failed, nothing was changed: {e}")
+        raise HTTPException(500, f"Payment approval failed, nothing was changed: {e}")
 
     db.refresh(batch)
     return _batch_to_out(batch, sales, purchases, payment, expense, owner_drawing)
@@ -470,12 +541,14 @@ def cancel_unified_sale(
     by: Optional[str] = Query("system"), # FIX 3: Made 'by' optional
     db: Session = Depends(get_db)
 ):
-    """Only allowed while PENDING."""
+    """Only allowed while both sale and payment are still PENDING — once
+    either side has been approved, that side's ledger effects are already
+    posted and cancelling the whole order would leave them dangling."""
     batch = db.query(models.UnifiedSaleBatch).get(unified_sale_id)
     if not batch:
         raise HTTPException(404, "Unified sale not found")
-    if batch.status != "pending":
-        raise HTTPException(400, f"Cannot cancel a {batch.status} order — already resolved")
+    if batch.sale_status != "pending" or batch.payment_status != "pending":
+        raise HTTPException(400, "Cannot cancel — sale or payment has already been approved/cancelled")
 
     sales, purchases, payment, expense, owner_drawing = _load_children(db, batch.id)
     try:
@@ -495,7 +568,9 @@ def cancel_unified_sale(
             owner_drawing.status = "cancelled"
             db.add(owner_drawing)
 
-        batch.status = "cancelled"
+        batch.sale_status = "cancelled"
+        batch.payment_status = "cancelled"
+        _sync_legacy_status(batch)
         db.add(batch)
         db.commit()
     except Exception as e:
