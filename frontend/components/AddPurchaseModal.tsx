@@ -50,7 +50,9 @@ export default function AddPurchaseModal({
       const [c, p, acc, r] = await Promise.all([
         api.companies.list(), api.products.list(), api.paymentAccounts.list(), api.rates.latest(),
       ]);
-      setCompanies(c); setProducts(p); setAccounts(acc); setRates(r);
+      // Active-only — see RecordShopSaleModal/unified-sale for why a
+      // duplicate product row must never resolve product118/product454.
+      setCompanies(c); setProducts(p.filter((x: Product) => x.active === "active")); setAccounts(acc); setRates(r);
     })();
   }, []);
 

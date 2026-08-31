@@ -1,4 +1,5 @@
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export const API_BASE = BASE;
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -18,7 +19,9 @@ import type {
   Sale, Payment, Expense, CustomerLedgerSummary, CustomerFlag, Purchase, CompanyPayment,
   CompanyLedgerSummary, PlantLedgerSummaryRow, CylinderTransaction, CylinderBalance, OwnerDrawing, UnifiedSaleBatch, UnifiedSaleResult, DestinationType,
   AccountType, AccountTransferResult, CylinderTransactionCreate, CustomerCombinedLedger, EmptyCylinderSale,
-  OwnerCapital, OwnerCapitalDestination
+  OwnerCapital, OwnerCapitalDestination, DailyReportData, GeneratedReport, SendWhatsAppResult,
+  BoardRate, ShopListRow, ShopDetailOut, ShopSale, ShopStockAdjustment, ShopStockBatch,
+  ShopSupplyCustomer, ShopCustomerPayment, ShopExpenseTransaction, ShopBusinessLedgerOut,
 } from "./types";
 
 export const api = {
@@ -107,6 +110,14 @@ export const api = {
       vehicle_no?: string; notes?: string; entered_by: string; cylinders_returned?: number;
     }) => request<Sale>("/sales", { method: "POST", body: JSON.stringify(payload) }),
     cancel: (id: string, by: string) => request<Sale>(`/sales/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
+    // Ledger Correction (§1): reverses this sale, marks it "corrected"
+    // (kept in history), and posts a brand-new Sale with the corrected values.
+    correct: (id: string, payload: {
+      date: string; customer_id: string; product_id: string; company_id?: string;
+      quantity: number; rate_per_cylinder: number; gate_pass_no?: string;
+      vehicle_no?: string; notes?: string; entered_by: string; cylinders_returned?: number;
+      correction_reason: string; corrected_by: string;
+    }) => request<Sale>(`/sales/${id}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
   },
   payments: {
     list: (params?: { customer_id?: string; month?: string }) => {
@@ -119,6 +130,12 @@ export const api = {
       account_id: string; reference_no?: string; received_by?: string; notes?: string; entered_by: string;
     }) => request<Payment>("/payments", { method: "POST", body: JSON.stringify(payload) }),
     cancel: (id: string, by: string) => request<Payment>(`/payments/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
+    correct: (id: string, payload: {
+      date: string; customer_id: string; sale_id?: string; amount: number;
+      method: "cash" | "bank_transfer" | "cheque" | "online" | "other";
+      account_id: string; reference_no?: string; received_by?: string; notes?: string; entered_by: string;
+      correction_reason: string; corrected_by: string;
+    }) => request<Payment>(`/payments/${id}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
   },
   
   // Endpoint group for Standalone Payment Receipts with destination routing
@@ -177,6 +194,13 @@ export const api = {
       driver_name?: string; driver_contact?: string; notes?: string; entered_by: string;
     }) => request<Purchase>("/purchases", { method: "POST", body: JSON.stringify(payload) }),
     cancel: (id: string, by: string) => request<Purchase>(`/purchases/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
+    correct: (id: string, payload: {
+      date: string; company_id: string; product_id: string; quantity: number;
+      rate_per_cylinder: number; additional_charges?: number; transport_charges?: number;
+      other_charges?: number; gate_pass_no?: string; vehicle_no?: string;
+      driver_name?: string; driver_contact?: string; notes?: string; entered_by: string;
+      correction_reason: string; corrected_by: string;
+    }) => request<Purchase>(`/purchases/${id}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
   },
   companyPayments: {
     list: (params?: { company_id?: string; month?: string }) => {
@@ -189,6 +213,12 @@ export const api = {
       account_id: string; reference_no?: string; paid_by?: string; notes?: string; entered_by: string;
     }) => request<CompanyPayment>("/company-payments", { method: "POST", body: JSON.stringify(payload) }),
     cancel: (id: string, by: string) => request<CompanyPayment>(`/company-payments/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
+    correct: (id: string, payload: {
+      date: string; company_id: string; purchase_id?: string; amount: number;
+      method: "cash" | "bank_transfer" | "cheque" | "online" | "other" | "direct_settlement";
+      account_id?: string; reference_no?: string; paid_by?: string; notes?: string; entered_by: string;
+      correction_reason: string; corrected_by: string;
+    }) => request<CompanyPayment>(`/company-payments/${id}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
   },
   cylinderTransactions: {
     list: (params?: { customer_id?: string; product_id?: string; month?: string }) => {
@@ -325,5 +355,105 @@ export const api = {
       request<UnifiedSaleResult>(`/sales/unified/${id}/cancel${cancelled_by ? `?by=${encodeURIComponent(cancelled_by)}` : ""}`, {
         method: "POST",
       }),
+  },
+  // Daily PDF Reports (§5, §6, §7, §8).
+  reports: {
+    list: (params?: { report_type?: string; date_from?: string; date_to?: string }) => {
+      const q = new URLSearchParams(params as Record<string, string>).toString();
+      return request<GeneratedReport[]>(`/reports${q ? `?${q}` : ""}`);
+    },
+    get: (id: string) => request<GeneratedReport>(`/reports/${id}`),
+    // Powers the Daily Activity screen/print AND is what the PDF is
+    // rendered from server-side — same aggregator, so they can't disagree.
+    dailyData: (businessDate: string) => request<DailyReportData>(`/reports/daily/${businessDate}/data`),
+    generateDaily: (businessDate: string, generatedBy: string) =>
+      request<GeneratedReport>(
+        `/reports/daily/generate?business_date=${businessDate}&generated_by=${encodeURIComponent(generatedBy)}`,
+        { method: "POST" }
+      ),
+    downloadUrl: (id: string) => `${BASE}/reports/${id}/download`,
+    sendWhatsApp: (id: string, to?: string) =>
+      request<SendWhatsAppResult>(`/reports/${id}/send-whatsapp${to ? `?to=${encodeURIComponent(to)}` : ""}`, {
+        method: "POST",
+      }),
+  },
+  // Board Rate history — the single system-wide daily rate/kg Shop Sales
+  // are priced from (§ Shop Management, distinct from RateEntry above,
+  // which is a per-plant quote never wired to actual sale pricing).
+  boardRates: {
+    list: () => request<BoardRate[]>("/board-rates"),
+    latest: (date?: string) => request<BoardRate>(`/board-rates/latest${date ? `?date=${encodeURIComponent(date)}` : ""}`),
+    create: (payload: { effective_date: string; rate_per_kg: number; entered_by: string }) =>
+      request<BoardRate>("/board-rates", { method: "POST", body: JSON.stringify(payload) }),
+  },
+  // Shops — a Shop is a Customer row with customer_type="shop" (§ Shop
+  // Management). Loads are entered via the ordinary api.sales.create/
+  // correct above (customer_id = a shop's id) — there is no separate
+  // "shop load" endpoint; the stock batch is created automatically,
+  // server-side, in that same request.
+  shops: {
+    list: () => request<ShopListRow[]>("/shops"),
+    create: (payload: {
+      name: string; mobile: string; address?: string; city_area?: string;
+      opening_balance?: number; opening_balance_date?: string; entered_by?: string;
+    }) => request<Customer>("/shops", { method: "POST", body: JSON.stringify(payload) }),
+    detail: (id: string, params?: { date?: string; month?: string }) => {
+      const q = new URLSearchParams(params as Record<string, string>).toString();
+      return request<ShopDetailOut>(`/shops/${id}${q ? `?${q}` : ""}`);
+    },
+    stock: (id: string, date?: string) =>
+      request<ShopDetailOut["stock"]>(`/shops/${id}/stock${date ? `?date=${date}` : ""}`),
+    batches: (id: string) => request<ShopStockBatch[]>(`/shops/${id}/batches`),
+    getSale: (saleId: string) => request<ShopSale>(`/shops/sales/${saleId}`),
+    createSale: (shopId: string, payload: {
+      date: string; product_id: string; quantity: number; unit?: "cylinder" | "kg";
+      supply_customer_id?: string; payment_type?: "cash" | "credit";
+      notes?: string; entered_by: string;
+    }) => request<ShopSale>(`/shops/${shopId}/sales`, { method: "POST", body: JSON.stringify(payload) }),
+    cancelSale: (saleId: string, by: string) =>
+      request<ShopSale>(`/shops/sales/${saleId}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
+    correctSale: (saleId: string, payload: {
+      date: string; product_id: string; quantity: number; unit?: "cylinder" | "kg";
+      supply_customer_id?: string; payment_type?: "cash" | "credit";
+      notes?: string; entered_by: string;
+      correction_reason: string; corrected_by: string;
+    }) => request<ShopSale>(`/shops/sales/${saleId}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
+    createAdjustment: (shopId: string, payload: {
+      date: string; product_id: string; adjustment_type: "return" | "adjustment";
+      quantity_delta: number; reason?: string; entered_by: string;
+    }) => request<ShopStockAdjustment>(`/shops/${shopId}/adjustments`, { method: "POST", body: JSON.stringify(payload) }),
+    cancelAdjustment: (adjustmentId: string, by: string) =>
+      request<ShopStockAdjustment>(`/shops/adjustments/${adjustmentId}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
+
+    // ---- Engine 3: Shop Business Finance ----
+    customers: {
+      list: (shopId: string) => request<ShopSupplyCustomer[]>(`/shops/${shopId}/customers`),
+      create: (shopId: string, payload: {
+        name: string; mobile?: string; address?: string; opening_balance?: number; entered_by: string;
+      }) => request<ShopSupplyCustomer>(`/shops/${shopId}/customers`, { method: "POST", body: JSON.stringify(payload) }),
+      get: (supplyCustomerId: string) => request<ShopSupplyCustomer>(`/shops/customers/${supplyCustomerId}`),
+    },
+    customerPayments: {
+      create: (shopId: string, supplyCustomerId: string, payload: {
+        date: string; supply_customer_id: string; amount: number; method?: string; notes?: string; entered_by: string;
+      }) => request<ShopCustomerPayment>(`/shops/${shopId}/customers/${supplyCustomerId}/payments`, { method: "POST", body: JSON.stringify(payload) }),
+      cancel: (paymentId: string, by: string) =>
+        request<ShopCustomerPayment>(`/shops/customer-payments/${paymentId}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
+    },
+    expenses: {
+      list: (shopId: string, month?: string) =>
+        request<ShopExpenseTransaction[]>(`/shops/${shopId}/expenses${month ? `?month=${month}` : ""}`),
+      create: (shopId: string, payload: {
+        date: string;
+        lines: { category_id: string; line_type: "expense" | "owner_withdrawal"; amount: number; description?: string }[];
+        payment_source?: string; notes?: string; entered_by: string;
+      }) => request<ShopExpenseTransaction>(`/shops/${shopId}/expenses`, { method: "POST", body: JSON.stringify(payload) }),
+      cancel: (expenseId: string, by: string) =>
+        request<ShopExpenseTransaction>(`/shops/expenses/${expenseId}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
+    },
+    businessLedger: (shopId: string, params?: { date?: string; month?: string }) => {
+      const q = new URLSearchParams(params as Record<string, string>).toString();
+      return request<ShopBusinessLedgerOut>(`/shops/${shopId}/business-ledger${q ? `?${q}` : ""}`);
+    },
   },
 };

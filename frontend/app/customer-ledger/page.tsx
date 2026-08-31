@@ -1,13 +1,15 @@
 "use client";
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Search, PlusCircle } from "lucide-react";
+import { Search, PlusCircle, Pencil } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Th, Td, inputClass, BalanceTag, Button } from "@/components/ui";
 import { api } from "@/lib/api";
 import { pkr, fmtTime, todayLocalInput } from "@/lib/format";
 import ReceivePaymentModal from "@/components/ReceivePaymentModal";
-import type { Customer, CustomerLedgerSummary, CustomerFlag } from "@/lib/types";
+import CorrectTransactionModal, { CorrectableKind } from "@/components/CorrectTransactionModal";
+import PrintButton from "@/components/PrintButton";
+import type { Customer, CustomerLedgerSummary, CustomerFlag, LedgerRow, Sale, Payment } from "@/lib/types";
 
 // Derived from the Asia/Karachi-aware todayLocalInput() ("YYYY-MM-DD"), so
 // "this month" reflects the Karachi calendar even off-Karachi machines.
@@ -33,6 +35,30 @@ function CustomerLedgerBody() {
   const [loading, setLoading] = useState(false);
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
   const [flags, setFlags] = useState<CustomerFlag[]>([]);
+  const [correctTarget, setCorrectTarget] = useState<{ kind: CorrectableKind; transaction: Sale | Payment } | null>(null);
+  const [correctLoading, setCorrectLoading] = useState<string | null>(null);
+  const [showCorrections, setShowCorrections] = useState(false);
+
+  // Ledger Correction (§1) — the ledger row only carries a summary shape;
+  // fetch the full Sale/Payment record (scoped to this customer) so the
+  // modal can pre-fill every editable field, not just the amount.
+  const openCorrect = async (row: LedgerRow) => {
+    if (!row.correctable || (row.kind !== "sale" && row.kind !== "payment")) return;
+    setCorrectLoading(row.ref_id);
+    try {
+      if (row.kind === "sale") {
+        const list = await api.sales.list({ customer_id: customerId });
+        const tx = list.find((s) => s.id === row.ref_id);
+        if (tx) setCorrectTarget({ kind: "sale", transaction: tx });
+      } else {
+        const list = await api.payments.list({ customer_id: customerId });
+        const tx = list.find((p) => p.id === row.ref_id);
+        if (tx) setCorrectTarget({ kind: "payment", transaction: tx });
+      }
+    } finally {
+      setCorrectLoading(null);
+    }
+  };
 
   const loadCustomers = () => {
     api.customers.list().then(setCustomers);
@@ -136,7 +162,7 @@ function CustomerLedgerBody() {
           )}
 
           {customerId && (
-            <>
+            <div className="print-area">
               <Panel className="mb-4">
                 <div className="flex justify-between items-start flex-wrap gap-4">
                   <div>
@@ -148,7 +174,7 @@ function CustomerLedgerBody() {
                       {summary?.flagged && (
                         <span
                           title="Flagged — this month's closing balance is above its opening balance"
-                          className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[#FBEAEA] text-brand-red border border-[#EFC3C3]"
+                          className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[#FBEAEA] text-brand-red border border-[#EFC3C3] print:hidden"
                         >
                           🚩 Flagged
                         </span>
@@ -158,12 +184,16 @@ function CustomerLedgerBody() {
                       {summary?.customer.display_id ?? ""} · {summary?.customer.mobile}{" "}
                       {summary?.customer.shop_name ? `· ${summary.customer.shop_name}` : ""}
                     </div>
+                    <div className="hidden print:block font-mono text-xs text-steel mt-1">
+                      Period: {mo}/{year}
+                    </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 print:hidden">
                     <Button variant="teal" onClick={() => setIsPayModalOpen(true)}>
                       <PlusCircle size={15} /> Receive Payment
                     </Button>
+                    <PrintButton label="Print Statement" />
 
                     <div className="flex gap-1.5 ml-1">
                       <select
@@ -272,6 +302,8 @@ function CustomerLedgerBody() {
                           <Th right>Sale</Th>
                           <Th right>Payment</Th>
                           <Th right>Balance</Th>
+                          <Th>Entered By</Th>
+                          <Th center><span className="print:hidden">Actions</span></Th>
                         </tr>
                       </thead>
                       <tbody>
@@ -280,6 +312,7 @@ function CustomerLedgerBody() {
                           <Td right mono bold>
                             {pkr(summary.opening_balance)}
                           </Td>
+                          <Td colSpan={2}>{null}</Td>
                         </tr>
                         {summary.rows.map((r) => (
                           <tr key={r.ref_id}>
@@ -297,11 +330,24 @@ function CustomerLedgerBody() {
                             <Td right mono bold>
                               <BalanceTag amount={r.running_balance} />
                             </Td>
+                            <Td mono>{r.entered_by || "—"}</Td>
+                            <Td center>
+                              {r.correctable && (
+                                <button
+                                  onClick={() => openCorrect(r)}
+                                  disabled={correctLoading === r.ref_id}
+                                  title="Correct this transaction"
+                                  className="print:hidden bg-transparent border-none cursor-pointer text-steel hover:text-teal disabled:opacity-40"
+                                >
+                                  <Pencil size={13} />
+                                </button>
+                              )}
+                            </Td>
                           </tr>
                         ))}
                         {!summary.rows.length && (
                           <tr>
-                            <td colSpan={8} className="text-steel font-body text-[13px] py-4 text-center">
+                            <td colSpan={10} className="text-steel font-body text-[13px] py-4 text-center">
                               No transactions this month.
                             </td>
                           </tr>
@@ -309,9 +355,53 @@ function CustomerLedgerBody() {
                       </tbody>
                     </table>
                   </Panel>
+
+                  {/* Correction History (§1) — superseded transactions, kept for
+                      the record and clearly marked, never mixed into the running
+                      balance above. */}
+                  {summary.corrections.length > 0 && (
+                    <Panel className="mt-4">
+                      <button
+                        onClick={() => setShowCorrections((s) => !s)}
+                        className="print:hidden bg-transparent border-none cursor-pointer flex items-center gap-1.5 w-full text-left"
+                      >
+                        <Eyebrow>Correction History ({summary.corrections.length})</Eyebrow>
+                      </button>
+                      {
+                        <table className={`w-full border-collapse mt-2 ${showCorrections ? "" : "hidden print:table"}`}>
+                          <thead>
+                            <tr>
+                              <Th>Date</Th>
+                              <Th>Original ID</Th>
+                              <Th>Description</Th>
+                              <Th right>Original Amount</Th>
+                              <Th>Reason</Th>
+                              <Th>Corrected By</Th>
+                              <Th>Corrected At</Th>
+                              <Th>Replaced By</Th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {summary.corrections.map((c) => (
+                              <tr key={c.ref_id}>
+                                <Td mono>{fmtTime(c.date)}</Td>
+                                <Td mono color="#9B4A4A">{c.display_id}</Td>
+                                <Td>{c.description}</Td>
+                                <Td right mono>{pkr(c.original_amount)}</Td>
+                                <Td>{c.correction_reason}</Td>
+                                <Td mono>{c.corrected_by}</Td>
+                                <Td mono>{fmtTime(c.corrected_at)}</Td>
+                                <Td mono>{c.corrected_display_id ?? "—"}</Td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      }
+                    </Panel>
+                  )}
                 </>
               )}
-            </>
+            </div>
           )}
         </div>
       </div>
@@ -326,6 +416,18 @@ function CustomerLedgerBody() {
           loadCustomers();
         }}
       />
+
+      {correctTarget && (
+        <CorrectTransactionModal
+          kind={correctTarget.kind}
+          transaction={correctTarget.transaction}
+          onClose={() => setCorrectTarget(null)}
+          onSaved={() => {
+            setCorrectTarget(null);
+            loadLedger();
+          }}
+        />
+      )}
     </div>
   );
 }

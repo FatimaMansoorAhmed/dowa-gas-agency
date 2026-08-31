@@ -433,9 +433,37 @@ def approve_unified_sale_sale(
         company.current_balance = _dec(company.current_balance) + _dec(batch.total_purchase_amount)
         db.add(company)
 
+        # Shop Management (§ Shop spec, "one transaction, no duplication") —
+        # mirrors routers/sales.py's _apply_sale exactly. This is the ONLY
+        # Sale entry point actually reachable from the UI (Shell's "Sale"
+        # nav goes to /unified-sale; /new-sale, which has its own copy of
+        # this block, is not linked), so without this a Load to a Shop
+        # customer would post to the customer's balance/plant payable like
+        # any other Sale but silently never create the ShopStockBatch the
+        # Shop dashboard's stock figures depend on. Posted here rather than
+        # in _create_pending_children because this — approval — is the
+        # moment a Sale actually becomes "active" and posts financially;
+        # a pending, not-yet-approved Load must not already be sitting in
+        # the shop's physical stock. source_sale_id=sale.id lets
+        # routers/sales.py's _reverse_sale (used by /sales/{id}/cancel and
+        # /sales/{id}/correct — see CorrectTransactionModal on the Shop
+        # Detail page) find and reverse this batch precisely, the same way
+        # it already does for a batch created via the direct Sale flow.
         for sale in sales:
             sale.status = "active"
             db.add(sale)
+            if customer.customer_type == "shop":
+                db.add(models.ShopStockBatch(
+                    customer_id=customer.id,
+                    product_id=sale.product_id,
+                    source_sale_id=sale.id,
+                    transaction_date=sale.date,
+                    quantity_received=sale.quantity,
+                    quantity_remaining=sale.quantity,
+                    load_rate_per_kg=(sale.rate_per_cylinder / sale.weight_per_cylinder) if sale.weight_per_cylinder else 0,
+                    status="active",
+                    entered_by=by,
+                ))
         for purchase in purchases:
             purchase.status = "active"
             db.add(purchase)

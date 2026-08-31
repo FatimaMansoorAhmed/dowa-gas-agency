@@ -99,7 +99,13 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
       api.expenseCategories.list(), api.paymentAccounts.list(), api.rates.latest(),
       api.unifiedSale.list(),
     ]);
-    setCompanies(c); setCustomers(cu); setProducts(p);
+    // Active-only: an accidental duplicate product row (same weight_kg as
+    // a real one, e.g. a stray "11.8 KG Cylinder2") must not show up as a
+    // second Items row here — that's what let someone type a rate into
+    // the duplicate's row and see the 11.8->45.4 selling-rate auto-calc
+    // "stop working", since the calc keys off product118/product454's
+    // specific id, which the duplicate never matched.
+    setCompanies(c); setCustomers(cu); setProducts(p.filter((x) => x.active === "active"));
     setCategories(cat); setAccounts(acc); setRates(r); setRecent(ru);
   };
   useEffect(() => { load(); }, []);

@@ -35,8 +35,10 @@ def list_sales(
     return rows
 
 
-@router.post("", response_model=schemas.SaleOut, status_code=201)
-def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)):
+def _apply_sale(db: Session, payload: schemas.SaleCreate, entered_by: str) -> models.Sale:
+    """Create-time posting logic: builds the Sale row, posts it to the
+    customer's balance, and creates its linked CylinderTransaction. Shared
+    by create_sale and correct_sale (§1) so both post identically."""
     customer = db.query(models.Customer).get(payload.customer_id)
     if not customer:
         raise HTTPException(404, "Customer not found")
@@ -68,19 +70,16 @@ def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)):
         vehicle_no=payload.vehicle_no,
         notes=payload.notes,
         status="active",
-        entered_by=payload.entered_by,
+        entered_by=entered_by,
     )
     db.add(sale)
-    db.flush()  # assigns sale.id so the audit log row can reference it
+    db.flush()  # assigns sale.id so the audit log row / cylinder txn can reference it
 
     # Core formula (§13): New Customer Balance = Previous + Sale − Payment.
     # A sale alone only ever adds to what's owed.
-# Line 73-75 in sales.py
     customer.current_balance = customer.current_balance + total_amount
     customer.last_transaction_at = payload.date
     db.add(customer)
-
-    _log(db, "sale", sale.id, "create", payload.entered_by, new=str(total_amount))
 
     # Every sale dispatches filled cylinders and, optionally, takes back
     # empties on the spot — recorded as a linked CylinderTransaction so the
@@ -95,11 +94,76 @@ def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)):
         qty_out=payload.quantity,
         qty_in=payload.cylinders_returned,
         status="active",
-        entered_by=payload.entered_by,
+        entered_by=entered_by,
     )
     db.add(cylinder_txn)
     adjust_cylinder_balance(db, payload.customer_id, payload.product_id, payload.quantity - payload.cylinders_returned)
 
+    # Shop Management (§ Shop spec, "one transaction, no duplication"): a
+    # Load is ALWAYS just an ordinary Sale — when the recipient is a shop,
+    # this is the ONLY place a stock batch is ever created, atomically with
+    # the Sale itself. There is no separate "enter a shop load" endpoint.
+    if customer.customer_type == "shop":
+        batch = models.ShopStockBatch(
+            customer_id=customer.id,
+            product_id=product.id,
+            source_sale_id=sale.id,
+            transaction_date=payload.date,
+            quantity_received=payload.quantity,
+            quantity_remaining=payload.quantity,
+            load_rate_per_kg=(payload.rate_per_cylinder / product.weight_kg) if product.weight_kg else 0,
+            status="active",
+            entered_by=entered_by,
+        )
+        db.add(batch)
+
+    return sale
+
+
+def _reverse_sale(db: Session, sale: models.Sale, by: str) -> None:
+    """Undoes exactly what _apply_sale posted — the customer balance and
+    the linked CylinderTransaction — without touching sale.status itself
+    (the caller decides "cancelled" vs "corrected"). Shared by cancel_sale
+    and correct_sale (§1)."""
+    customer = db.query(models.Customer).get(sale.customer_id)
+    customer.current_balance = customer.current_balance - sale.total_amount
+    db.add(customer)
+
+    cylinder_txn = (
+        db.query(models.CylinderTransaction)
+        .filter(models.CylinderTransaction.sale_id == sale.id, models.CylinderTransaction.status == "active")
+        .first()
+    )
+    if cylinder_txn:
+        adjust_cylinder_balance(db, cylinder_txn.customer_id, cylinder_txn.product_id, -(cylinder_txn.qty_out - cylinder_txn.qty_in))
+        cylinder_txn.status = "cancelled"
+        cylinder_txn.modified_at = datetime.utcnow()
+        cylinder_txn.modified_by = by
+        db.add(cylinder_txn)
+
+    # Shop Management — reverse the batch this Load created, if any. Stock
+    # must never go negative: refuse if any of it has already been sold
+    # (a Shop Sale consumed from it, so quantity_remaining < quantity_received).
+    batch = (
+        db.query(models.ShopStockBatch)
+        .filter(models.ShopStockBatch.source_sale_id == sale.id, models.ShopStockBatch.status == "active")
+        .first()
+    )
+    if batch:
+        if batch.quantity_remaining < batch.quantity_received:
+            raise HTTPException(
+                400,
+                "This Load's stock has already been partially or fully sold — "
+                "correct/cancel the related Shop Sale(s) first before cancelling or correcting this Load",
+            )
+        batch.status = "cancelled"
+        db.add(batch)
+
+
+@router.post("", response_model=schemas.SaleOut, status_code=201)
+def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)):
+    sale = _apply_sale(db, payload, payload.entered_by)
+    _log(db, "sale", sale.id, "create", payload.entered_by, new=str(sale.total_amount))
     db.commit()
     db.refresh(sale)
     return sale
@@ -115,31 +179,49 @@ def cancel_sale(sale_id: UUID, by: str = Query(...), db: Session = Depends(get_d
     if sale.status != "active":
         raise HTTPException(400, "Sale is already cancelled")
 
-    customer = db.query(models.Customer).get(sale.customer_id)
-    customer.current_balance = customer.current_balance - sale.total_amount
-    db.add(customer)
+    _reverse_sale(db, sale, by)
 
     sale.status = "cancelled"
     sale.modified_at = datetime.utcnow()
     sale.modified_by = by
     db.add(sale)
 
-    # Reverse the linked cylinder movement too, so a cancelled sale never
-    # leaves a phantom cylinder balance behind.
-    cylinder_txn = (
-        db.query(models.CylinderTransaction)
-        .filter(models.CylinderTransaction.sale_id == sale.id, models.CylinderTransaction.status == "active")
-        .first()
-    )
-    if cylinder_txn:
-        adjust_cylinder_balance(db, cylinder_txn.customer_id, cylinder_txn.product_id, -(cylinder_txn.qty_out - cylinder_txn.qty_in))
-        cylinder_txn.status = "cancelled"
-        cylinder_txn.modified_at = datetime.utcnow()
-        cylinder_txn.modified_by = by
-        db.add(cylinder_txn)
-
     _log(db, "sale", sale.id, "cancel", by, old="active", new="cancelled")
 
     db.commit()
     db.refresh(sale)
     return sale
+
+
+@router.patch("/{sale_id}/correct", response_model=schemas.SaleOut)
+def correct_sale(sale_id: UUID, payload: schemas.SaleCorrect, db: Session = Depends(get_db)):
+    """Ledger Correction (§1): reverses this sale's effect, marks it
+    "corrected" (kept forever, never deleted), and posts a brand-new Sale
+    with the corrected values — traceable back via corrected_from_id."""
+    if not payload.correction_reason.strip():
+        raise HTTPException(400, "correction_reason is required")
+
+    original = db.query(models.Sale).get(sale_id)
+    if not original:
+        raise HTTPException(404, "Sale not found")
+    if original.status != "active":
+        raise HTTPException(400, "Only an active sale can be corrected")
+
+    _reverse_sale(db, original, payload.corrected_by)
+
+    original.status = "corrected"
+    original.corrected_by = payload.corrected_by
+    original.corrected_at = datetime.utcnow()
+    original.correction_reason = payload.correction_reason
+    db.add(original)
+    db.flush()
+
+    corrected = _apply_sale(db, payload, payload.corrected_by)
+    corrected.corrected_from_id = original.id
+    db.add(corrected)
+
+    _log(db, "sale", original.id, "correct", payload.corrected_by, old=str(original.total_amount), new=str(corrected.total_amount))
+
+    db.commit()
+    db.refresh(corrected)
+    return corrected

@@ -18,9 +18,9 @@ def create_product(payload: schemas.ProductCreate, db: Session = Depends(get_db)
     if existing:
         raise HTTPException(400, "Product already exists")
     product = models.Product(
-        name=payload.name, 
-        weight_kg=payload.weight_kg, 
-        status=getattr(payload, 'status', 'active')
+        name=payload.name,
+        weight_kg=payload.weight_kg,
+        active=getattr(payload, "active", "active"),
     )
     db.add(product)
     db.commit()
@@ -35,7 +35,7 @@ def get_or_create_product(weight_kg: float, db: Session = Depends(get_db)):
     
     if not product:
         name = f"{weight_kg} KG Cylinder"
-        product = models.Product(name=name, weight_kg=weight_kg, status="active")
+        product = models.Product(name=name, weight_kg=weight_kg, active="active")
         db.add(product)
         db.commit()
         db.refresh(product)

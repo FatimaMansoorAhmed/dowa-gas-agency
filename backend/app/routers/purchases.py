@@ -25,8 +25,9 @@ def list_purchases(
     return rows
 
 
-@router.post("", response_model=schemas.PurchaseOut, status_code=201)
-def create_purchase(payload: schemas.PurchaseCreate, db: Session = Depends(get_db)):
+def _apply_purchase(db: Session, payload: schemas.PurchaseCreate, entered_by: str) -> models.Purchase:
+    """Create-time posting logic, shared by create_purchase and
+    correct_purchase (§1)."""
     company = db.query(models.Company).get(payload.company_id)
     if not company:
         raise HTTPException(404, "Company not found")
@@ -59,7 +60,7 @@ def create_purchase(payload: schemas.PurchaseCreate, db: Session = Depends(get_d
         driver_contact=payload.driver_contact,
         notes=payload.notes,
         status="active",
-        entered_by=payload.entered_by,
+        entered_by=entered_by,
     )
     db.add(purchase)
     db.flush()
@@ -69,6 +70,20 @@ def create_purchase(payload: schemas.PurchaseCreate, db: Session = Depends(get_d
     company.current_balance = company.current_balance + total_amount
     db.add(company)
 
+    return purchase
+
+
+def _reverse_purchase(db: Session, purchase: models.Purchase) -> None:
+    """Undoes exactly what _apply_purchase posted. Shared by cancel_purchase
+    and correct_purchase (§1)."""
+    company = db.query(models.Company).get(purchase.company_id)
+    company.current_balance = company.current_balance - purchase.total_amount
+    db.add(company)
+
+
+@router.post("", response_model=schemas.PurchaseOut, status_code=201)
+def create_purchase(payload: schemas.PurchaseCreate, db: Session = Depends(get_db)):
+    purchase = _apply_purchase(db, payload, payload.entered_by)
     db.commit()
     db.refresh(purchase)
     return purchase
@@ -82,9 +97,7 @@ def cancel_purchase(purchase_id: UUID, by: str = Query(...), db: Session = Depen
     if purchase.status != "active":
         raise HTTPException(400, "Purchase is already cancelled")
 
-    company = db.query(models.Company).get(purchase.company_id)
-    company.current_balance = company.current_balance - purchase.total_amount
-    db.add(company)
+    _reverse_purchase(db, purchase)
 
     purchase.status = "cancelled"
     purchase.modified_at = datetime.utcnow()
@@ -94,3 +107,34 @@ def cancel_purchase(purchase_id: UUID, by: str = Query(...), db: Session = Depen
     db.commit()
     db.refresh(purchase)
     return purchase
+
+
+@router.patch("/{purchase_id}/correct", response_model=schemas.PurchaseOut)
+def correct_purchase(purchase_id: UUID, payload: schemas.PurchaseCorrect, db: Session = Depends(get_db)):
+    """Ledger Correction (§1) — see correct_sale in routers/sales.py for
+    the full pattern this mirrors."""
+    if not payload.correction_reason.strip():
+        raise HTTPException(400, "correction_reason is required")
+
+    original = db.query(models.Purchase).get(purchase_id)
+    if not original:
+        raise HTTPException(404, "Purchase not found")
+    if original.status != "active":
+        raise HTTPException(400, "Only an active purchase can be corrected")
+
+    _reverse_purchase(db, original)
+
+    original.status = "corrected"
+    original.corrected_by = payload.corrected_by
+    original.corrected_at = datetime.utcnow()
+    original.correction_reason = payload.correction_reason
+    db.add(original)
+    db.flush()
+
+    corrected = _apply_purchase(db, payload, payload.corrected_by)
+    corrected.corrected_from_id = original.id
+    db.add(corrected)
+
+    db.commit()
+    db.refresh(corrected)
+    return corrected

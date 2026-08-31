@@ -33,6 +33,79 @@ def _batch_cylinder_totals(db: Session, model, batch_id, products: dict) -> tupl
     return q118, q454, kg
 
 
+def _customer_corrections(db: Session, customer_id, month_start: datetime, next_month: datetime) -> list[schemas.CorrectionHistoryRow]:
+    """Builds the read-only Correction History panel (§1) — every Sale/
+    Payment for this customer that was superseded by a correction this
+    month, kept forever with status="corrected" and never mixed into the
+    running-balance rows above."""
+    out: list[schemas.CorrectionHistoryRow] = []
+    corrected_sales = (
+        db.query(models.Sale)
+        .filter(models.Sale.customer_id == customer_id, models.Sale.status == "corrected",
+                models.Sale.corrected_at >= month_start, models.Sale.corrected_at < next_month)
+        .all()
+    )
+    for s in corrected_sales:
+        replacement = db.query(models.Sale).filter(models.Sale.corrected_from_id == s.id).first()
+        out.append(schemas.CorrectionHistoryRow(
+            kind="sale", date=s.date, ref_id=s.id, display_id=s.display_id,
+            description=f"Sale × {s.quantity}", original_amount=s.total_amount,
+            correction_reason=s.correction_reason or "", corrected_by=s.corrected_by or "",
+            corrected_at=s.corrected_at, corrected_display_id=replacement.display_id if replacement else None,
+        ))
+    corrected_payments = (
+        db.query(models.Payment)
+        .filter(models.Payment.customer_id == customer_id, models.Payment.status == "corrected",
+                models.Payment.corrected_at >= month_start, models.Payment.corrected_at < next_month)
+        .all()
+    )
+    for p in corrected_payments:
+        replacement = db.query(models.Payment).filter(models.Payment.corrected_from_id == p.id).first()
+        out.append(schemas.CorrectionHistoryRow(
+            kind="payment", date=p.date, ref_id=p.id, display_id=p.display_id,
+            description=f"Payment · {p.method}", original_amount=p.amount,
+            correction_reason=p.correction_reason or "", corrected_by=p.corrected_by or "",
+            corrected_at=p.corrected_at, corrected_display_id=replacement.display_id if replacement else None,
+        ))
+    out.sort(key=lambda r: r.corrected_at, reverse=True)
+    return out
+
+
+def _company_corrections(db: Session, company_id, month_start: datetime, next_month: datetime) -> list[schemas.CorrectionHistoryRow]:
+    """Same as _customer_corrections, mirrored on the plant/payable side."""
+    out: list[schemas.CorrectionHistoryRow] = []
+    corrected_purchases = (
+        db.query(models.Purchase)
+        .filter(models.Purchase.company_id == company_id, models.Purchase.status == "corrected",
+                models.Purchase.corrected_at >= month_start, models.Purchase.corrected_at < next_month)
+        .all()
+    )
+    for p in corrected_purchases:
+        replacement = db.query(models.Purchase).filter(models.Purchase.corrected_from_id == p.id).first()
+        out.append(schemas.CorrectionHistoryRow(
+            kind="purchase", date=p.date, ref_id=p.id, display_id=p.display_id,
+            description=f"Purchase × {p.quantity}", original_amount=p.total_amount,
+            correction_reason=p.correction_reason or "", corrected_by=p.corrected_by or "",
+            corrected_at=p.corrected_at, corrected_display_id=replacement.display_id if replacement else None,
+        ))
+    corrected_payments = (
+        db.query(models.CompanyPayment)
+        .filter(models.CompanyPayment.company_id == company_id, models.CompanyPayment.status == "corrected",
+                models.CompanyPayment.corrected_at >= month_start, models.CompanyPayment.corrected_at < next_month)
+        .all()
+    )
+    for p in corrected_payments:
+        replacement = db.query(models.CompanyPayment).filter(models.CompanyPayment.corrected_from_id == p.id).first()
+        out.append(schemas.CorrectionHistoryRow(
+            kind="company_payment", date=p.date, ref_id=p.id, display_id=p.display_id,
+            description=f"Payment · {p.method}", original_amount=p.amount,
+            correction_reason=p.correction_reason or "", corrected_by=p.corrected_by or "",
+            corrected_at=p.corrected_at, corrected_display_id=replacement.display_id if replacement else None,
+        ))
+    out.sort(key=lambda r: r.corrected_at, reverse=True)
+    return out
+
+
 def _settles_here(b: models.UnifiedSaleBatch, company_id) -> bool:
     """True only when this batch's settlement money actually lands on
     company_id's payable — i.e. destination_type == 'plant' and the target
@@ -176,6 +249,7 @@ def customer_monthly_ledger(
                 description=f"{product.name if product else 'Product'} × {s.quantity}",
                 sale_amount=s.total_amount, payment_amount=0, running_balance=running,
                 qty_118=q118, qty_454=q454, cyl_out=s.quantity,
+                entered_by=s.entered_by, correctable=True,
             ))
         elif e["kind"] == "payment":
             p: models.Payment = e["obj"]
@@ -186,6 +260,7 @@ def customer_monthly_ledger(
                 description=f"Payment · {p.method}",
                 sale_amount=0, payment_amount=p.amount, running_balance=running,
                 qty_118=Decimal("0"), qty_454=Decimal("0"),
+                entered_by=p.entered_by, correctable=True,
             ))
         elif e["kind"] == "unified_sale":
             # One row for the whole Unified Sale batch — never split by line item.
@@ -214,6 +289,7 @@ def customer_monthly_ledger(
                 description=f"Empty Cylinders Sold ({size_label} KG{type_label}) × {ecs.quantity}",
                 sale_amount=ecs.amount, payment_amount=0, running_balance=running,
                 qty_empty=ecs.quantity, cyl_in=ecs.quantity,
+                entered_by=ecs.entered_by,
             ))
         else:
             # Standalone cylinder movement (e.g. "Cyl Return/Entry") — no
@@ -226,6 +302,7 @@ def customer_monthly_ledger(
                 description=f"Cylinder {t.transaction_type} — {product.name if product else 'Cylinder'}",
                 sale_amount=0, payment_amount=0, running_balance=running,
                 cyl_out=t.qty_out, cyl_in=t.qty_in,
+                entered_by=t.entered_by,
             ))
 
     return schemas.CustomerLedgerSummary(
@@ -245,6 +322,7 @@ def customer_monthly_ledger(
         # accumulation); reverse only for display — Global Sorting Standard
         # is latest-first (§ Global Sorting Standard).
         rows=list(reversed(rows)),
+        corrections=_customer_corrections(db, customer_id, month_start, next_month),
     )
 
 
@@ -469,6 +547,7 @@ def company_monthly_ledger(
                 + (f" · GP {pu.gate_pass_no}" if pu.gate_pass_no else ""),
                 purchase_amount=pu.total_amount, payment_amount=0, running_balance=running,
                 qty_118=q118, qty_454=q454, vehicle_no=pu.vehicle_no,
+                entered_by=pu.entered_by, correctable=True,
             ))
         elif e["kind"] == "payment":
             pay: models.CompanyPayment = e["obj"]
@@ -485,6 +564,7 @@ def company_monthly_ledger(
                 description=description,
                 purchase_amount=0, payment_amount=pay.amount, running_balance=running,
                 qty_118=Decimal("0"), qty_454=Decimal("0"),
+                entered_by=pay.entered_by, correctable=True,
             ))
         elif e["kind"] == "unified_sale":
             # One row for the whole Unified Sale batch — never split by line
@@ -548,6 +628,7 @@ def company_monthly_ledger(
         # Rows are built oldest-first above (required for the running-balance
         # accumulation); reverse only for display (§ Global Sorting Standard).
         rows=list(reversed(rows)),
+        corrections=_company_corrections(db, company_id, month_start, next_month),
     )
 
 

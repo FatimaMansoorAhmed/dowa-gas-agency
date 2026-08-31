@@ -25,8 +25,9 @@ def list_payments(
     return rows
 
 
-@router.post("", response_model=schemas.PaymentOut, status_code=201)
-def create_payment(payload: schemas.PaymentCreate, db: Session = Depends(get_db)):
+def _apply_payment(db: Session, payload: schemas.PaymentCreate, entered_by: str) -> models.Payment:
+    """Create-time posting logic, shared by create_payment and
+    correct_payment (§1)."""
     customer = db.query(models.Customer).get(payload.customer_id)
     if not customer:
         raise HTTPException(404, "Customer not found")
@@ -57,7 +58,7 @@ def create_payment(payload: schemas.PaymentCreate, db: Session = Depends(get_db)
         notes=payload.notes,
         excess_amount=excess_amount,
         status="active",
-        entered_by=payload.entered_by,
+        entered_by=entered_by,
     )
     db.add(payment)
 
@@ -76,6 +77,26 @@ def create_payment(payload: schemas.PaymentCreate, db: Session = Depends(get_db)
     account.current_balance = account.current_balance + payload.amount
     db.add(account)
 
+    return payment
+
+
+def _reverse_payment(db: Session, payment: models.Payment) -> None:
+    """Undoes exactly what _apply_payment posted. Shared by cancel_payment
+    and correct_payment (§1)."""
+    customer = db.query(models.Customer).get(payment.customer_id)
+    customer.current_balance = customer.current_balance + payment.amount
+    if payment.excess_amount:
+        customer.account_credit = customer.account_credit - payment.excess_amount
+    db.add(customer)
+
+    account = db.query(models.PaymentAccount).get(payment.account_id)
+    account.current_balance = account.current_balance - payment.amount
+    db.add(account)
+
+
+@router.post("", response_model=schemas.PaymentOut, status_code=201)
+def create_payment(payload: schemas.PaymentCreate, db: Session = Depends(get_db)):
+    payment = _apply_payment(db, payload, payload.entered_by)
     db.commit()
     db.refresh(payment)
     return payment
@@ -89,15 +110,7 @@ def cancel_payment(payment_id: UUID, by: str = Query(...), db: Session = Depends
     if payment.status != "active":
         raise HTTPException(400, "Payment is already cancelled")
 
-    customer = db.query(models.Customer).get(payment.customer_id)
-    customer.current_balance = customer.current_balance + payment.amount
-    if payment.excess_amount:
-        customer.account_credit = customer.account_credit - payment.excess_amount
-    db.add(customer)
-
-    account = db.query(models.PaymentAccount).get(payment.account_id)
-    account.current_balance = account.current_balance - payment.amount
-    db.add(account)
+    _reverse_payment(db, payment)
 
     payment.status = "cancelled"
     payment.modified_at = datetime.utcnow()
@@ -107,3 +120,34 @@ def cancel_payment(payment_id: UUID, by: str = Query(...), db: Session = Depends
     db.commit()
     db.refresh(payment)
     return payment
+
+
+@router.patch("/{payment_id}/correct", response_model=schemas.PaymentOut)
+def correct_payment(payment_id: UUID, payload: schemas.PaymentCorrect, db: Session = Depends(get_db)):
+    """Ledger Correction (§1) — see correct_sale in routers/sales.py for
+    the full pattern this mirrors."""
+    if not payload.correction_reason.strip():
+        raise HTTPException(400, "correction_reason is required")
+
+    original = db.query(models.Payment).get(payment_id)
+    if not original:
+        raise HTTPException(404, "Payment not found")
+    if original.status != "active":
+        raise HTTPException(400, "Only an active payment can be corrected")
+
+    _reverse_payment(db, original)
+
+    original.status = "corrected"
+    original.corrected_by = payload.corrected_by
+    original.corrected_at = datetime.utcnow()
+    original.correction_reason = payload.correction_reason
+    db.add(original)
+    db.flush()
+
+    corrected = _apply_payment(db, payload, payload.corrected_by)
+    corrected.corrected_from_id = original.id
+    db.add(corrected)
+
+    db.commit()
+    db.refresh(corrected)
+    return corrected

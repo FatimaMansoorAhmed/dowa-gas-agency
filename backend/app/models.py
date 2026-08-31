@@ -103,6 +103,22 @@ class Customer(Base):
     address = Column(String, nullable=True)
     city_area = Column(String, nullable=True)
 
+    # "individual" (walk-in/household customer, the original meaning of
+    # this table) | "shop" (a retail outlet that receives wholesale Loads
+    # via the ordinary Sale flow below and resells at the daily Board
+    # Rate — see models.ShopStockBatch/ShopSale). A Shop IS a Customer row
+    # rather than a separate table: it reuses every existing Sale/Payment/
+    # Customer-Ledger/correction code path unchanged for the money side,
+    # only the new Shop-specific tables below are genuinely new.
+    customer_type = Column(String, nullable=False, default="individual")
+
+    # Shop Business Finance (Engine 3, §19/§24) — the shop's own cash
+    # position anchor, mirroring opening_balance's role for the Dowa
+    # receivable side: the one hand-entered number Shop Cash is derived
+    # from, never edited after (see routers/shops._compute_cash_summary).
+    # Meaningless/unused for customer_type != "shop".
+    shop_opening_cash = Column(Numeric(14, 2), nullable=False, default=0)
+
     # "Year Opening Balance" — the anchor for the whole ledger. Monthly
     # opening balances (see opening_balance_month below) are always derived
     # from this plus everything that happened since, never edited by hand.
@@ -221,11 +237,21 @@ class Sale(Base):
 
     unified_sale_id = Column(GUID(), ForeignKey("unified_sale_batches.id"), nullable=True)
 
-    status = Column(String, nullable=False, default="active")  # active | cancelled | reversed
+    status = Column(String, nullable=False, default="active")  # active | cancelled | reversed | corrected
     entered_by = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     modified_at = Column(DateTime, nullable=True)
     modified_by = Column(String, nullable=True)
+
+    # Ledger Corrections (§1) — set on the ORIGINAL row when it is
+    # superseded by a corrected replacement (status becomes "corrected",
+    # never deleted). corrected_from_id is set on the NEW replacement row,
+    # pointing back at the original it replaces — never the other way
+    # around, so a chain of corrections reads as a simple linked list.
+    corrected_by = Column(String, nullable=True)
+    corrected_at = Column(DateTime, nullable=True)
+    correction_reason = Column(String, nullable=True)
+    corrected_from_id = Column(GUID(), nullable=True)
 
     customer = relationship("Customer")
     product = relationship("Product")
@@ -266,11 +292,17 @@ class Payment(Base):
     account_category = Column(String(255), nullable=True)
     net_settlement_amount = Column(Numeric(14, 2), nullable=True)
 
-    status = Column(String, nullable=False, default="active")  # active | cancelled | reversed
+    status = Column(String, nullable=False, default="active")  # active | cancelled | reversed | corrected
     entered_by = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     modified_at = Column(DateTime, nullable=True)
     modified_by = Column(String, nullable=True)
+
+    # Ledger Corrections (§1) — see Sale.corrected_by for the convention.
+    corrected_by = Column(String, nullable=True)
+    corrected_at = Column(DateTime, nullable=True)
+    correction_reason = Column(String, nullable=True)
+    corrected_from_id = Column(GUID(), nullable=True)
 
     customer = relationship("Customer")
     sale = relationship("Sale")
@@ -503,11 +535,17 @@ class Purchase(Base):
 
     unified_sale_id = Column(GUID(), ForeignKey("unified_sale_batches.id"), nullable=True)
 
-    status = Column(String, nullable=False, default="active")  # active | cancelled | reversed
+    status = Column(String, nullable=False, default="active")  # active | cancelled | reversed | corrected
     entered_by = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     modified_at = Column(DateTime, nullable=True)
     modified_by = Column(String, nullable=True)
+
+    # Ledger Corrections (§1) — see Sale.corrected_by for the convention.
+    corrected_by = Column(String, nullable=True)
+    corrected_at = Column(DateTime, nullable=True)
+    correction_reason = Column(String, nullable=True)
+    corrected_from_id = Column(GUID(), nullable=True)
 
     company = relationship("Company")
     product = relationship("Product")
@@ -552,6 +590,12 @@ class CompanyPayment(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     modified_at = Column(DateTime, nullable=True)
     modified_by = Column(String, nullable=True)
+
+    # Ledger Corrections (§1) — see Sale.corrected_by for the convention.
+    corrected_by = Column(String, nullable=True)
+    corrected_at = Column(DateTime, nullable=True)
+    correction_reason = Column(String, nullable=True)
+    corrected_from_id = Column(GUID(), nullable=True)
 
     company = relationship("Company")
     purchase = relationship("Purchase")
@@ -644,3 +688,298 @@ class EmptyCylinderSale(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     customer = relationship("Customer")
+
+
+class GeneratedReport(Base):
+    """One generated report file (currently only report_type == "daily") —
+    metadata + where it lives on disk, so it can be listed/viewed/
+    downloaded/re-sent later without re-generating it (§6, §7). Every
+    (re)generation inserts a NEW row rather than overwriting an existing
+    one, so a report that was already sent over WhatsApp is never silently
+    replaced — the Reports page shows the full history of every run."""
+    __tablename__ = "generated_reports"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    report_type = Column(String, nullable=False, default="daily")
+    business_date = Column(String, nullable=False)  # "YYYY-MM-DD", Asia/Karachi business date
+    file_path = Column(String, nullable=False)
+    generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    generated_by = Column(String, nullable=False)
+
+    # WhatsApp delivery — see app/whatsapp.py. "not_sent" until a send is
+    # attempted; "unavailable" means no provider credentials are configured
+    # (never treated as an error — the PDF itself is unaffected).
+    whatsapp_status = Column(String, nullable=False, default="not_sent")
+    whatsapp_sent_at = Column(DateTime, nullable=True)
+    whatsapp_error = Column(String, nullable=True)
+
+
+class BoardRate(Base):
+    """The single, system-wide official daily rate/kg for shop retail
+    sales — a real Pakistani LPG-trade concept, deliberately NOT per-plant
+    (unlike RateEntry, which is a per-party quote never actually wired to
+    Sale pricing). Immutable/append-only, same "latest as-of a date"
+    resolution pattern as RateEntry (routers/rates.py) — never edited or
+    deleted, only ever superseded by a newer-dated row. A ShopSale snapshots
+    the resolved rate at creation time (see ShopSale below); changing the
+    Board Rate later never touches any existing ShopSale."""
+    __tablename__ = "board_rates"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    effective_date = Column(DateTime, nullable=False)
+    rate_per_kg = Column(Numeric(10, 2), nullable=False)
+    entered_by = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ShopStockBatch(Base):
+    """One Load's worth of physical stock sitting at a shop, preserving the
+    rate it was loaded at (§8 of the Shop spec — different Loads can carry
+    different rates, and that history must survive even after the stock is
+    partly sold). Created automatically, in the same transaction, whenever
+    an ordinary Sale posts to a customer whose customer_type is "shop" —
+    see routers/sales.py's _apply_sale/_reverse_sale. There is no separate
+    "enter a shop load" endpoint; a Load is always just a Sale.
+
+    quantity_remaining is a LIVE, FIFO-mutated counter used only to decide
+    which batch a ShopSale draws from next — it is never the source for
+    period/historical stock reporting (see ShopSale/reporting, which always
+    sums the immutable quantity_received/ShopSale.quantity/
+    ShopStockAdjustment.quantity_delta logs instead, mirroring how
+    routers/ledger.py derives opening balances from summed history rather
+    than a stored running field)."""
+    __tablename__ = "shop_stock_batches"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)  # the shop
+    product_id = Column(GUID(), ForeignKey("products.id"), nullable=False)
+    source_sale_id = Column(GUID(), ForeignKey("sales.id"), nullable=True)  # the Load (Sale) that created this batch
+    transaction_date = Column(DateTime, nullable=False)
+    # 4 decimal places (not 2): a KG-based ShopSale (§15) consumes a
+    # fractional cylinder-equivalent here (e.g. 10kg / 45kg saleable =
+    # 0.2222) — 2dp would round that away and drift stock over repeated
+    # KG sales. See routers/shops._apply_shop_sale.
+    quantity_received = Column(Numeric(10, 4), nullable=False)
+    quantity_remaining = Column(Numeric(10, 4), nullable=False)
+    load_rate_per_kg = Column(Numeric(10, 2), nullable=False)  # historical only — NEVER used to price a ShopSale
+    status = Column(String, nullable=False, default="active")
+    entered_by = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    customer = relationship("Customer")
+    product = relationship("Product")
+
+
+class ShopSale(Base):
+    """A shop's retail sale to its own end customers — a real-world event
+    Dowa's ordinary Sale model doesn't represent (it's not a Dowa
+    receivable; a shop's Load already paid Dowa in full via the normal
+    Sale/Customer.current_balance flow). Priced ALWAYS from the Board Rate
+    in effect on `date`, never from any ShopStockBatch.load_rate_per_kg —
+    FIFO (see ShopSaleBatchConsumption) only ever decides which physical
+    batch quantity is reduced, never the money. Every pricing field below
+    is a frozen snapshot, computed once at creation and never recomputed —
+    a later Board Rate change must never alter an existing ShopSale."""
+    __tablename__ = "shop_sales"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    display_id = Column(String, unique=True, nullable=False)  # e.g. SHSALE-000123
+    date = Column(DateTime, nullable=False)
+    customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)  # the shop
+    product_id = Column(GUID(), ForeignKey("products.id"), nullable=False)
+    # FIFO/dashboard math (ShopStockBatch.quantity_remaining, stock summary
+    # sums) is always in cylinder-equivalent units, matching ShopStockBatch —
+    # see routers/shops._apply_shop_sale. `unit`/`quantity_kg` record what
+    # the user actually entered without disturbing that: a unit="kg" sale
+    # stores a fractional cylinder-equivalent here (quantity_kg / saleable kg
+    # per cylinder) so stock math never needs two code paths.
+    quantity = Column(Numeric(10, 4), nullable=False)
+    unit = Column(String(10), nullable=False, default="cylinder")  # "cylinder" | "kg" — what the user entered
+    quantity_kg = Column(Numeric(10, 2), nullable=True)  # actual KG sold, frozen; nullable only for rows predating this column
+
+    # Supply Customers (§25) — null means an anonymous cash/public retail
+    # sale, exactly today's behavior. "credit" always requires a
+    # supply_customer_id (a credit sale to nobody is meaningless); "cash"
+    # may or may not name a customer.
+    supply_customer_id = Column(GUID(), ForeignKey("shop_supply_customers.id"), nullable=True)
+    payment_type = Column(String(10), nullable=False, default="cash")  # "cash" | "credit"
+
+    board_rate_per_kg_used = Column(Numeric(10, 2), nullable=False)
+    cylinder_weight_used = Column(Numeric(8, 2), nullable=False)  # physical weight, from Product.weight_kg — informational only, NEVER used to price
+    # Saleable KG actually used to price this sale = cylinder_weight_used minus
+    # the fixed 0.4kg wastage (see routers/shops.FIXED_WASTAGE_KG) — frozen at
+    # sale time so a later change never recomputes an old sale. Nullable: rows
+    # created before this column existed have no reliable value to backfill
+    # (their sale_rate_per_cylinder was computed from the full physical
+    # weight, not the saleable weight) and are left NULL rather than guessed.
+    saleable_kg_used = Column(Numeric(8, 2), nullable=True)
+    sale_rate_per_cylinder = Column(Numeric(10, 2), nullable=False)  # = board_rate_per_kg_used * saleable_kg_used
+    total_amount = Column(Numeric(14, 2), nullable=False)  # = quantity * sale_rate_per_cylinder
+
+    notes = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="active")  # active | cancelled | corrected
+    entered_by = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    modified_at = Column(DateTime, nullable=True)
+    modified_by = Column(String, nullable=True)
+
+    # Ledger Corrections — same convention as Sale/Payment/Purchase/CompanyPayment.
+    corrected_by = Column(String, nullable=True)
+    corrected_at = Column(DateTime, nullable=True)
+    correction_reason = Column(String, nullable=True)
+    corrected_from_id = Column(GUID(), nullable=True)
+
+    customer = relationship("Customer")
+    product = relationship("Product")
+    supply_customer = relationship("ShopSupplyCustomer")
+
+
+class ShopSaleBatchConsumption(Base):
+    """Records exactly which ShopStockBatch row(s) one ShopSale drew from
+    via FIFO, and how much — lets a correction/cancellation reverse the
+    physical stock precisely instead of re-deriving it."""
+    __tablename__ = "shop_sale_batch_consumptions"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    shop_sale_id = Column(GUID(), ForeignKey("shop_sales.id"), nullable=False)
+    shop_stock_batch_id = Column(GUID(), ForeignKey("shop_stock_batches.id"), nullable=False)
+    quantity_consumed = Column(Numeric(10, 4), nullable=False)  # 4dp — see ShopStockBatch.quantity_remaining
+
+
+class ShopStockAdjustment(Base):
+    """A standalone Return/Adjustment stock movement for a shop — kept
+    deliberately simple: it does NOT create, consume, or otherwise touch
+    any ShopStockBatch/FIFO layer (that interaction is intentionally left
+    undefined until the business rule for it is decided). It only ever
+    contributes its own signed quantity_delta as an independent term in
+    the derived Closing Stock formula (Opening + Load + Adjustments −
+    Sales) — stock-only, never touches any money/balance field."""
+    __tablename__ = "shop_stock_adjustments"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    display_id = Column(String, unique=True, nullable=False)  # e.g. SHADJ-000123
+    date = Column(DateTime, nullable=False)
+    customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
+    product_id = Column(GUID(), ForeignKey("products.id"), nullable=False)
+    adjustment_type = Column(String, nullable=False)  # "return" | "adjustment"
+    quantity_delta = Column(Numeric(10, 2), nullable=False)  # signed: +in / -out
+    reason = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="active")
+    entered_by = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    modified_at = Column(DateTime, nullable=True)
+    modified_by = Column(String, nullable=True)
+
+    customer = relationship("Customer")
+    product = relationship("Product")
+
+
+# ============================================================
+# Shop Business Finance (Engine 3, §19-§26) — the shop's own
+# cash/customer books, deliberately separate from the Dowa Customer
+# Ledger/Customer.current_balance (Engine 1) and from Shop stock/FIFO
+# pricing (Engine 2). Nothing here ever touches a Customer row's
+# current_balance or a ShopStockBatch beyond the ShopSale linkage that
+# already existed (a Supply Customer credit sale is still just a
+# ShopSale — see ShopSale.supply_customer_id/payment_type above — so it
+# still draws down FIFO stock and prices off the Board Rate exactly like
+# any other Shop Sale; only the cash-vs-receivable destination differs).
+# ============================================================
+
+class ShopSupplyCustomer(Base):
+    """A shop's own retail/wholesale customer — entirely distinct from
+    models.Customer (the Dowa-side ledger). Deliberately its own table
+    rather than reusing Customer: a Supply Customer has no Dowa
+    receivable, no cylinder balances, no display_id sequence shared with
+    Dowa customers — conflating the two would let a shop's walk-in credit
+    customer accidentally show up in the Dowa Customer Ledger (§25)."""
+    __tablename__ = "shop_supply_customers"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    shop_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
+    name = Column(String, nullable=False)
+    mobile = Column(String, nullable=True)
+    address = Column(String, nullable=True)
+
+    opening_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    current_balance = Column(Numeric(14, 2), nullable=False, default=0)  # receivable OWED TO the shop
+
+    status = Column(String, nullable=False, default="active")  # active | inactive
+    entered_by = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    shop = relationship("Customer")
+
+
+class ShopCustomerPayment(Base):
+    """Money a Supply Customer pays the shop, settling a credit ShopSale —
+    the mirror of models.Payment, scoped to one shop's own customer book.
+    Reduces ShopSupplyCustomer.current_balance, increases Shop Cash (§25)."""
+    __tablename__ = "shop_customer_payments"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    display_id = Column(String, unique=True, nullable=False)  # e.g. SHCPAY-000123
+    date = Column(DateTime, nullable=False)
+    shop_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
+    supply_customer_id = Column(GUID(), ForeignKey("shop_supply_customers.id"), nullable=False)
+
+    amount = Column(Numeric(14, 2), nullable=False)
+    method = Column(String, nullable=False, default="cash")
+    notes = Column(String, nullable=True)
+
+    status = Column(String, nullable=False, default="active")  # active | cancelled
+    entered_by = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    modified_at = Column(DateTime, nullable=True)
+    modified_by = Column(String, nullable=True)
+
+    shop = relationship("Customer")
+    supply_customer = relationship("ShopSupplyCustomer")
+
+
+class ShopExpenseTransaction(Base):
+    """One cash-out event at a shop, atomically grouping 1+ categorized
+    ExpenseLines (§20-21) — e.g. one owner cash withdrawal split into
+    Fuel/Salary/Home in a single transaction. The header carries the
+    total/cash impact; each line carries its own category and
+    expense-vs-owner-withdrawal classification (line_type) so reporting
+    can total each category, and Owner Withdrawals separately from
+    Business Expenses (§23), even when they were entered together."""
+    __tablename__ = "shop_expense_transactions"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    display_id = Column(String, unique=True, nullable=False)  # e.g. SHEXP-000123
+    date = Column(DateTime, nullable=False)
+    shop_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
+
+    total_amount = Column(Numeric(14, 2), nullable=False)  # = sum(lines.amount), reduces Shop Cash regardless of line_type mix
+    payment_source = Column(String, nullable=True)  # free-text note (e.g. "cash drawer") — Shop Cash has no linked PaymentAccount row
+    notes = Column(String, nullable=True)
+
+    status = Column(String, nullable=False, default="active")  # active | cancelled
+    entered_by = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    modified_at = Column(DateTime, nullable=True)
+    modified_by = Column(String, nullable=True)
+
+    shop = relationship("Customer")
+    lines = relationship("ShopExpenseLine", back_populates="transaction", cascade="all, delete-orphan")
+
+
+class ShopExpenseLine(Base):
+    """One categorized line within a ShopExpenseTransaction (§21-22)."""
+    __tablename__ = "shop_expense_lines"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    expense_transaction_id = Column(GUID(), ForeignKey("shop_expense_transactions.id"), nullable=False)
+    category_id = Column(GUID(), ForeignKey("expense_categories.id"), nullable=False)
+    # "expense" | "owner_withdrawal" (§22-23) — Home/personal withdrawals
+    # are owner_withdrawal even though entered in the same transaction as
+    # genuine business expenses; both reduce Shop Cash identically, this
+    # field only affects reporting classification.
+    line_type = Column(String, nullable=False, default="expense")
+    amount = Column(Numeric(14, 2), nullable=False)
+    description = Column(String, nullable=True)
+
+    transaction = relationship("ShopExpenseTransaction", back_populates="lines")
+    category = relationship("ExpenseCategory")

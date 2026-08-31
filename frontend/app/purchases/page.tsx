@@ -1,14 +1,16 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { PlusCircle, Search, Truck, Wallet } from "lucide-react";
+import { PlusCircle, Search, Truck, Wallet, Pencil } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Th, Td, inputClass, BalanceTag, Button } from "@/components/ui";
 import NewPlantModal from "@/components/NewPlantModal";
 import AddPurchaseModal from "@/components/AddPurchaseModal";
 import RecordPlantPaymentModal from "@/components/RecordPlantPaymentModal";
+import CorrectTransactionModal, { CorrectableKind } from "@/components/CorrectTransactionModal";
+import PrintButton from "@/components/PrintButton";
 import { api } from "@/lib/api";
 import { pkr, fmtTime, fmtClock, todayLocalInput } from "@/lib/format";
-import type { PlantLedgerSummaryRow, CompanyLedgerSummary } from "@/lib/types";
+import type { PlantLedgerSummaryRow, CompanyLedgerSummary, CompanyLedgerRow, Purchase, CompanyPayment } from "@/lib/types";
 
 // Derived from the Asia/Karachi-aware todayLocalInput() ("YYYY-MM-DD"), so
 // "this month" reflects the Karachi calendar even off-Karachi machines.
@@ -28,6 +30,30 @@ function PurchasesBody() {
   const [showNewPlant, setShowNewPlant] = useState(false);
   const [showNewPurchase, setShowNewPurchase] = useState(false);
   const [showPlantPayment, setShowPlantPayment] = useState(false);
+  const [correctTarget, setCorrectTarget] = useState<{ kind: CorrectableKind; transaction: Purchase | CompanyPayment } | null>(null);
+  const [correctLoading, setCorrectLoading] = useState<string | null>(null);
+  const [showCorrections, setShowCorrections] = useState(false);
+
+  // Ledger Correction — the ledger row only carries a summary shape; fetch
+  // the full Purchase/CompanyPayment record (scoped to this plant) so the
+  // modal can pre-fill every editable field.
+  const openCorrect = async (row: CompanyLedgerRow) => {
+    if (!row.correctable || !selectedCompanyId || (row.kind !== "purchase" && row.kind !== "payment")) return;
+    setCorrectLoading(row.ref_id);
+    try {
+      if (row.kind === "purchase") {
+        const list = await api.purchases.list({ company_id: selectedCompanyId });
+        const tx = list.find((p) => p.id === row.ref_id);
+        if (tx) setCorrectTarget({ kind: "purchase", transaction: tx });
+      } else {
+        const list = await api.companyPayments.list({ company_id: selectedCompanyId });
+        const tx = list.find((p) => p.id === row.ref_id);
+        if (tx) setCorrectTarget({ kind: "companyPayment", transaction: tx });
+      }
+    } finally {
+      setCorrectLoading(null);
+    }
+  };
 
   const loadSummary = async () => {
     setLoadingSummary(true);
@@ -188,7 +214,7 @@ function PurchasesBody() {
       </Panel>
 
       {selectedCompanyId && (
-        <Panel>
+        <Panel className="print-area">
           {loadingDetail && <div className="font-body text-steel py-6">Loading…</div>}
           {!loadingDetail && detail && (
             <>
@@ -196,8 +222,12 @@ function PurchasesBody() {
                 <div>
                   <Eyebrow>{detail.company.name} — Detail</Eyebrow>
                   <div className="font-mono text-xs text-steel">{detail.company.mobile || "No mobile on file"}</div>
+                  <div className="hidden print:block font-mono text-xs text-steel mt-1">Period: {mo}/{year}</div>
                 </div>
-                <BalanceTag amount={detail.closing_balance} />
+                <div className="flex items-center gap-2">
+                  <span className="print:hidden"><PrintButton label="Print Plant Ledger" /></span>
+                  <BalanceTag amount={detail.closing_balance} />
+                </div>
               </div>
 
               <div className="grid grid-cols-4 gap-3 mb-4">
@@ -221,14 +251,17 @@ function PurchasesBody() {
                       <Th right>Purchase</Th>
                       <Th right>Payment</Th>
                       <Th right>Balance</Th>
+                      <Th>Entered By</Th>
+                      <Th center><span className="print:hidden">Actions</span></Th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr>
                       <Td colSpan={9}>Opening balance</Td>
                       <Td right mono bold>{pkr(detail.opening_balance)}</Td>
+                      <Td colSpan={2}>{null}</Td>
                     </tr>
-                    {displayRows.map((r: any) => {
+                    {displayRows.map((r: CompanyLedgerRow) => {
                       const formatted = fmtTime(r.date);
                       const parts = formatted.split(",");
                       const datePart = parts[0] || formatted;
@@ -248,15 +281,70 @@ function PurchasesBody() {
                           <Td right mono>{parseFloat(r.purchase_amount) ? pkr(r.purchase_amount) : "—"}</Td>
                           <Td right mono color="#1E8A5F">{parseFloat(r.payment_amount) ? pkr(r.payment_amount) : "—"}</Td>
                           <Td right mono bold><BalanceTag amount={r.running_balance} /></Td>
+                          <Td mono>{r.entered_by || "—"}</Td>
+                          <Td center>
+                            {r.correctable && (
+                              <button
+                                onClick={() => openCorrect(r)}
+                                disabled={correctLoading === r.ref_id}
+                                title="Correct this transaction"
+                                className="print:hidden inline-flex items-center gap-1 bg-[#EAF6F6] border border-teal/40 rounded-md px-2 py-1 cursor-pointer text-teal hover:bg-teal hover:text-white disabled:opacity-40"
+                              >
+                                <Pencil size={11} />
+                                <span className="font-mono text-[10.5px] font-semibold">
+                                  {correctLoading === r.ref_id ? "Loading…" : "Correct"}
+                                </span>
+                              </button>
+                            )}
+                          </Td>
                         </tr>
                       );
                     })}
                     {!displayRows.length && (
-                      <tr><td colSpan={10} className="text-steel font-body text-[13px] py-4 text-center">No transactions this month.</td></tr>
+                      <tr><td colSpan={12} className="text-steel font-body text-[13px] py-4 text-center">No transactions this month.</td></tr>
                     )}
                   </tbody>
                 </table>
               </div>
+
+              {detail.corrections.length > 0 && (
+                <div className="mt-4">
+                  <button
+                    onClick={() => setShowCorrections((s) => !s)}
+                    className="print:hidden bg-transparent border-none cursor-pointer flex items-center gap-1.5 w-full text-left"
+                  >
+                    <Eyebrow>Correction History ({detail.corrections.length})</Eyebrow>
+                  </button>
+                  <table className={`w-full border-collapse mt-2 ${showCorrections ? "" : "hidden print:table"}`}>
+                    <thead>
+                      <tr>
+                        <Th>Date</Th>
+                        <Th>Original ID</Th>
+                        <Th>Description</Th>
+                        <Th right>Original Amount</Th>
+                        <Th>Reason</Th>
+                        <Th>Corrected By</Th>
+                        <Th>Corrected At</Th>
+                        <Th>Replaced By</Th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detail.corrections.map((c) => (
+                        <tr key={c.ref_id}>
+                          <Td mono>{fmtTime(c.date)}</Td>
+                          <Td mono color="#9B4A4A">{c.display_id}</Td>
+                          <Td>{c.description}</Td>
+                          <Td right mono>{pkr(c.original_amount)}</Td>
+                          <Td>{c.correction_reason}</Td>
+                          <Td mono>{c.corrected_by}</Td>
+                          <Td mono>{fmtTime(c.corrected_at)}</Td>
+                          <Td mono>{c.corrected_display_id ?? "—"}</Td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </>
           )}
         </Panel>
@@ -277,6 +365,17 @@ function PurchasesBody() {
           onClose={() => setShowPlantPayment(false)}
           onSaved={refreshAfterAction}
           initialCompanyId={selectedCompanyId || undefined}
+        />
+      )}
+      {correctTarget && (
+        <CorrectTransactionModal
+          kind={correctTarget.kind}
+          transaction={correctTarget.transaction}
+          onClose={() => setCorrectTarget(null)}
+          onSaved={() => {
+            setCorrectTarget(null);
+            refreshAfterAction();
+          }}
         />
       )}
     </div>

@@ -26,6 +26,27 @@ def karachi_month_str() -> str:
     return datetime.now(KARACHI_TZ).strftime("%Y-%m")
 
 
+def karachi_today_str() -> str:
+    """Current business date in Asia/Karachi, as 'YYYY-MM-DD' — default
+    date for the Shop dashboard's daily stock summary."""
+    return datetime.now(KARACHI_TZ).strftime("%Y-%m-%d")
+
+
+def karachi_day_bounds(business_date: str) -> tuple[datetime, datetime]:
+    """[start, end) naive-UTC bounds for one Asia/Karachi calendar day, given
+    as "YYYY-MM-DD" — the business-date window every report/daily-activity
+    query filters transaction dates against. Mirrors karachi_month_str's
+    fixed +5h convention; every stored DateTime here is naive UTC (see
+    to_naive_utc's docstring), so the boundary itself is expressed in that
+    same storage convention rather than converted at query time."""
+    day_start_local = datetime.strptime(business_date, "%Y-%m-%d").replace(tzinfo=KARACHI_TZ)
+    day_end_local = day_start_local + timedelta(days=1)
+    return (
+        day_start_local.astimezone(timezone.utc).replace(tzinfo=None),
+        day_end_local.astimezone(timezone.utc).replace(tzinfo=None),
+    )
+
+
 def to_naive_utc(value: datetime) -> datetime:
     """Normalizes a datetime to naive UTC before it ever reaches a DB column.
 

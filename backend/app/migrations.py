@@ -64,6 +64,50 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     ("unified_sale_batches", "payment_approved_at", "TIMESTAMP"),
     ("unified_sale_batches", "payment_approved_by", "VARCHAR(255)"),
     ("unified_sale_batches", "payment_reference", "VARCHAR(255)"),
+    # Ledger Corrections (§1) — additive on the 4 correctable transaction
+    # types (Sale/Payment on the customer side, Purchase/CompanyPayment on
+    # the plant side). See models.Sale.corrected_by for the convention:
+    # set on the ORIGINAL row when superseded (status becomes "corrected"),
+    # corrected_from_id set on the NEW replacement row pointing back at it.
+    ("sales", "corrected_by", "VARCHAR(255)"),
+    ("sales", "corrected_at", "TIMESTAMP"),
+    ("sales", "correction_reason", "VARCHAR(255)"),
+    ("sales", "corrected_from_id", "GUID"),
+    ("payments", "corrected_by", "VARCHAR(255)"),
+    ("payments", "corrected_at", "TIMESTAMP"),
+    ("payments", "correction_reason", "VARCHAR(255)"),
+    ("payments", "corrected_from_id", "GUID"),
+    ("purchases", "corrected_by", "VARCHAR(255)"),
+    ("purchases", "corrected_at", "TIMESTAMP"),
+    ("purchases", "correction_reason", "VARCHAR(255)"),
+    ("purchases", "corrected_from_id", "GUID"),
+    ("company_payments", "corrected_by", "VARCHAR(255)"),
+    ("company_payments", "corrected_at", "TIMESTAMP"),
+    ("company_payments", "correction_reason", "VARCHAR(255)"),
+    ("company_payments", "corrected_from_id", "GUID"),
+    # Shop Management (§ Shop Management + Board Rate) — additive. Every
+    # existing customer gets 'individual' from the default, so nothing
+    # about existing Sale/Payment/Purchase/Customer behavior changes.
+    ("customers", "customer_type", "VARCHAR(50) NOT NULL DEFAULT 'individual'"),
+    # Saleable-KG wastage fix (§ Shop Management — Board Rate / Saleable KG):
+    # a Shop Sale must price off (physical weight - 0.4kg fixed wastage), not
+    # the raw Product.weight_kg — see routers/shops.FIXED_WASTAGE_KG. Existing
+    # ShopSale rows were priced with the old (incorrect) formula, so there is
+    # nothing correct to backfill here; they're left NULL, same convention as
+    # empty_cylinder_sales.cylinder_type above.
+    ("shop_sales", "saleable_kg_used", "NUMERIC(8, 2)"),
+    # Shop KG-based sales (§15) — unit/quantity_kg record what the user
+    # actually entered; `quantity` itself stays cylinder-equivalent for
+    # FIFO/dashboard math (see models.ShopSale). Backfilled below for
+    # existing rows, all of which were cylinder sales.
+    ("shop_sales", "unit", "VARCHAR(10) NOT NULL DEFAULT 'cylinder'"),
+    ("shop_sales", "quantity_kg", "NUMERIC(10, 2)"),
+    # Supply Customers (§25) — additive, null/'cash' preserves every
+    # existing ShopSale as the anonymous cash retail sale it already was.
+    ("shop_sales", "supply_customer_id", "GUID"),
+    ("shop_sales", "payment_type", "VARCHAR(10) NOT NULL DEFAULT 'cash'"),
+    # Shop Business Finance (Engine 3, §19/§24) opening-cash anchor.
+    ("customers", "shop_opening_cash", "NUMERIC(14, 2) NOT NULL DEFAULT 0"),
 ]
 
 
@@ -93,6 +137,23 @@ def run_startup_migrations(engine: Engine) -> None:
             payments_columns = {c["name"]: c for c in inspector.get_columns("payments")}
             if payments_columns.get("account_id", {}).get("nullable") is False:
                 conn.execute(text("ALTER TABLE payments ALTER COLUMN account_id DROP NOT NULL"))
+
+        # shop_sales.quantity widened from NUMERIC(10,2) to NUMERIC(10,4) —
+        # a unit='kg' Shop Sale (§15) stores a fractional cylinder-equivalent
+        # here (quantity_kg / saleable kg per cylinder), which needs more
+        # than 2 decimal places to stay reasonably precise for FIFO. Widening
+        # precision is a safe, non-destructive ALTER in Postgres (existing
+        # values are unaffected). SQLite has no fixed column precision to
+        # widen — every value is stored as-is regardless of the declared type.
+        if "shop_sales" in existing_tables and engine.dialect.name == "postgresql":
+            conn.execute(text("ALTER TABLE shop_sales ALTER COLUMN quantity TYPE NUMERIC(10, 4)"))
+        # Same widening for the batch side (§15 — a KG-based sale consumes a
+        # fractional cylinder-equivalent from a batch, e.g. 0.2222).
+        if "shop_stock_batches" in existing_tables and engine.dialect.name == "postgresql":
+            conn.execute(text("ALTER TABLE shop_stock_batches ALTER COLUMN quantity_received TYPE NUMERIC(10, 4)"))
+            conn.execute(text("ALTER TABLE shop_stock_batches ALTER COLUMN quantity_remaining TYPE NUMERIC(10, 4)"))
+        if "shop_sale_batch_consumptions" in existing_tables and engine.dialect.name == "postgresql":
+            conn.execute(text("ALTER TABLE shop_sale_batch_consumptions ALTER COLUMN quantity_consumed TYPE NUMERIC(10, 4)"))
 
         # cylinder_transactions.product_id was NOT NULL on some existing
         # databases from before generic (non-product-specific) cylinder
@@ -131,4 +192,71 @@ def run_startup_migrations(engine: Engine) -> None:
                     sale_approved_by = approved_by,
                     payment_approved_by = approved_by
                 WHERE status IN ('approved', 'cancelled') AND sale_status = 'pending'
+            """))
+
+        # Product de-duplication (§ Shop Management — Product Duplicate).
+        # Investigation found "11.8 KG Cylinder2" sitting alongside "11.8 KG
+        # Cylinder" as a genuine accidental duplicate DB row (same
+        # weight_kg, zero Sale/Purchase/ShopSale/ShopStockBatch/
+        # ShopStockAdjustment/CylinderTransaction references) — most likely
+        # created once through the plain POST /products endpoint. It must
+        # never be silently deleted (historical rows could reference it on
+        # some other database), only deactivated so every product selector
+        # (Shop Sale, Unified Sale items, Purchase) stops offering it,
+        # which is also what let a user type a rate into the *duplicate's*
+        # row and see the 11.8->45.4 auto-calc "not fire" (that calc keys
+        # off the specific product id, and the duplicate's id never matched
+        # it) — restoring a single 11.8kg product restores the calc too,
+        # with no change to the calc logic itself.
+        #
+        # General + idempotent: for every weight_kg shared by more than one
+        # ACTIVE product, keep exactly one (preferring whichever already has
+        # historical Sale/Purchase rows, so real data is never orphaned; if
+        # none do, keep the lowest id for a stable, repeatable choice) and
+        # deactivate the rest. Already-inactive products are left alone, so
+        # re-running this on every startup never re-flips a deliberate
+        # manual reactivation.
+        if "products" in existing_tables:
+            rows = conn.execute(text(
+                "SELECT id, weight_kg FROM products WHERE active = 'active'"
+            )).fetchall()
+            by_weight: dict[str, list[str]] = {}
+            for pid, weight in rows:
+                by_weight.setdefault(str(weight), []).append(str(pid))
+
+            for weight, ids in by_weight.items():
+                if len(ids) < 2:
+                    continue
+
+                counts = {}
+                for pid in ids:
+                    sale_cnt = conn.execute(
+                        text("SELECT COUNT(*) FROM sales WHERE product_id = :pid"), {"pid": pid}
+                    ).scalar() or 0
+                    purchase_cnt = conn.execute(
+                        text("SELECT COUNT(*) FROM purchases WHERE product_id = :pid"), {"pid": pid}
+                    ).scalar() or 0
+                    counts[pid] = sale_cnt + purchase_cnt
+
+                keep_id = sorted(ids, key=lambda pid: (-counts[pid], pid))[0]
+                for pid in ids:
+                    if pid != keep_id:
+                        conn.execute(
+                            text("UPDATE products SET active = 'inactive' WHERE id = :pid"),
+                            {"pid": pid},
+                        )
+
+        # One-time backfill: every existing shop_sales row predates the
+        # unit/quantity_kg columns and was, by construction, a whole-cylinder
+        # sale (quantity_kg = quantity * cylinder_weight_used — the physical
+        # weight, matching what that row's already-frozen total_amount was
+        # actually computed from before the wastage fix; never recomputed
+        # from today's saleable-KG rule, which would silently change a
+        # historical amount's implied weight). Guarded by quantity_kg IS NULL
+        # so a re-run never touches a row a real Shop Sale already populated.
+        if "shop_sales" in existing_tables:
+            conn.execute(text("""
+                UPDATE shop_sales
+                SET quantity_kg = quantity * cylinder_weight_used
+                WHERE quantity_kg IS NULL
             """))

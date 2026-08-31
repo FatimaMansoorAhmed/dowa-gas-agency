@@ -17,11 +17,14 @@ router = APIRouter(prefix="/customers", tags=["customers"])
 def list_customers(
     search: str | None = Query(None, description="Matches name, mobile, shop name, or customer ID"),
     status: str | None = Query(None),
+    customer_type: str | None = Query(None, description="'individual' or 'shop' — filters the Shops page"),
     db: Session = Depends(get_db),
 ):
     q = db.query(models.Customer)
     if status:
         q = q.filter(models.Customer.status == status)
+    if customer_type:
+        q = q.filter(models.Customer.customer_type == customer_type)
     if search:
         like = f"%{search}%"
         q = q.filter(
@@ -97,6 +100,7 @@ def create_customer(payload: schemas.CustomerCreate, db: Session = Depends(get_d
             # Generic running total (drives the Sell Empty Cylinders flow,
             # which doesn't split by size) starts as the sum of both.
             empty_cylinders=total_118 + total_454,
+            customer_type=getattr(payload, "customer_type", None) or "individual",
         )
         
         db.add(new_customer)

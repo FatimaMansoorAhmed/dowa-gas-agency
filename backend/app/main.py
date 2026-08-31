@@ -8,7 +8,7 @@ from app.migrations import run_startup_migrations
 from app.routers import (
     companies, parties, rates, customers, products, payment_accounts,
     expense_categories, sales, payments, payment_receipts, expenses, ledger, purchases, company_payments,
-    cylinder_transactions,owner_drawings, unified_sale, owner_capital,
+    cylinder_transactions,owner_drawings, unified_sale, owner_capital, reports, board_rates, shops,
 )
 
 load_dotenv()
@@ -46,6 +46,9 @@ app.include_router(cylinder_transactions.router)
 app.include_router(owner_drawings.router)
 app.include_router(unified_sale.router)
 app.include_router(owner_capital.router)
+app.include_router(reports.router)
+app.include_router(board_rates.router)
+app.include_router(shops.router)
 
 
 @app.on_event("startup")

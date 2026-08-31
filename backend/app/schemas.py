@@ -884,6 +884,8 @@ class CustomerCreate(BaseModel):
     empty_cylinders_118_pso: Decimal = Decimal("0")
     empty_cylinders_454_cross: Decimal = Decimal("0")
     empty_cylinders_454_pso: Decimal = Decimal("0")
+    # "individual" (default) | "shop" — see models.Customer.customer_type.
+    customer_type: Literal["individual", "shop"] = "individual"
 
 
 class CustomerOut(BaseModel):
@@ -915,6 +917,7 @@ class CustomerOut(BaseModel):
     empty_cylinders_118_pso: Decimal = Decimal("0")
     empty_cylinders_454_cross: Decimal = Decimal("0")
     empty_cylinders_454_pso: Decimal = Decimal("0")
+    customer_type: str = "individual"
 
 
 class CustomerAdjust(BaseModel):
@@ -997,6 +1000,24 @@ class SaleCreate(BaseModel):
     vehicle_no: Optional[str] = None
     notes: Optional[str] = None
     entered_by: str
+    # Cylinders handed back on the spot, alongside the ones delivered —
+    # read by routers/sales.py's create_sale to size the linked
+    # CylinderTransaction's qty_in. The New Sale form has always sent this;
+    # it was missing from this schema (silently dropped under pydantic's
+    # default extra="ignore"), so a returned-cylinder count entered on that
+    # form never reached the cylinder balance. Declaring it here is what
+    # actually makes it take effect, for both create and the new /correct
+    # endpoint below, which reuses this exact field.
+    cylinders_returned: Decimal = Decimal("0")
+
+
+class SaleCorrect(SaleCreate):
+    """Same shape as SaleCreate — the corrected transaction entirely
+    replaces the original's field values (§1). `entered_by` here is who is
+    PERFORMING the correction (sent as corrected_by too); the original row
+    keeps its own entered_by untouched."""
+    correction_reason: str
+    corrected_by: str
 
 
 class SaleOut(BaseModel):
@@ -1019,6 +1040,10 @@ class SaleOut(BaseModel):
     status: str
     entered_by: str
     created_at: datetime
+    corrected_by: Optional[str] = None
+    corrected_at: Optional[datetime] = None
+    correction_reason: Optional[str] = None
+    corrected_from_id: Optional[UUID] = None
 
 
 # ---------- Payment ----------
@@ -1033,6 +1058,12 @@ class PaymentCreate(BaseModel):
     received_by: Optional[str] = None
     notes: Optional[str] = None
     entered_by: str
+
+
+class PaymentCorrect(PaymentCreate):
+    """Same shape as PaymentCreate — see SaleCorrect for the convention."""
+    correction_reason: str
+    corrected_by: str
 
 
 class PaymentOut(BaseModel):
@@ -1052,6 +1083,10 @@ class PaymentOut(BaseModel):
     status: str
     entered_by: str
     created_at: datetime
+    corrected_by: Optional[str] = None
+    corrected_at: Optional[datetime] = None
+    correction_reason: Optional[str] = None
+    corrected_from_id: Optional[UUID] = None
 
 
 # ---------- Payment Receipt (standalone, with settlement routing) ----------
@@ -1160,6 +1195,30 @@ class LedgerRow(BaseModel):
     # combined "Cyl Out" / "Cyl In" columns.
     cyl_out: Decimal = Decimal("0")
     cyl_in: Decimal = Decimal("0")
+    # Who posted this transaction (§2 Audit) — "" for row kinds that don't
+    # carry a single entered_by (e.g. an aggregated unified_sale batch row
+    # spanning several child records with possibly different entered_by).
+    entered_by: str = ""
+    # True only for "sale"/"payment" rows — the two kinds the Correct
+    # action applies to (§1 Scope). Lets the frontend show the action only
+    # where it's actually supported, without hardcoding the kind list twice.
+    correctable: bool = False
+
+
+class CorrectionHistoryRow(BaseModel):
+    """One superseded (status="corrected") original transaction — kept
+    for the read-only Correction History panel, never mixed into the
+    running-balance rows above (§1)."""
+    kind: Literal["sale", "payment", "purchase", "company_payment"]
+    date: datetime
+    ref_id: UUID
+    display_id: str
+    description: str
+    original_amount: Decimal
+    correction_reason: str
+    corrected_by: str
+    corrected_at: datetime
+    corrected_display_id: Optional[str] = None  # the new row that replaced it, if still findable
 
 
 class CustomerLedgerSummary(BaseModel):
@@ -1179,6 +1238,7 @@ class CustomerLedgerSummary(BaseModel):
     # closing) -> Flagged; closing_balance <= opening_balance -> Normal.
     flagged: bool = False
     rows: list[LedgerRow]
+    corrections: list[CorrectionHistoryRow] = []
 
 
 class CustomerFlagOut(BaseModel):
@@ -1210,6 +1270,12 @@ class PurchaseCreate(BaseModel):
     entered_by: str
 
 
+class PurchaseCorrect(PurchaseCreate):
+    """Same shape as PurchaseCreate — see SaleCorrect for the convention."""
+    correction_reason: str
+    corrected_by: str
+
+
 class PurchaseOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
@@ -1234,6 +1300,10 @@ class PurchaseOut(BaseModel):
     status: str
     entered_by: str
     created_at: datetime
+    corrected_by: Optional[str] = None
+    corrected_at: Optional[datetime] = None
+    correction_reason: Optional[str] = None
+    corrected_from_id: Optional[UUID] = None
 
 
 # ---------- Company Payment ----------
@@ -1248,6 +1318,12 @@ class CompanyPaymentCreate(BaseModel):
     paid_by: Optional[str] = None
     notes: Optional[str] = None
     entered_by: str
+
+
+class CompanyPaymentCorrect(CompanyPaymentCreate):
+    """Same shape as CompanyPaymentCreate — see SaleCorrect for the convention."""
+    correction_reason: str
+    corrected_by: str
 
 
 class CompanyPaymentOut(BaseModel):
@@ -1268,6 +1344,10 @@ class CompanyPaymentOut(BaseModel):
     status: str
     entered_by: str
     created_at: datetime
+    corrected_by: Optional[str] = None
+    corrected_at: Optional[datetime] = None
+    correction_reason: Optional[str] = None
+    corrected_from_id: Optional[UUID] = None
 
 
 # ---------- Company Ledger (computed, read-only view) ----------
@@ -1285,6 +1365,10 @@ class CompanyLedgerRow(BaseModel):
     qty_118: Decimal = Decimal("0")
     qty_454: Decimal = Decimal("0")
     vehicle_no: Optional[str] = None
+    # Who posted this transaction (§2 Audit); "" for aggregated unified_sale rows.
+    entered_by: str = ""
+    # True only for "purchase"/"payment" rows — see LedgerRow.correctable.
+    correctable: bool = False
 
 
 class CompanyLedgerSummary(BaseModel):
@@ -1300,6 +1384,7 @@ class CompanyLedgerSummary(BaseModel):
     total_transactions: int
     closing_balance: Decimal
     rows: list[CompanyLedgerRow]
+    corrections: list[CorrectionHistoryRow] = []
 
 
 class PlantLedgerSummaryRow(BaseModel):
@@ -1576,3 +1661,385 @@ class EmptyCylinderSaleOut(BaseModel):
     status: str
     entered_by: str
     created_at: datetime
+
+
+# ---------- Reporting (§5, §6, §8) ----------
+class ReportableTransactionOut(BaseModel):
+    """One row inside a Daily Report section — the common shape every
+    reporting adapter maps its model into (app/reporting/types.py)."""
+    id: UUID
+    type: str  # e.g. "sale", "purchase", "payment", "company_payment", ...
+    date: datetime
+    display_id: str
+    description: str
+    amount: Optional[Decimal] = None
+    customer: Optional[str] = None
+    plant: Optional[str] = None
+    reference: Optional[str] = None
+    entered_by: str
+    approval_info: Optional[str] = None
+    status: str
+
+
+class ReportSectionOut(BaseModel):
+    key: str
+    label: str
+    rows: list[ReportableTransactionOut]
+    financial_total: Optional[Decimal] = None
+
+
+class DailySummaryOut(BaseModel):
+    total_sales: Decimal
+    total_purchases: Decimal
+    total_customer_payments: Decimal
+    total_plant_payments: Decimal
+    total_investments: Decimal
+    total_expenses: Decimal
+    total_owner_drawings: Decimal
+    net_cash_movement: Decimal
+    total_cylinders_out: Decimal
+    total_cylinders_in: Decimal
+
+
+class DailyReportDataOut(BaseModel):
+    business_date: str
+    sections: list[ReportSectionOut]
+    summary: DailySummaryOut
+
+
+class GeneratedReportOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    report_type: str
+    business_date: str
+    generated_at: datetime
+    generated_by: str
+    whatsapp_status: str
+    whatsapp_sent_at: Optional[datetime] = None
+    whatsapp_error: Optional[str] = None
+
+
+class SendWhatsAppOut(BaseModel):
+    report: GeneratedReportOut
+    message: str
+
+
+# ---------- Shop Management + Board Rate ----------
+class BoardRateCreate(BaseModel):
+    effective_date: UtcDateTime
+    rate_per_kg: Decimal
+    entered_by: str
+
+
+class BoardRateOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    effective_date: datetime
+    rate_per_kg: Decimal
+    entered_by: str
+    created_at: datetime
+
+
+class ShopStockBatchOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    customer_id: UUID
+    product_id: UUID
+    source_sale_id: Optional[UUID] = None
+    transaction_date: datetime
+    quantity_received: Decimal
+    quantity_remaining: Decimal
+    load_rate_per_kg: Decimal
+    status: str
+    entered_by: str
+    created_at: datetime
+
+
+class ShopSaleCreate(BaseModel):
+    date: UtcDateTime
+    product_id: UUID
+    quantity: Decimal  # in whichever `unit` is chosen — cylinders, or KG
+    unit: Literal["cylinder", "kg"] = "cylinder"
+    # Supply Customers (§25) — a named shop customer; "credit" requires one.
+    supply_customer_id: Optional[UUID] = None
+    payment_type: Literal["cash", "credit"] = "cash"
+    notes: Optional[str] = None
+    entered_by: str
+
+
+class ShopSaleCorrect(ShopSaleCreate):
+    """Same shape as ShopSaleCreate — see SaleCorrect (Ledger Corrections)
+    for the convention this mirrors."""
+    correction_reason: str
+    corrected_by: str
+
+
+class ShopSaleOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    display_id: str
+    date: datetime
+    customer_id: UUID
+    product_id: UUID
+    quantity: Decimal
+    unit: str = "cylinder"
+    quantity_kg: Optional[Decimal] = None
+    supply_customer_id: Optional[UUID] = None
+    payment_type: str = "cash"
+    board_rate_per_kg_used: Decimal
+    cylinder_weight_used: Decimal
+    saleable_kg_used: Optional[Decimal] = None
+    sale_rate_per_cylinder: Decimal
+    total_amount: Decimal
+    notes: Optional[str] = None
+    status: str
+    entered_by: str
+    created_at: datetime
+    corrected_by: Optional[str] = None
+    corrected_at: Optional[datetime] = None
+    correction_reason: Optional[str] = None
+    corrected_from_id: Optional[UUID] = None
+
+
+class ShopStockAdjustmentCreate(BaseModel):
+    date: UtcDateTime
+    product_id: UUID
+    adjustment_type: Literal["return", "adjustment"]
+    quantity_delta: Decimal  # signed: positive = stock in, negative = stock out
+    reason: Optional[str] = None
+    entered_by: str
+
+
+class ShopStockAdjustmentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    display_id: str
+    date: datetime
+    customer_id: UUID
+    product_id: UUID
+    adjustment_type: str
+    quantity_delta: Decimal
+    reason: Optional[str] = None
+    status: str
+    entered_by: str
+    created_at: datetime
+
+
+# ---------- Shop Business Finance (Engine 3, §19-§26) ----------
+
+class ShopSupplyCustomerCreate(BaseModel):
+    name: str
+    mobile: Optional[str] = None
+    address: Optional[str] = None
+    opening_balance: Decimal = Decimal("0")
+    entered_by: str
+
+
+class ShopSupplyCustomerOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    shop_id: UUID
+    name: str
+    mobile: Optional[str] = None
+    address: Optional[str] = None
+    opening_balance: Decimal
+    current_balance: Decimal
+    status: str
+    entered_by: str
+    created_at: datetime
+
+
+class ShopCustomerPaymentCreate(BaseModel):
+    date: UtcDateTime
+    supply_customer_id: UUID
+    amount: Decimal
+    method: str = "cash"
+    notes: Optional[str] = None
+    entered_by: str
+
+
+class ShopCustomerPaymentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    display_id: str
+    date: datetime
+    shop_id: UUID
+    supply_customer_id: UUID
+    amount: Decimal
+    method: str
+    notes: Optional[str] = None
+    status: str
+    entered_by: str
+    created_at: datetime
+
+
+class ShopExpenseLineCreate(BaseModel):
+    category_id: UUID
+    line_type: Literal["expense", "owner_withdrawal"] = "expense"
+    amount: Decimal
+    description: Optional[str] = None
+
+
+class ShopExpenseLineOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    category_id: UUID
+    category_name: Optional[str] = None
+    line_type: str
+    amount: Decimal
+    description: Optional[str] = None
+
+
+class ShopExpenseTransactionCreate(BaseModel):
+    date: UtcDateTime
+    lines: list[ShopExpenseLineCreate]
+    payment_source: Optional[str] = None
+    notes: Optional[str] = None
+    entered_by: str
+
+
+class ShopExpenseTransactionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    display_id: str
+    date: datetime
+    shop_id: UUID
+    total_amount: Decimal
+    payment_source: Optional[str] = None
+    notes: Optional[str] = None
+    status: str
+    entered_by: str
+    created_at: datetime
+    lines: list[ShopExpenseLineOut] = []
+
+
+class ShopCashSummary(BaseModel):
+    """Derived (never stored) Shop Cash position for one business_date —
+    mirrors ShopStockSummary's derive-from-history pattern (§24)."""
+    business_date: str
+    opening_cash: Decimal
+    cash_retail_sales: Decimal
+    supply_customer_collections: Decimal
+    expenses: Decimal
+    owner_withdrawals: Decimal
+    dowa_payments: Decimal
+    closing_cash: Decimal
+
+
+class ShopBusinessLedgerRow(BaseModel):
+    """One row of the Shop Business Ledger (§28E) — Engine 3 only: cash
+    retail sales, supply-customer credit sales/collections, expenses, owner
+    withdrawals, and payments to Dowa. Never a Shop's Dowa-side Load/
+    Payment (those stay in the existing Transaction History section)."""
+    kind: Literal[
+        "cash_sale", "credit_sale", "customer_payment",
+        "expense", "owner_withdrawal", "dowa_payment",
+    ]
+    date: datetime
+    ref_id: UUID
+    display_id: str
+    description: str
+    amount: Decimal
+    cash_impact: Decimal  # signed: + into Shop Cash, - out of Shop Cash
+    entered_by: str
+    status: str
+
+
+class ShopBusinessLedgerOut(BaseModel):
+    business_date: str
+    cash: ShopCashSummary
+    rows: list[ShopBusinessLedgerRow]
+
+
+class ShopListRow(BaseModel):
+    """One row of the Shops list page — live stock + today's activity +
+    payable, computed on demand (never a stored running total)."""
+    customer: CustomerOut
+    current_stock: Decimal
+    today_load: Decimal
+    today_sales: Decimal
+    today_returns: Decimal
+    current_balance: Decimal
+    last_activity: Optional[datetime] = None
+
+
+class ShopProductStockSummary(BaseModel):
+    """Per-product daily stock position for one shop — kept per-product
+    (never flattened into one ambiguous number) since a shop can stock
+    more than one cylinder size, each with its own Board-Rate-derived
+    sale rate (§15: cylinder weight must never be hard-coded, it's always
+    read from Product.weight_kg for whichever product this row is)."""
+    product_id: UUID
+    product_name: str
+    opening_stock: Decimal
+    new_load: Decimal
+    sales: Decimal
+    returns: Decimal
+    adjustments: Decimal
+    closing_stock: Decimal
+    board_rate_per_kg: Optional[Decimal] = None
+    cylinder_weight: Decimal  # physical weight, from Product.weight_kg
+    wastage_kg: Decimal
+    saleable_kg: Decimal  # cylinder_weight - wastage_kg — what sale_rate_per_cylinder is actually computed from
+    sale_rate_per_cylinder: Optional[Decimal] = None
+    todays_sales_amount: Decimal
+
+
+class ShopStockSummary(BaseModel):
+    """Powers the Shop detail page's daily dashboard (§28) — every number
+    is derived on demand from the immutable transaction logs (Sale/
+    ShopStockBatch.quantity_received for Loads, ShopSale.quantity for
+    Sales, ShopStockAdjustment.quantity_delta for Returns/Adjustments),
+    never from a stored running total."""
+    business_date: str
+    products: list[ShopProductStockSummary]
+    total_opening_stock: Decimal
+    total_new_load: Decimal
+    total_sales: Decimal
+    total_returns: Decimal
+    total_adjustments: Decimal
+    total_closing_stock: Decimal
+    total_sales_amount: Decimal
+
+
+class ShopTransactionRow(BaseModel):
+    """One row in the Shop detail page's unified transaction history table
+    — covers Load/Sale/Return/Adjustment/Payment, columns populated per
+    type as relevant (§16)."""
+    kind: Literal["load", "shop_sale", "return", "adjustment", "payment"]
+    date: datetime
+    ref_id: UUID
+    display_id: str
+    description: str
+    quantity: Optional[Decimal] = None
+    board_rate_per_kg: Optional[Decimal] = None
+    cylinder_weight: Optional[Decimal] = None
+    sale_rate_per_cylinder: Optional[Decimal] = None
+    load_rate_per_kg: Optional[Decimal] = None
+    amount: Optional[Decimal] = None
+    entered_by: str
+    status: str
+    correctable: bool = False
+
+
+class ShopSaleCorrectionRow(BaseModel):
+    """Correction History row for a corrected ShopSale — mirrors
+    CorrectionHistoryRow's shape for Sale/Payment/Purchase/CompanyPayment."""
+    date: datetime
+    ref_id: UUID
+    display_id: str
+    description: str
+    original_amount: Decimal
+    correction_reason: str
+    corrected_by: str
+    corrected_at: datetime
+    corrected_display_id: Optional[str] = None
+
+
+class ShopDetailOut(BaseModel):
+    customer: CustomerOut
+    stock: ShopStockSummary
+    cash: ShopCashSummary
+    transactions: list[ShopTransactionRow]
+    corrections: list[CorrectionHistoryRow]
+    shop_sale_corrections: list[ShopSaleCorrectionRow]

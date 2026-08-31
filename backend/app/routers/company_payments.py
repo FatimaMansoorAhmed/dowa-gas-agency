@@ -25,8 +25,9 @@ def list_company_payments(
     return rows
 
 
-@router.post("", response_model=schemas.CompanyPaymentOut, status_code=201)
-def create_company_payment(payload: schemas.CompanyPaymentCreate, db: Session = Depends(get_db)):
+def _apply_company_payment(db: Session, payload: schemas.CompanyPaymentCreate, entered_by: str) -> models.CompanyPayment:
+    """Create-time posting logic, shared by create_company_payment and
+    correct_company_payment (§1)."""
     company = db.query(models.Company).get(payload.company_id)
     if not company:
         raise HTTPException(404, "Company not found")
@@ -61,7 +62,7 @@ def create_company_payment(payload: schemas.CompanyPaymentCreate, db: Session = 
         notes=payload.notes,
         excess_amount=excess_amount,
         status="active",
-        entered_by=payload.entered_by,
+        entered_by=entered_by,
     )
     db.add(payment)
 
@@ -80,6 +81,27 @@ def create_company_payment(payload: schemas.CompanyPaymentCreate, db: Session = 
         account.current_balance = account.current_balance - payload.amount
         db.add(account)
 
+    return payment
+
+
+def _reverse_company_payment(db: Session, payment: models.CompanyPayment) -> None:
+    """Undoes exactly what _apply_company_payment posted. Shared by
+    cancel_company_payment and correct_company_payment (§1)."""
+    company = db.query(models.Company).get(payment.company_id)
+    company.current_balance = company.current_balance + payment.amount
+    if payment.excess_amount:
+        company.account_credit = company.account_credit - payment.excess_amount
+    db.add(company)
+
+    account = db.query(models.PaymentAccount).get(payment.account_id)
+    if account:
+        account.current_balance = account.current_balance + payment.amount
+        db.add(account)
+
+
+@router.post("", response_model=schemas.CompanyPaymentOut, status_code=201)
+def create_company_payment(payload: schemas.CompanyPaymentCreate, db: Session = Depends(get_db)):
+    payment = _apply_company_payment(db, payload, payload.entered_by)
     db.commit()
     db.refresh(payment)
     return payment
@@ -93,16 +115,7 @@ def cancel_company_payment(payment_id: UUID, by: str = Query(...), db: Session =
     if payment.status != "active":
         raise HTTPException(400, "Payment is already cancelled")
 
-    company = db.query(models.Company).get(payment.company_id)
-    company.current_balance = company.current_balance + payment.amount
-    if payment.excess_amount:
-        company.account_credit = company.account_credit - payment.excess_amount
-    db.add(company)
-
-    account = db.query(models.PaymentAccount).get(payment.account_id)
-    if account:
-        account.current_balance = account.current_balance + payment.amount
-        db.add(account)
+    _reverse_company_payment(db, payment)
 
     payment.status = "cancelled"
     payment.modified_at = datetime.utcnow()
@@ -112,3 +125,34 @@ def cancel_company_payment(payment_id: UUID, by: str = Query(...), db: Session =
     db.commit()
     db.refresh(payment)
     return payment
+
+
+@router.patch("/{payment_id}/correct", response_model=schemas.CompanyPaymentOut)
+def correct_company_payment(payment_id: UUID, payload: schemas.CompanyPaymentCorrect, db: Session = Depends(get_db)):
+    """Ledger Correction (§1) — see correct_sale in routers/sales.py for
+    the full pattern this mirrors."""
+    if not payload.correction_reason.strip():
+        raise HTTPException(400, "correction_reason is required")
+
+    original = db.query(models.CompanyPayment).get(payment_id)
+    if not original:
+        raise HTTPException(404, "Payment not found")
+    if original.status != "active":
+        raise HTTPException(400, "Only an active payment can be corrected")
+
+    _reverse_company_payment(db, original)
+
+    original.status = "corrected"
+    original.corrected_by = payload.corrected_by
+    original.corrected_at = datetime.utcnow()
+    original.correction_reason = payload.correction_reason
+    db.add(original)
+    db.flush()
+
+    corrected = _apply_company_payment(db, payload, payload.corrected_by)
+    corrected.corrected_from_id = original.id
+    db.add(corrected)
+
+    db.commit()
+    db.refresh(corrected)
+    return corrected

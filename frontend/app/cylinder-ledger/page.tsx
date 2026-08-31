@@ -33,11 +33,14 @@ function CylinderLedgerBody() {
   const [saving, setSaving] = useState(false);
 
   const loadStatic = async () => {
-    const [c, p, b] = await Promise.all([
+    const [c, pRaw, b] = await Promise.all([
       api.customers.list(),
       api.products.list(),
       api.cylinderTransactions.balances(),
     ]);
+    // Active-only — a deactivated duplicate product must never be a
+    // selectable option, here or anywhere else.
+    const p = pRaw.filter((x) => x.active === "active");
     setCustomers(c);
     setProducts(p);
     setAllBalances(b);

@@ -18,7 +18,11 @@ import {
   ShoppingBag, // Unified Sale ke liye naya icon
   CreditCard,
   PackageOpen,
-  Banknote
+  Banknote,
+  CalendarClock,
+  FileStack,
+  Store,
+  Gauge,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { CylinderStripe } from "./ui";
@@ -40,6 +44,10 @@ const NAV = [
   { href: "/expenses", label: "Expenses", icon: Wallet },
    { href: "/cash-managment", label: "Cash Book", icon: Wallet },
   { href: "/owner-capital", label: "Owner Investment", icon: Banknote },
+  { href: "/shops", label: "Shops", icon: Store },
+  { href: "/board-rates", label: "Board Rates", icon: Gauge },
+  { href: "/daily-activity", label: "Daily Activity", icon: CalendarClock },
+  { href: "/reports", label: "Reports", icon: FileStack },
 
 ];
 

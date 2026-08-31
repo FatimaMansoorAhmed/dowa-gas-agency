@@ -78,3 +78,29 @@ input::-webkit-inner-spin-button {
 input[type=number] {
   -moz-appearance: textfield;
 }
+
+/* --------------------------------------------------
+   3. PRINTING (Customer Ledger, Plant Ledger, Daily Activity — §3)
+   Standard "print-area" technique: hide everything, then re-show only the
+   marked print-area and everything inside it. Any page that wants a clean
+   printout wraps its printable content in .print-area and marks controls
+   that shouldn't appear on paper (buttons, selects, the sidebar) .no-print.
+-------------------------------------------------- */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .print-area,
+  .print-area * {
+    visibility: visible;
+  }
+  .print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
