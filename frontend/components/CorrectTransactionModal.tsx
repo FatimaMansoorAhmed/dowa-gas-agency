@@ -34,7 +34,7 @@ export default function CorrectTransactionModal({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (kind === "payment" || kind === "companyPayment") {
+    if (kind === "payment" || kind === "companyPayment" || kind === "shopSale") {
       api.paymentAccounts.list().then(setAccounts);
     }
     if (kind === "shopSale") {
@@ -75,6 +75,16 @@ export default function CorrectTransactionModal({
   const [unit, setUnit] = useState<"cylinder" | "kg">(kind === "shopSale" ? shopSale.unit : "cylinder");
   const [paymentType, setPaymentType] = useState<"cash" | "credit">(kind === "shopSale" ? shopSale.payment_type : "cash");
   const [supplyCustomerId, setSupplyCustomerId] = useState(kind === "shopSale" ? shopSale.supply_customer_id || "" : "");
+  // Inline Settlement (§2) — preserve what was actually collected on the
+  // original sale unless the user deliberately changes it; silently
+  // defaulting to "fully credit" on every correction would wipe out a
+  // partial/full payment that was recorded at creation.
+  const [amountReceived, setAmountReceived] = useState(
+    kind === "shopSale" && shopSale.payment_type === "credit" ? shopSale.amount_received || "0" : ""
+  );
+  const [destinationAccountId, setDestinationAccountId] = useState(
+    kind === "shopSale" ? shopSale.destination_account_id || "" : ""
+  );
 
   // Purchase-only charges
   const purchase = transaction as Purchase;
@@ -99,6 +109,10 @@ export default function CorrectTransactionModal({
   const [referenceNo, setReferenceNo] = useState(
     kind === "payment" ? payment.reference_no || "" : kind === "companyPayment" ? companyPayment.reference_no || "" : ""
   );
+  // Shop Cash Money Routing (§3) — preserves which account the money came
+  // FROM (a shop's own Shop Cash, or another chosen account) when
+  // correcting a Payment. Optional/empty for an ordinary customer's payment.
+  const [sourceAccountId, setSourceAccountId] = useState(kind === "payment" ? payment.source_account_id || "" : "");
 
   const kindLabel = { sale: "Sale", payment: "Payment", purchase: "Purchase", companyPayment: "Plant Payment", shopSale: "Shop Sale" }[kind];
 
@@ -109,6 +123,7 @@ export default function CorrectTransactionModal({
       ? parseFloat(quantity) > 0 && parseFloat(ratePerCylinder) > 0
       : kind === "shopSale"
       ? parseFloat(quantity) > 0 && (paymentType === "cash" || !!supplyCustomerId)
+        && (paymentType === "cash" || (parseFloat(amountReceived) || 0) >= 0)
       : parseFloat(amount) > 0) &&
     ((kind !== "payment" && kind !== "companyPayment") || accountId || kind === "companyPayment");
 
@@ -169,6 +184,7 @@ export default function CorrectTransactionModal({
           amount: parseFloat(amount),
           method: method as "cash" | "bank_transfer" | "cheque" | "online" | "other",
           account_id: accountId,
+          source_account_id: sourceAccountId || undefined,
           reference_no: referenceNo || undefined,
           notes: notes || undefined,
           entered_by: user.name,
@@ -183,6 +199,8 @@ export default function CorrectTransactionModal({
           unit,
           payment_type: paymentType,
           supply_customer_id: supplyCustomerId || undefined,
+          amount_received: paymentType === "credit" ? parseFloat(amountReceived) || 0 : undefined,
+          destination_account_id: destinationAccountId || undefined,
           notes: notes || undefined,
           entered_by: user.name,
           correction_reason: reason,
@@ -314,6 +332,19 @@ export default function CorrectTransactionModal({
                   </select>
                 </Field>
               </div>
+              {paymentType === "credit" && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Amount Received">
+                    <input type="number" value={amountReceived} onChange={(e) => setAmountReceived(e.target.value)} className={inputClass} />
+                  </Field>
+                  <Field label="Destination Account">
+                    <select value={destinationAccountId} onChange={(e) => setDestinationAccountId(e.target.value)} className={inputClass}>
+                      <option value="">Shop Cash (default)</option>
+                      {accounts.filter((a) => a.active === "active").map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    </select>
+                  </Field>
+                </div>
+              )}
               <div className="font-body text-[11px] text-steel">
                 The sale amount will be recomputed from the Board Rate in effect on the date above ×
                 the product's saleable weight — never from the original amount.
@@ -352,6 +383,14 @@ export default function CorrectTransactionModal({
               <Field label="Reference Number (optional)">
                 <input value={referenceNo} onChange={(e) => setReferenceNo(e.target.value)} className={inputClass} />
               </Field>
+              {kind === "payment" && (
+                <Field label="Source Account (optional — only if funded from a tracked account, e.g. a shop's own Shop Cash)">
+                  <select value={sourceAccountId} onChange={(e) => setSourceAccountId(e.target.value)} className={inputClass}>
+                    <option value="">None (untracked source)</option>
+                    {accounts.filter((a) => a.active === "active").map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
+                </Field>
+              )}
             </>
           )}
 

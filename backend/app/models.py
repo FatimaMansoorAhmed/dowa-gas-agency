@@ -198,9 +198,40 @@ class PaymentAccount(Base):
     # can find/transfer/pay against it. Null for ordinary bank/cash rows
     # (Main Cash, Meezan Bank, ...) that aren't one of those buckets.
     account_type = Column(String, nullable=True)
+    # Shop Cash Money Routing — scopes this row to ONE shop's own account
+    # ("shop_cash" account_type + this shop_id) rather than a global bucket.
+    # Null for every existing account (Office Cash, Home Cash, Dowa Account,
+    # Main Cash, Meezan Bank, ...) — those stay global, unowned by any shop.
+    # See app/utils.get_or_create_shop_account.
+    shop_id = Column(GUID(), ForeignKey("customers.id"), nullable=True)
     opening_balance = Column(Numeric(14, 2), nullable=False, default=0)
     current_balance = Column(Numeric(14, 2), nullable=False, default=0)
     active = Column(String, nullable=False, default="active")
+
+    shop = relationship("Customer", foreign_keys=[shop_id])
+
+
+class AccountTransfer(Base):
+    """Persisted audit-trail row for one internal money move between two
+    PaymentAccount rows (Office Cash <-> Dowa Account, a shop's own Shop
+    Cash <-> Office Cash, etc.) — previously /payment-accounts/transfer
+    mutated both balances with no queryable history at all. Written
+    atomically alongside the balance mutation in
+    routers/payment_accounts.transfer_between_accounts; never corrected,
+    only ever a straight record of what moved and when."""
+    __tablename__ = "account_transfers"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    date = Column(DateTime, default=datetime.utcnow, nullable=False)
+    from_account_id = Column(GUID(), ForeignKey("payment_accounts.id"), nullable=False)
+    to_account_id = Column(GUID(), ForeignKey("payment_accounts.id"), nullable=False)
+    amount = Column(Numeric(14, 2), nullable=False)
+    notes = Column(String, nullable=True)
+    entered_by = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    from_account = relationship("PaymentAccount", foreign_keys=[from_account_id])
+    to_account = relationship("PaymentAccount", foreign_keys=[to_account_id])
 
 
 class ExpenseCategory(Base):
@@ -271,6 +302,15 @@ class Payment(Base):
     amount = Column(Numeric(14, 2), nullable=False)
     method = Column(String, nullable=False)  # cash | bank_transfer | cheque | online | other
     account_id = Column(GUID(), ForeignKey("payment_accounts.id"), nullable=True)
+    # Shop Cash Money Routing (§3) — WHICH account the money physically came
+    # FROM before landing in account_id above. Null for an ordinary
+    # individual customer's payment (no tracked source, they just handed
+    # over cash). Set when the payer is a shop paying down its Dowa payable
+    # out of its own Shop Cash (or another chosen account) — decremented in
+    # the exact same transaction that credits account_id and reduces
+    # Customer.current_balance, mirroring OwnerDrawings.account_id's
+    # "funding source, decremented" role.
+    source_account_id = Column(GUID(), ForeignKey("payment_accounts.id"), nullable=True)
     reference_no = Column(String, nullable=True)
     received_by = Column(String, nullable=True)
     notes = Column(String, nullable=True)
@@ -307,6 +347,7 @@ class Payment(Base):
     customer = relationship("Customer")
     sale = relationship("Sale")
     account = relationship("PaymentAccount", foreign_keys=[account_id])
+    source_account = relationship("PaymentAccount", foreign_keys=[source_account_id])
     target_plant = relationship("Company", foreign_keys=[target_plant_id])
 
 
@@ -804,6 +845,25 @@ class ShopSale(Base):
     supply_customer_id = Column(GUID(), ForeignKey("shop_supply_customers.id"), nullable=True)
     payment_type = Column(String(10), nullable=False, default="cash")  # "cash" | "credit"
 
+    # Inline Settlement (§2, Money Routing) — how much of total_amount was
+    # actually collected at the point of sale, frozen forever like every
+    # other pricing field here. A "cash"/walk-in sale always has
+    # amount_received == total_amount (enforced server-side, never partial
+    # — there's no customer to owe). A "credit" sale can be anywhere from 0
+    # (today's original all-or-nothing credit behavior) up to total_amount
+    # (paid in full despite being tied to a named customer) — the remainder
+    # (total_amount - amount_received) is what actually posts to
+    # ShopSupplyCustomer.current_balance, not the full total_amount.
+    # Nullable only for rows predating this column (backfilled: cash ->
+    # total_amount, credit -> 0, matching the exact behavior those rows were
+    # created under before partial payment existed).
+    amount_received = Column(Numeric(14, 2), nullable=True)
+    # Which real PaymentAccount received amount_received — defaults to this
+    # shop's own Shop Cash account, but the same account choices available
+    # elsewhere (Office Cash, Dowa Account, ...) are allowed. Null only for
+    # a sale with amount_received == 0 (nothing to post) or a pre-migration row.
+    destination_account_id = Column(GUID(), ForeignKey("payment_accounts.id"), nullable=True)
+
     board_rate_per_kg_used = Column(Numeric(10, 2), nullable=False)
     cylinder_weight_used = Column(Numeric(8, 2), nullable=False)  # physical weight, from Product.weight_kg — informational only, NEVER used to price
     # Saleable KG actually used to price this sale = cylinder_weight_used minus
@@ -832,6 +892,7 @@ class ShopSale(Base):
     customer = relationship("Customer")
     product = relationship("Product")
     supply_customer = relationship("ShopSupplyCustomer")
+    destination_account = relationship("PaymentAccount")
 
 
 class ShopSaleBatchConsumption(Base):
@@ -922,9 +983,20 @@ class ShopCustomerPayment(Base):
     date = Column(DateTime, nullable=False)
     shop_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
     supply_customer_id = Column(GUID(), ForeignKey("shop_supply_customers.id"), nullable=False)
+    # Optional traceability back to the credit ShopSale this collection is
+    # settling — mirrors Payment.sale_id's "optional allocation" convention
+    # exactly (never required, never auto-allocated/FIFO-matched). The
+    # original ShopSale's own amount_received/Balance Due stays frozen at
+    # what it was when the sale was created; only
+    # ShopSupplyCustomer.current_balance (the aggregate) reflects this
+    # collection — see routers/shops.py's Money Routing module docstring.
+    shop_sale_id = Column(GUID(), ForeignKey("shop_sales.id"), nullable=True)
 
     amount = Column(Numeric(14, 2), nullable=False)
     method = Column(String, nullable=False, default="cash")
+    # Which real PaymentAccount received this collection — defaults to the
+    # shop's own Shop Cash account, same account choices as elsewhere.
+    account_id = Column(GUID(), ForeignKey("payment_accounts.id"), nullable=True)
     notes = Column(String, nullable=True)
 
     status = Column(String, nullable=False, default="active")  # active | cancelled
@@ -935,6 +1007,8 @@ class ShopCustomerPayment(Base):
 
     shop = relationship("Customer")
     supply_customer = relationship("ShopSupplyCustomer")
+    shop_sale = relationship("ShopSale")
+    account = relationship("PaymentAccount")
 
 
 class ShopExpenseTransaction(Base):
@@ -953,7 +1027,12 @@ class ShopExpenseTransaction(Base):
     shop_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
 
     total_amount = Column(Numeric(14, 2), nullable=False)  # = sum(lines.amount), reduces Shop Cash regardless of line_type mix
-    payment_source = Column(String, nullable=True)  # free-text note (e.g. "cash drawer") — Shop Cash has no linked PaymentAccount row
+    # Which real PaymentAccount was debited — defaults to the shop's own
+    # Shop Cash account (see app/utils.get_or_create_shop_account), same
+    # account choices as elsewhere. payment_source stays as a free-text note
+    # alongside it (e.g. "cash drawer") — kept, not restructured (§4).
+    account_id = Column(GUID(), ForeignKey("payment_accounts.id"), nullable=True)
+    payment_source = Column(String, nullable=True)
     notes = Column(String, nullable=True)
 
     status = Column(String, nullable=False, default="active")  # active | cancelled
@@ -963,6 +1042,7 @@ class ShopExpenseTransaction(Base):
     modified_by = Column(String, nullable=True)
 
     shop = relationship("Customer")
+    account = relationship("PaymentAccount")
     lines = relationship("ShopExpenseLine", back_populates="transaction", cascade="all, delete-orphan")
 
 
@@ -972,7 +1052,11 @@ class ShopExpenseLine(Base):
 
     id = Column(GUID(), primary_key=True, default=gen_uuid)
     expense_transaction_id = Column(GUID(), ForeignKey("shop_expense_transactions.id"), nullable=False)
-    category_id = Column(GUID(), ForeignKey("expense_categories.id"), nullable=False)
+    # Nullable — a category classifies an EXPENSE (Fuel/Salary/...); an
+    # owner_withdrawal isn't a category of expense at all, so this is only
+    # ever set (and only ever required, see routers/shops.create_shop_expense)
+    # when line_type == "expense".
+    category_id = Column(GUID(), ForeignKey("expense_categories.id"), nullable=True)
     # "expense" | "owner_withdrawal" (§22-23) — Home/personal withdrawals
     # are owner_withdrawal even though entered in the same transaction as
     # genuine business expenses; both reduce Shop Cash identically, this

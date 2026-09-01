@@ -944,8 +944,10 @@ class PaymentAccountCreate(BaseModel):
     name: str
     kind: Literal["cash", "bank"] = "cash"
     opening_balance: Decimal = Decimal("0")
-    # One of the fixed Liquidity Hub buckets this row represents, if any.
-    account_type: Optional[Literal["cash", "office_cash", "owner_home", "dowa_account"]] = None
+    # One of the fixed Liquidity Hub buckets this row represents, if any —
+    # "shop_cash" additionally requires shop_id (see get_or_create_shop_account).
+    account_type: Optional[Literal["cash", "office_cash", "owner_home", "dowa_account", "shop_cash"]] = None
+    shop_id: Optional[UUID] = None
 
 
 class PaymentAccountOut(BaseModel):
@@ -954,13 +956,15 @@ class PaymentAccountOut(BaseModel):
     name: str
     kind: str
     account_type: Optional[str] = None
+    shop_id: Optional[UUID] = None
     opening_balance: Decimal
     current_balance: Decimal
     active: str
 
 
 # ---------- Account Transfer (internal cash movement between two real
-# PaymentAccount rows — e.g. Office Cash -> Dowa Account) ----------
+# PaymentAccount rows — e.g. Office Cash -> Dowa Account, or a shop's own
+# Shop Cash -> Office Cash) ----------
 class AccountTransferCreate(BaseModel):
     from_account_id: UUID
     to_account_id: UUID
@@ -972,6 +976,21 @@ class AccountTransferCreate(BaseModel):
 class AccountTransferOut(BaseModel):
     from_account: PaymentAccountOut
     to_account: PaymentAccountOut
+
+
+class AccountTransferRecordOut(BaseModel):
+    """One persisted audit-trail row for a transfer (§ Transfer Audit
+    Trail) — distinct from AccountTransferOut, which is the create
+    endpoint's response shape (the two updated account balances)."""
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    date: datetime
+    from_account_id: UUID
+    to_account_id: UUID
+    amount: Decimal
+    notes: Optional[str] = None
+    entered_by: str
+    created_at: datetime
 
 
 # ---------- Expense Category ----------
@@ -1054,6 +1073,10 @@ class PaymentCreate(BaseModel):
     amount: Decimal
     method: Literal["cash", "bank_transfer", "cheque", "online", "other"]
     account_id: UUID
+    # Shop Cash Money Routing (§3) — which account the money physically came
+    # FROM (a shop's own Shop Cash, or another chosen account) before
+    # landing in account_id above. Left unset for an ordinary customer.
+    source_account_id: Optional[UUID] = None
     reference_no: Optional[str] = None
     received_by: Optional[str] = None
     notes: Optional[str] = None
@@ -1075,7 +1098,15 @@ class PaymentOut(BaseModel):
     sale_id: Optional[UUID]
     amount: Decimal
     method: str
-    account_id: UUID
+    # Nullable — null for a Payment whose money hasn't landed in any Dowa
+    # account yet (e.g. a Unified Sale's total_credit_received, routed
+    # onward at settlement — see approve_unified_sale_sale). The model
+    # column has always allowed this (nullable=True); this schema field
+    # was the one place still requiring it, which crashed any endpoint
+    # returning such a row (GET /payments, cancel, correct) with a
+    # response-validation 500 the moment one existed.
+    account_id: Optional[UUID] = None
+    source_account_id: Optional[UUID] = None
     reference_no: Optional[str]
     received_by: Optional[str]
     notes: Optional[str]
@@ -1753,6 +1784,11 @@ class ShopStockBatchOut(BaseModel):
     status: str
     entered_by: str
     created_at: datetime
+    # Display-only, resolved by the router (never stored) — the FIFO
+    # Breakdown table's "Product Name" / "Source" columns. Purely additive;
+    # every other field above is untouched.
+    product_name: Optional[str] = None
+    source_display_id: Optional[str] = None
 
 
 class ShopSaleCreate(BaseModel):
@@ -1763,6 +1799,15 @@ class ShopSaleCreate(BaseModel):
     # Supply Customers (§25) — a named shop customer; "credit" requires one.
     supply_customer_id: Optional[UUID] = None
     payment_type: Literal["cash", "credit"] = "cash"
+    # Inline Settlement (§2) — how much was actually collected now. Omitted
+    # (None) means "fully paid" for a cash sale, "fully credit" (0) for a
+    # credit sale — today's original behavior, unchanged unless specified.
+    # A credit sale may set this anywhere from 0 up to the (server-computed)
+    # total_amount for a partial payment; the server rejects anything else.
+    amount_received: Optional[Decimal] = None
+    # Which account received amount_received — defaults to this shop's own
+    # Shop Cash account when amount_received > 0 and this is left unset.
+    destination_account_id: Optional[UUID] = None
     notes: Optional[str] = None
     entered_by: str
 
@@ -1786,6 +1831,8 @@ class ShopSaleOut(BaseModel):
     quantity_kg: Optional[Decimal] = None
     supply_customer_id: Optional[UUID] = None
     payment_type: str = "cash"
+    amount_received: Optional[Decimal] = None
+    destination_account_id: Optional[UUID] = None
     board_rate_per_kg_used: Decimal
     cylinder_weight_used: Decimal
     saleable_kg_used: Optional[Decimal] = None
@@ -1854,6 +1901,12 @@ class ShopCustomerPaymentCreate(BaseModel):
     supply_customer_id: UUID
     amount: Decimal
     method: str = "cash"
+    # Which account receives this collection — defaults to the shop's own
+    # Shop Cash account, same account choices as elsewhere.
+    account_id: Optional[UUID] = None
+    # Optional traceability to the credit ShopSale being settled (§ Money
+    # Routing — never required, never auto-allocated).
+    shop_sale_id: Optional[UUID] = None
     notes: Optional[str] = None
     entered_by: str
 
@@ -1865,6 +1918,8 @@ class ShopCustomerPaymentOut(BaseModel):
     date: datetime
     shop_id: UUID
     supply_customer_id: UUID
+    account_id: Optional[UUID] = None
+    shop_sale_id: Optional[UUID] = None
     amount: Decimal
     method: str
     notes: Optional[str] = None
@@ -1874,7 +1929,11 @@ class ShopCustomerPaymentOut(BaseModel):
 
 
 class ShopExpenseLineCreate(BaseModel):
-    category_id: UUID
+    # Required only for line_type == "expense" — an owner_withdrawal isn't
+    # a category of expense at all, so it's left unset for that line type
+    # (enforced server-side in create_shop_expense, not just by the client
+    # omitting it).
+    category_id: Optional[UUID] = None
     line_type: Literal["expense", "owner_withdrawal"] = "expense"
     amount: Decimal
     description: Optional[str] = None
@@ -1883,7 +1942,7 @@ class ShopExpenseLineCreate(BaseModel):
 class ShopExpenseLineOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
-    category_id: UUID
+    category_id: Optional[UUID] = None
     category_name: Optional[str] = None
     line_type: str
     amount: Decimal
@@ -1893,6 +1952,10 @@ class ShopExpenseLineOut(BaseModel):
 class ShopExpenseTransactionCreate(BaseModel):
     date: UtcDateTime
     lines: list[ShopExpenseLineCreate]
+    # Which account is debited — defaults to the shop's own Shop Cash
+    # account, same account choices as elsewhere. payment_source stays as a
+    # free-text note alongside it (unchanged structure, §4).
+    account_id: Optional[UUID] = None
     payment_source: Optional[str] = None
     notes: Optional[str] = None
     entered_by: str
@@ -1905,6 +1968,7 @@ class ShopExpenseTransactionOut(BaseModel):
     date: datetime
     shop_id: UUID
     total_amount: Decimal
+    account_id: Optional[UUID] = None
     payment_source: Optional[str] = None
     notes: Optional[str] = None
     status: str
@@ -1914,8 +1978,12 @@ class ShopExpenseTransactionOut(BaseModel):
 
 
 class ShopCashSummary(BaseModel):
-    """Derived (never stored) Shop Cash position for one business_date —
-    mirrors ShopStockSummary's derive-from-history pattern (§24)."""
+    """A historical, date-scoped VIEW of Shop Cash, derived from Engine 3's
+    own transaction history (§24) — reconciles against, but is distinct
+    from, `account.current_balance` on ShopDetailOut, which is the real,
+    live, stored PaymentAccount balance every money movement actually posts
+    to (§ Shop Cash Money Routing). Same relationship Customer.current_balance
+    has to the derived monthly Customer Ledger."""
     business_date: str
     opening_cash: Decimal
     cash_retail_sales: Decimal
@@ -1923,6 +1991,8 @@ class ShopCashSummary(BaseModel):
     expenses: Decimal
     owner_withdrawals: Decimal
     dowa_payments: Decimal
+    transfers_in: Decimal
+    transfers_out: Decimal
     closing_cash: Decimal
 
 
@@ -1960,6 +2030,7 @@ class ShopListRow(BaseModel):
     today_sales: Decimal
     today_returns: Decimal
     current_balance: Decimal
+    shop_cash_balance: Decimal  # the shop's own PaymentAccount.current_balance
     last_activity: Optional[datetime] = None
 
 
@@ -2017,6 +2088,9 @@ class ShopTransactionRow(BaseModel):
     sale_rate_per_cylinder: Optional[Decimal] = None
     load_rate_per_kg: Optional[Decimal] = None
     amount: Optional[Decimal] = None
+    # Inline Settlement (§2) — populated only for kind=="shop_sale".
+    amount_received: Optional[Decimal] = None
+    amount_outstanding: Optional[Decimal] = None
     entered_by: str
     status: str
     correctable: bool = False
@@ -2040,6 +2114,12 @@ class ShopDetailOut(BaseModel):
     customer: CustomerOut
     stock: ShopStockSummary
     cash: ShopCashSummary
+    # The shop's own real PaymentAccount row — the live, stored Shop Cash
+    # balance every money movement actually posts to (§ Shop Cash Money
+    # Routing). `cash.closing_cash` above is the derived historical view for
+    # `cash.business_date`; `account.current_balance` is the real number
+    # right now — for today's date the two reconcile by construction.
+    account: PaymentAccountOut
     transactions: list[ShopTransactionRow]
     corrections: list[CorrectionHistoryRow]
     shop_sale_corrections: list[ShopSaleCorrectionRow]

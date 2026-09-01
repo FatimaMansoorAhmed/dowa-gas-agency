@@ -427,6 +427,31 @@ def approve_unified_sale_sale(
             customer.account_credit = _dec(customer.account_credit) + excess_amount
         db.add(customer)
 
+        # ---- Payment record for total_credit_received (reporting/audit
+        # trail only — SAFETY: this must NEVER go through
+        # routers.payments._apply_payment or replicate its balance-mutating
+        # lines, since customer.current_balance was JUST fully computed
+        # above in one combined formula (selling_amount - credit_received);
+        # calling _apply_payment here would subtract credit_received a
+        # SECOND time. This is a plain models.Payment(...) + db.add() with
+        # zero balance side effects, exactly like the sibling
+        # CompanyPayment/Expense/OwnerDrawings children below (account_id=
+        # None — this cash hasn't landed in any Dowa account yet, it's
+        # routed onward at settlement, see approve_unified_sale_payment).
+        # Only created once credit_received > 0, same "> 0" guard those
+        # siblings use. status="active" immediately, unlike those siblings
+        # (which start "pending"): this row's real-world event and its
+        # balance effect both already happened, right here, gated by
+        # sale_status, not payment_status.
+        if credit_received > 0:
+            db.add(models.Payment(
+                display_id=next_display_id(db, models.Payment, "PAY", width=6),
+                date=batch.date, customer_id=batch.customer_id, amount=credit_received,
+                method="unified_sale_credit", account_id=None, source_account_id=None,
+                notes=f"Collected at Unified Sale {batch.display_id} — routed onward at settlement",
+                status="active", entered_by=batch.entered_by, unified_sale_id=batch.id,
+            ))
+
         # ---- Purchase Plant Balance (grows by the cost of goods loaded —
         # this is the sale/load event, regardless of where the settlement
         # money is later routed to) ----

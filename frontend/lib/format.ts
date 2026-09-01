@@ -8,6 +8,10 @@ export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
   office_cash: "Office Cash",
   owner_home: "Owner Home",
   dowa_account: "Dawa Account",
+  // Not a selectable Unified Sale/Payment Receipt destination — included
+  // only for type completeness (§ Shop Cash Money Routing uses a real,
+  // per-shop account name instead of this generic label).
+  shop_cash: "Shop Cash",
 };
 
 const isAccountType = (v: string): v is AccountType => v in ACCOUNT_TYPE_LABELS;

@@ -63,13 +63,17 @@ export type Customer = {
 
 export type Product = { id: string; name: string; weight_kg: string; active: string };
 
-export type AccountType = "office_cash" | "owner_home" | "dowa_account";
+export type AccountType = "office_cash" | "owner_home" | "dowa_account" | "shop_cash";
 
 export type PaymentAccount = {
   id: string;
   name: string;
   kind: "cash" | "bank";
   account_type?: AccountType;
+  // Shop Cash Money Routing — set only for a shop's own "shop_cash"
+  // account, scoping it to that one shop. Null for every global account
+  // (Office Cash, Home Cash, Dowa Account, ...).
+  shop_id?: string | null;
   opening_balance: string;
   current_balance: string;
   active: string;
@@ -78,6 +82,20 @@ export type PaymentAccount = {
 export type AccountTransferResult = {
   from_account: PaymentAccount;
   to_account: PaymentAccount;
+};
+
+// Persisted audit-trail row for one internal transfer between two
+// PaymentAccount rows — distinct from AccountTransferResult (the create
+// endpoint's response shape).
+export type AccountTransferRecord = {
+  id: string;
+  date: string;
+  from_account_id: string;
+  to_account_id: string;
+  amount: string;
+  notes: string | null;
+  entered_by: string;
+  created_at: string;
 };
 
 export type ExpenseCategory = { id: string; name: string; description: string | null; active: string };
@@ -106,6 +124,9 @@ export type Payment = {
   id: string; display_id: string; date: string;
   customer_id: string; sale_id: string | null;
   amount: string; method: string; account_id: string | null;
+  // Shop Cash Money Routing (§3) — which account the money came FROM
+  // before landing in account_id. Null for an ordinary customer's payment.
+  source_account_id?: string | null;
   reference_no: string | null; received_by: string | null; notes: string | null;
   excess_amount: string | null; status: string; entered_by: string; created_at: string;
   unified_sale_id?: string | null;
@@ -451,6 +472,8 @@ export type ShopStockBatch = {
   status: string;
   entered_by: string;
   created_at: string;
+  product_name?: string | null;
+  source_display_id?: string | null;
 };
 
 export type ShopSale = {
@@ -464,6 +487,8 @@ export type ShopSale = {
   quantity_kg: string | null;
   supply_customer_id: string | null;
   payment_type: "cash" | "credit";
+  amount_received: string | null;
+  destination_account_id: string | null;
   board_rate_per_kg_used: string;
   cylinder_weight_used: string;
   saleable_kg_used: string | null;
@@ -496,6 +521,7 @@ export type ShopListRow = {
   today_sales: string;
   today_returns: string;
   current_balance: string;
+  shop_cash_balance: string;
   last_activity: string | null;
 };
 
@@ -540,6 +566,9 @@ export type ShopTransactionRow = {
   sale_rate_per_cylinder: string | null;
   load_rate_per_kg: string | null;
   amount: string | null;
+  // Inline Settlement (§2) — populated only for kind=="shop_sale".
+  amount_received: string | null;
+  amount_outstanding: string | null;
   entered_by: string;
   status: string;
   correctable: boolean;
@@ -578,6 +607,8 @@ export type ShopCustomerPayment = {
   date: string;
   shop_id: string;
   supply_customer_id: string;
+  account_id: string | null;
+  shop_sale_id: string | null;
   amount: string;
   method: string;
   notes: string | null;
@@ -588,7 +619,9 @@ export type ShopCustomerPayment = {
 
 export type ShopExpenseLine = {
   id: string;
-  category_id: string;
+  // Only set for line_type "expense" — an Owner Withdrawal isn't a
+  // category of expense, so it carries no category_id at all.
+  category_id: string | null;
   category_name: string | null;
   line_type: "expense" | "owner_withdrawal";
   amount: string;
@@ -601,6 +634,7 @@ export type ShopExpenseTransaction = {
   date: string;
   shop_id: string;
   total_amount: string;
+  account_id: string | null;
   payment_source: string | null;
   notes: string | null;
   status: string;
@@ -617,6 +651,8 @@ export type ShopCashSummary = {
   expenses: string;
   owner_withdrawals: string;
   dowa_payments: string;
+  transfers_in: string;
+  transfers_out: string;
   closing_cash: string;
 };
 
@@ -642,6 +678,11 @@ export type ShopDetailOut = {
   customer: Customer;
   stock: ShopStockSummary;
   cash: ShopCashSummary;
+  // The shop's own real PaymentAccount — the live, stored Shop Cash
+  // balance every money movement actually posts to (§ Shop Cash Money
+  // Routing). `cash.closing_cash` is the derived historical view for
+  // `cash.business_date`; `account.current_balance` is the real number now.
+  account: PaymentAccount;
   transactions: ShopTransactionRow[];
   corrections: CorrectionHistoryRow[];
   shop_sale_corrections: ShopSaleCorrectionRow[];

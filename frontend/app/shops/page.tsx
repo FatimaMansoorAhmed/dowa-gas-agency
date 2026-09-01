@@ -57,9 +57,12 @@ function ShopsBody() {
                   </div>
                   <BalanceTag amount={r.current_balance} />
                 </div>
-                <div className="font-mono text-[11px] text-steel mb-3">
-                  {r.customer.display_id} · {r.customer.mobile}
-                  {r.last_activity ? ` · last activity ${fmtTime(r.last_activity)}` : ""}
+                <div className="font-mono text-[11px] text-steel mb-3 flex items-center justify-between">
+                  <span>
+                    {r.customer.display_id} · {r.customer.mobile}
+                    {r.last_activity ? ` · last activity ${fmtTime(r.last_activity)}` : ""}
+                  </span>
+                  <span>Shop Cash: <span className="font-semibold text-ink">{pkr(r.shop_cash_balance)}</span></span>
                 </div>
                 <div className="grid grid-cols-4 gap-2">
                   <div>

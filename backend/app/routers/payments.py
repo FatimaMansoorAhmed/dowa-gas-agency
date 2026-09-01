@@ -34,6 +34,11 @@ def _apply_payment(db: Session, payload: schemas.PaymentCreate, entered_by: str)
     account = db.query(models.PaymentAccount).get(payload.account_id)
     if not account:
         raise HTTPException(404, "Payment account not found")
+    source_account = None
+    if payload.source_account_id:
+        source_account = db.query(models.PaymentAccount).get(payload.source_account_id)
+        if not source_account:
+            raise HTTPException(404, "Source account not found")
     if payload.sale_id:
         sale = db.query(models.Sale).get(payload.sale_id)
         if not sale or sale.customer_id != payload.customer_id:
@@ -53,6 +58,7 @@ def _apply_payment(db: Session, payload: schemas.PaymentCreate, entered_by: str)
         amount=payload.amount,
         method=payload.method,
         account_id=payload.account_id,
+        source_account_id=payload.source_account_id,
         reference_no=payload.reference_no,
         received_by=payload.received_by,
         notes=payload.notes,
@@ -77,6 +83,15 @@ def _apply_payment(db: Session, payload: schemas.PaymentCreate, entered_by: str)
     account.current_balance = account.current_balance + payload.amount
     db.add(account)
 
+    # Shop Cash Money Routing (§3) — when the payer is a shop paying down
+    # its Dowa payable out of its own tracked cash (or another chosen
+    # account), that source account is decremented in the SAME transaction.
+    # Null for an ordinary individual customer's payment — no tracked
+    # source, nothing to debit here.
+    if source_account:
+        source_account.current_balance = source_account.current_balance - payload.amount
+        db.add(source_account)
+
     return payment
 
 
@@ -89,9 +104,23 @@ def _reverse_payment(db: Session, payment: models.Payment) -> None:
         customer.account_credit = customer.account_credit - payment.excess_amount
     db.add(customer)
 
-    account = db.query(models.PaymentAccount).get(payment.account_id)
-    account.current_balance = account.current_balance - payment.amount
-    db.add(account)
+    # account_id is null for a Payment whose money hasn't landed in any
+    # Dowa account yet (e.g. a Unified Sale's total_credit_received,
+    # routed onward at settlement — see approve_unified_sale_sale) —
+    # same "null means no tracked destination to touch" reasoning the
+    # source_account_id guard below already applies. Skip the mutation
+    # entirely rather than crash on a None account.
+    if payment.account_id:
+        account = db.query(models.PaymentAccount).get(payment.account_id)
+        if account:
+            account.current_balance = account.current_balance - payment.amount
+            db.add(account)
+
+    if payment.source_account_id:
+        source_account = db.query(models.PaymentAccount).get(payment.source_account_id)
+        if source_account:
+            source_account.current_balance = source_account.current_balance + payment.amount
+            db.add(source_account)
 
 
 @router.post("", response_model=schemas.PaymentOut, status_code=201)

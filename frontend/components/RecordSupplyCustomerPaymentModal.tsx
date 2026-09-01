@@ -1,14 +1,15 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { X, Check } from "lucide-react";
 import { Field, inputClass, Button } from "./ui";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { todayLocalInput } from "@/lib/format";
-import type { ShopSupplyCustomer } from "@/lib/types";
+import type { ShopSupplyCustomer, PaymentAccount } from "@/lib/types";
 
 /** Record a Supply Customer's payment to the shop (§25) — collects against
- * a credit ShopSale's receivable, increases Shop Cash. Never touches the
+ * a credit ShopSale's receivable, increases Shop Cash (§ Shop Cash Money
+ * Routing — posts to a real, shop-scoped PaymentAccount). Never touches the
  * Dowa Customer Ledger/Payment model — this is Engine 3, not Engine 1. */
 export default function RecordSupplyCustomerPaymentModal({
   shopId, customer, onClose, onSaved,
@@ -17,9 +18,13 @@ export default function RecordSupplyCustomerPaymentModal({
   const [date, setDate] = useState(todayLocalInput());
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState("cash");
+  const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
+  const [accountId, setAccountId] = useState("");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => { api.paymentAccounts.list().then((a) => setAccounts(a.filter((x) => x.active === "active"))); }, []);
 
   const canSubmit = parseFloat(amount) > 0 && date;
 
@@ -39,6 +44,7 @@ export default function RecordSupplyCustomerPaymentModal({
         supply_customer_id: customer.id,
         amount: parseFloat(amount),
         method,
+        account_id: accountId || undefined,
         notes: notes || undefined,
         entered_by: user.name,
       });
@@ -72,6 +78,12 @@ export default function RecordSupplyCustomerPaymentModal({
               <option value="cash">Cash</option>
               <option value="bank_transfer">Bank Transfer</option>
               <option value="other">Other</option>
+            </select>
+          </Field>
+          <Field label="Deposit To Account">
+            <select value={accountId} onChange={(e) => setAccountId(e.target.value)} className={inputClass}>
+              <option value="">Shop Cash (default)</option>
+              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
           </Field>
           <Field label="Notes (optional)">

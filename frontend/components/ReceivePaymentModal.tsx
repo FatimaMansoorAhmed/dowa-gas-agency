@@ -30,6 +30,10 @@ export default function ReceivePaymentModal({
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<"cash" | "bank_transfer" | "cheque" | "online" | "other">("cash");
   const [accountId, setAccountId] = useState("");
+  // Shop Cash Money Routing (§3) — only relevant when the payer is a shop
+  // paying down its Dowa payable out of its own tracked cash (or another
+  // chosen account). Left empty (untracked source) for an ordinary customer.
+  const [sourceAccountId, setSourceAccountId] = useState("");
   const [notes, setNotes] = useState("");
 
   const [saving, setSaving] = useState(false);
@@ -60,9 +64,23 @@ export default function ReceivePaymentModal({
     }
   }, [isOpen, defaultCustomerId]);
 
-  if (!isOpen) return null;
-
   const selectedCustomer = customers.find((c) => String(c.id) === String(customerId));
+
+  // Shop Cash Money Routing (§3) — when the payer is a shop, default the
+  // source account to that shop's own Shop Cash (the user can still pick a
+  // different account, same choices as elsewhere).
+  useEffect(() => {
+    if (!isOpen || selectedCustomer?.customer_type !== "shop") {
+      setSourceAccountId("");
+      return;
+    }
+    api.shops
+      .detail(selectedCustomer.id)
+      .then((detail) => setSourceAccountId(detail.account.id))
+      .catch(() => {});
+  }, [isOpen, selectedCustomer?.id, selectedCustomer?.customer_type]);
+
+  if (!isOpen) return null;
   const filteredCustomers = customers.filter(
     (c) =>
       !customerSearch.trim() ||
@@ -103,6 +121,7 @@ export default function ReceivePaymentModal({
         amount: payAmt,
         method: method,
         account_id: accountId,
+        source_account_id: selectedCustomer?.customer_type === "shop" ? sourceAccountId || undefined : undefined,
         notes: notes || undefined,
         entered_by: user?.name || "fatima",
       });
@@ -209,6 +228,19 @@ export default function ReceivePaymentModal({
               />
             </Field>
           </div>
+
+          {/* Shop Cash Money Routing (§3) — only shown when the payer is a
+              shop paying down its Dowa payable out of its own tracked cash. */}
+          {selectedCustomer?.customer_type === "shop" && (
+            <Field label="Source Account (which account this money came from)">
+              <select value={sourceAccountId} onChange={(e) => setSourceAccountId(e.target.value)} className={inputClass}>
+                <option value="">None (untracked source)</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+            </Field>
+          )}
 
           <Field label="Notes / Reference (Optional)">
             <input

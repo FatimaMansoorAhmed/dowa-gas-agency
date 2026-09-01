@@ -19,7 +19,7 @@ def create_account(payload: schemas.PaymentAccountCreate, db: Session = Depends(
     if existing:
         raise HTTPException(400, "Account already exists")
     account = models.PaymentAccount(
-        name=payload.name, kind=payload.kind, account_type=payload.account_type,
+        name=payload.name, kind=payload.kind, account_type=payload.account_type, shop_id=payload.shop_id,
         opening_balance=payload.opening_balance, current_balance=payload.opening_balance,
         active="active",
     )
@@ -54,10 +54,34 @@ def transfer_between_accounts(payload: schemas.AccountTransferCreate, db: Sessio
     to_account.current_balance = to_account.current_balance + payload.amount
     db.add(from_account)
     db.add(to_account)
+
+    # Persisted audit-trail row (§ Transfer Audit Trail) — previously this
+    # endpoint only mutated the two balances with no queryable history at
+    # all. Written atomically with the balance mutations above.
+    db.add(models.AccountTransfer(
+        from_account_id=from_account.id, to_account_id=to_account.id,
+        amount=payload.amount, notes=payload.notes, entered_by=payload.entered_by,
+    ))
+
     db.commit()
     db.refresh(from_account)
     db.refresh(to_account)
     return schemas.AccountTransferOut(from_account=from_account, to_account=to_account)
+
+
+@router.get("/transfers", response_model=list[schemas.AccountTransferRecordOut])
+def list_transfers(
+    account_id: UUID | None = None,
+    db: Session = Depends(get_db),
+):
+    """Audit trail for /payment-accounts/transfer — optionally scoped to
+    transfers touching one specific account (either side)."""
+    q = db.query(models.AccountTransfer)
+    if account_id:
+        q = q.filter(
+            (models.AccountTransfer.from_account_id == account_id) | (models.AccountTransfer.to_account_id == account_id)
+        )
+    return q.order_by(models.AccountTransfer.date.desc(), models.AccountTransfer.created_at.desc()).all()
 
 
 @router.patch("/{account_id}/deactivate", response_model=schemas.PaymentAccountOut)

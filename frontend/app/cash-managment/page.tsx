@@ -39,9 +39,13 @@ function CashManagementBody() {
   const [isTransferOpen, setIsTransferOpen] = useState(false);
   const [isPlantPaymentOpen, setIsPlantPaymentOpen] = useState(false);
 
-  // Transfer Money form state
-  const [transferFrom, setTransferFrom] = useState<BucketType>("office_cash");
-  const [transferTo, setTransferTo] = useState<BucketType>("dowa_account");
+  // Transfer Money form state — value is either a BucketType key
+  // ("office_cash" etc.) or a raw shop-account UUID (§ Shop Cash Money
+  // Routing: a shop's own Shop Cash is a selectable Transfer endpoint too,
+  // named explicitly — "Shop Cash — Dowa Shop Test" — never an ambiguous
+  // shared "Shop Cash").
+  const [transferFrom, setTransferFrom] = useState<string>("office_cash");
+  const [transferTo, setTransferTo] = useState<string>("dowa_account");
   const [transferAmount, setTransferAmount] = useState("");
   const [transferSaving, setTransferSaving] = useState(false);
   const [transferError, setTransferError] = useState<string | null>(null);
@@ -101,6 +105,19 @@ function CashManagementBody() {
     return acc ? parseFloat(acc.current_balance) : 0;
   };
 
+  // Shop Cash Money Routing — each shop's own account, distinct from the 3
+  // global buckets. Never summed into a single shared balance at storage
+  // level; this is a display-only aggregate.
+  const shopAccounts = useMemo(() => accounts.filter((a) => a.account_type === "shop_cash"), [accounts]);
+  const totalShopCash = useMemo(() => shopAccounts.reduce((sum, a) => sum + parseFloat(a.current_balance), 0), [shopAccounts]);
+
+  // Resolves a Transfer From/To <select> value — either a BucketType key
+  // or a raw shop-account UUID — to the real PaymentAccount row.
+  const resolveTransferAccount = (value: string): PaymentAccount | undefined =>
+    (["office_cash", "owner_home", "dowa_account"] as BucketType[]).includes(value as BucketType)
+      ? findBucketAccount(accounts, value as BucketType)
+      : accounts.find((a) => a.id === value);
+
   const handleTransfer = async (e: React.FormEvent) => {
     e.preventDefault();
     setTransferError(null);
@@ -114,8 +131,8 @@ function CashManagementBody() {
       setTransferError("Enter a positive amount.");
       return;
     }
-    const fromAccount = findBucketAccount(accounts, transferFrom);
-    const toAccount = findBucketAccount(accounts, transferTo);
+    const fromAccount = resolveTransferAccount(transferFrom);
+    const toAccount = resolveTransferAccount(transferTo);
     if (!fromAccount || !toAccount) {
       setTransferError("Accounts are still being set up — please retry in a moment.");
       return;
@@ -284,6 +301,26 @@ function CashManagementBody() {
           );
         })}
 
+        {/* SUMMARY CARD: TOTAL SHOP CASH — § Shop Cash Money Routing. Each
+            shop's own PaymentAccount is a distinct, real, stored balance;
+            this is a display-only sum, never a shared storage-level total. */}
+        <div className="bg-white border border-teal-200 rounded-lg p-4 flex flex-col justify-between shadow-xs">
+          <div className="flex items-center justify-between border-b border-hairline/60 pb-2 mb-3">
+            <span className="text-[11px] font-mono font-semibold uppercase tracking-wider text-[#0b2138]">Total Shop Cash</span>
+            <div className="p-1.5 rounded bg-teal-100 text-teal-800">
+              <Wallet size={14} />
+            </div>
+          </div>
+          <div>
+            <div className="font-display font-bold text-2xl text-ink">
+              {loading ? "—" : pkr(totalShopCash)}
+            </div>
+            <div className="text-[11px] text-steel font-mono mt-1">
+              across {shopAccounts.length} shop{shopAccounts.length === 1 ? "" : "s"}
+            </div>
+          </div>
+        </div>
+
         {/* SUMMARY CARD: TOTAL DRAWINGS */}
         <div className="bg-white border border-blue-200 rounded-lg p-4 flex flex-col justify-between shadow-xs">
           <div className="flex items-center justify-between border-b border-hairline/60 pb-2 mb-3">
@@ -302,6 +339,36 @@ function CashManagementBody() {
           </div>
         </div>
       </div>
+
+      {/* SHOP CASH BREAKDOWN — the per-shop rows the Total Shop Cash card
+          above sums; each is its own real PaymentAccount (§1: "list each
+          shop's Shop Cash as its own row"). */}
+      {shopAccounts.length > 0 && (
+        <Panel>
+          <div className="flex items-center gap-2 border-b border-hairline pb-3 mb-3">
+            <Wallet size={16} className="text-[#0b2138]" />
+            <Eyebrow>Shop Cash by Shop</Eyebrow>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr>
+                  <Th>Shop</Th>
+                  <Th right>Balance</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {shopAccounts.map((a) => (
+                  <tr key={a.id}>
+                    <Td bold>{a.name}</Td>
+                    <Td right mono bold color="#0b2138">{pkr(a.current_balance)}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
 
       {/* AUDIT SECTION */}
       <Panel>
@@ -456,12 +523,17 @@ function CashManagementBody() {
               <Field label="From Account">
                 <select
                   value={transferFrom}
-                  onChange={(e) => setTransferFrom(e.target.value as BucketType)}
+                  onChange={(e) => setTransferFrom(e.target.value)}
                   className={inputClass}
                 >
                   {BUCKET_ACCOUNTS.map((b) => (
                     <option key={b.type} value={b.type}>
                       {b.label}
+                    </option>
+                  ))}
+                  {shopAccounts.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
                     </option>
                   ))}
                 </select>
@@ -470,12 +542,17 @@ function CashManagementBody() {
               <Field label="To Account">
                 <select
                   value={transferTo}
-                  onChange={(e) => setTransferTo(e.target.value as BucketType)}
+                  onChange={(e) => setTransferTo(e.target.value)}
                   className={inputClass}
                 >
                   {BUCKET_ACCOUNTS.map((b) => (
                     <option key={b.type} value={b.type}>
                       {b.label}
+                    </option>
+                  ))}
+                  {shopAccounts.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
                     </option>
                   ))}
                 </select>

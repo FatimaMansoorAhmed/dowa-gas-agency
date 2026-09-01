@@ -49,6 +49,47 @@ def get_daily_report_data(db: Session, business_date: str) -> "schemas.DailyRepo
     total_investments = _sum("investments")
     total_expenses = _sum("expenses")
     total_owner_drawings = _sum("owner_drawings")
+    # Shop Management (§ Shop Cash Money Routing) — real cash movements at
+    # the shop level, on the exact same footing as the terms above:
+    # total_shop_sales here is amount_received (cash actually collected at
+    # the point of sale, see adapters._fetch_shop_sales), never the accrued
+    # sale value — same reasoning that already excludes total_sales itself.
+    # shop_customer_payments is cash in; shop_expenses/shop_owner_withdrawals
+    # are cash out. account_transfers is deliberately NOT a term here — it's
+    # always internal (Shop Cash <-> Office Cash, etc.), so summing it nets
+    # to exactly 0 across the whole account set and would never move this
+    # number (see adapters._fetch_account_transfers for the full reasoning).
+    total_shop_sales = _sum("shop_sales")
+    total_shop_customer_payments = _sum("shop_customer_payments")
+    total_shop_expenses = _sum("shop_expenses")
+    total_shop_owner_withdrawals = _sum("shop_owner_withdrawals")
+
+    # customer_payments, for net_cash_movement specifically, must exclude a
+    # Payment funded FROM one of the business's own accounts
+    # (source_account_id set — e.g. a shop paying its Dowa payable out of
+    # its own Shop Cash, see routers/payments._apply_payment: it credits
+    # account_id AND debits source_account_id in the same transaction,
+    # exactly like an AccountTransfer). That cash was already counted once,
+    # the moment it first entered Shop Cash, in total_shop_sales/
+    # total_shop_customer_payments above — counting its arrival at the
+    # destination account again here would double-count it, the same
+    # reasoning that keeps account_transfers out of this formula entirely.
+    # The customer_payments SECTION itself is untouched (still every
+    # Payment row, full amount — confirmed correct by design: a
+    # shop-funded Payment-to-Dowa is still real Payment activity worth
+    # seeing there). A Unified-Sale-originated Payment (unified_sale_id
+    # set) is NOT excluded here — unlike a shop-funded one, it's real new
+    # money from an ordinary customer, no different from any other Payment
+    # (see adapters._fetch_customer_payments, which no longer excludes it
+    # either — retired along with the separate "Unified Sale" section).
+    externally_sourced_customer_payments = sum(
+        (p.amount for p in db.query(models.Payment).filter(
+            models.Payment.status == "active",
+            models.Payment.source_account_id.is_(None),
+            models.Payment.date >= start, models.Payment.date < end,
+        ).all()),
+        start=Decimal("0"),
+    )
 
     # Physical cylinder movement for the day — unlike the Cylinder Activity
     # SECTION above (which deliberately excludes sale-linked rows so a
@@ -83,7 +124,10 @@ def get_daily_report_data(db: Session, business_date: str) -> "schemas.DailyRepo
         total_expenses=total_expenses,
         total_owner_drawings=total_owner_drawings,
         net_cash_movement=(
-            total_customer_payments - total_plant_payments - total_expenses - total_owner_drawings + total_investments
+            externally_sourced_customer_payments + total_investments
+            + total_shop_sales + total_shop_customer_payments
+            - total_plant_payments - total_expenses - total_owner_drawings
+            - total_shop_expenses - total_shop_owner_withdrawals
         ),
         total_cylinders_out=total_cylinders_out,
         total_cylinders_in=total_cylinders_in,

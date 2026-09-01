@@ -93,6 +93,39 @@ def resolve_account_or_bucket(db: Session, value):
     return get_or_create_bucket_account(db, str(value))
 
 
+def get_or_create_shop_account(db: Session, shop):
+    """Returns the ONE real PaymentAccount row that IS this shop's own Shop
+    Cash (§ Shop Cash Money Routing) — same account_type/kind convention as
+    the 3 Liquidity Hub buckets above, just additionally scoped by shop_id
+    so multiple shops never share a balance. Deliberately keyed on BOTH
+    account_type=="shop_cash" AND shop_id (never account_type alone, unlike
+    get_or_create_bucket_account) — account_type=="shop_cash" is not a key
+    in BUCKET_ACCOUNT_LABELS, so the generic bucket helpers above never
+    resolve to a shop's account by accident."""
+    from app import models  # local import avoids a circular import with models.py
+
+    account = (
+        db.query(models.PaymentAccount)
+        .filter(models.PaymentAccount.account_type == "shop_cash", models.PaymentAccount.shop_id == shop.id)
+        .first()
+    )
+    if account:
+        return account
+
+    account = models.PaymentAccount(
+        name=f"Shop Cash — {shop.name}",
+        kind="cash",
+        account_type="shop_cash",
+        shop_id=shop.id,
+        opening_balance=0,
+        current_balance=0,
+        active="active",
+    )
+    db.add(account)
+    db.flush()
+    return account
+
+
 def adjust_cylinder_balance(db: Session, customer_id, product_id, delta):
     """Applies delta (qty_out - qty_in) to a customer's running per-product
     cylinder balance, creating the row if it doesn't exist yet. Shared by

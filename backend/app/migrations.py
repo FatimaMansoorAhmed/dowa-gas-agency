@@ -9,6 +9,7 @@ startup, after create_all(), and only ever adds a column — it never drops,
 renames, or alters existing data.
 """
 
+import uuid as _uuid
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
@@ -107,7 +108,33 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     ("shop_sales", "supply_customer_id", "GUID"),
     ("shop_sales", "payment_type", "VARCHAR(10) NOT NULL DEFAULT 'cash'"),
     # Shop Business Finance (Engine 3, §19/§24) opening-cash anchor.
+    # Superseded by the shop's own PaymentAccount.opening_balance (see
+    # payment_accounts.shop_id below) — kept, unused, rather than dropped,
+    # per this file's own additive-only convention; never non-zero in
+    # practice since no UI ever set it.
     ("customers", "shop_opening_cash", "NUMERIC(14, 2) NOT NULL DEFAULT 0"),
+
+    # Shop Cash Money Routing (§ Shop Cash / Inline Settlement) — additive.
+    # payment_accounts.shop_id: null for every existing account (Office
+    # Cash, Home Cash, Dowa Account, ...) — those stay global/unowned.
+    ("payment_accounts", "shop_id", "GUID"),
+    # payments.source_account_id: null for every existing Payment — an
+    # ordinary individual customer's payment has no tracked funding source.
+    ("payments", "source_account_id", "GUID"),
+    # shop_sales.amount_received/destination_account_id: backfilled below
+    # (cash -> total_amount, credit -> 0) so every existing row reflects
+    # exactly the all-or-nothing behavior it was created under.
+    ("shop_sales", "amount_received", "NUMERIC(14, 2)"),
+    ("shop_sales", "destination_account_id", "GUID"),
+    # shop_customer_payments.account_id/shop_sale_id: null for every
+    # existing collection — pre-migration collections never posted to any
+    # account and were never linked to a specific originating sale.
+    ("shop_customer_payments", "account_id", "GUID"),
+    ("shop_customer_payments", "shop_sale_id", "GUID"),
+    # shop_expense_transactions.account_id: null for every existing
+    # expense — pre-migration expenses only ever had the free-text
+    # payment_source note, no real account was debited.
+    ("shop_expense_transactions", "account_id", "GUID"),
 ]
 
 
@@ -164,6 +191,18 @@ def run_startup_migrations(engine: Engine) -> None:
             cyl_txn_columns = {c["name"]: c for c in inspector.get_columns("cylinder_transactions")}
             if cyl_txn_columns.get("product_id", {}).get("nullable") is False:
                 conn.execute(text("ALTER TABLE cylinder_transactions ALTER COLUMN product_id DROP NOT NULL"))
+
+        # shop_expense_lines.category_id was NOT NULL before an Owner
+        # Withdrawal line stopped being forced through a Category — a
+        # withdrawal isn't a category of expense, so models.ShopExpenseLine
+        # made this nullable=True (only "expense" lines require/validate it,
+        # see routers/shops.create_shop_expense). Postgres only, same
+        # reasoning as payments.account_id / cylinder_transactions.product_id
+        # above.
+        if "shop_expense_lines" in existing_tables and engine.dialect.name == "postgresql":
+            expense_line_columns = {c["name"]: c for c in inspector.get_columns("shop_expense_lines")}
+            if expense_line_columns.get("category_id", {}).get("nullable") is False:
+                conn.execute(text("ALTER TABLE shop_expense_lines ALTER COLUMN category_id DROP NOT NULL"))
 
         # One-time backfill: bring pre-existing Unified Sale batches (created
         # under the old single-status workflow) up to date with the new
@@ -260,3 +299,150 @@ def run_startup_migrations(engine: Engine) -> None:
                 SET quantity_kg = quantity * cylinder_weight_used
                 WHERE quantity_kg IS NULL
             """))
+
+        # One-time backfill: every existing shop_sales row predates
+        # amount_received (Inline Settlement / partial payment) and was, by
+        # construction, all-or-nothing — a 'cash' sale was always paid in
+        # full on the spot, a 'credit' sale was always fully unpaid at
+        # creation. Guarded by amount_received IS NULL so a re-run never
+        # touches a row a real Shop Sale already populated (including one
+        # deliberately saved with amount_received = 0).
+        if "shop_sales" in existing_tables:
+            conn.execute(text("""
+                UPDATE shop_sales
+                SET amount_received = CASE WHEN payment_type = 'cash' THEN total_amount ELSE 0 END
+                WHERE amount_received IS NULL
+            """))
+
+        # One-time backfill: models.Payment.unified_sale_id was a real
+        # column with ZERO rows ever using it (confirmed directly against
+        # the database before this fix) — a Unified Sale's
+        # total_credit_received (the customer's actual on-the-spot
+        # collection) was posted straight onto customer.current_balance in
+        # approve_unified_sale_sale, with no Payment row created for it at
+        # all, so it had no reporting/audit trail anywhere except the now-
+        # retired separate "Unified Sale" Daily Report section. That
+        # function now creates this row going forward (§ Daily Report
+        # Unified Sale fixes); this backfills every ALREADY-approved batch
+        # it predates. Guarded by "no Payment row already linked to this
+        # batch" so a re-run is a no-op. Never touches
+        # customer.current_balance — that already correctly reflects
+        # credit_received from when the batch was originally approved; this
+        # is a pure audit-trail insert, matching exactly what the live code
+        # path now does (account_id=NULL, method='unified_sale_credit',
+        # status='active').
+        _required_unified = {"unified_sale_batches", "payments"}
+        if _required_unified <= existing_tables:
+            already_backfilled = {
+                str(row[0]) for row in conn.execute(text(
+                    "SELECT DISTINCT unified_sale_id FROM payments WHERE unified_sale_id IS NOT NULL"
+                )).fetchall()
+            }
+            to_backfill = conn.execute(text("""
+                SELECT id, display_id, date, customer_id, total_credit_received, entered_by
+                FROM unified_sale_batches
+                WHERE sale_status = 'approved' AND total_credit_received > 0
+            """)).fetchall()
+            for batch_id, batch_display_id, batch_date, customer_id, credit_received, entered_by in to_backfill:
+                if str(batch_id) in already_backfilled:
+                    continue
+                max_suffix = conn.execute(text(
+                    "SELECT MAX(CAST(SUBSTR(display_id, 5) AS INTEGER)) FROM payments WHERE display_id LIKE 'PAY-%'"
+                )).scalar()
+                new_display_id = f"PAY-{(max_suffix or 0) + 1:06d}"
+                conn.execute(text("""
+                    INSERT INTO payments (id, display_id, date, customer_id, amount, method, account_id,
+                                           source_account_id, notes, status, entered_by, created_at, unified_sale_id)
+                    VALUES (:id, :display_id, :date, :customer_id, :amount, 'unified_sale_credit', NULL,
+                            NULL, :notes, 'active', :entered_by, :date, :batch_id)
+                """), {
+                    "id": str(_uuid.uuid4()), "display_id": new_display_id, "date": batch_date,
+                    "customer_id": str(customer_id), "amount": credit_received,
+                    "notes": f"Collected at Unified Sale {batch_display_id} — routed onward at settlement",
+                    "entered_by": entered_by, "batch_id": str(batch_id),
+                })
+                already_backfilled.add(str(batch_id))
+
+        # Shop Cash Money Routing — every shop's own account, plus
+        # reconciliation of pre-existing history against it. Runs on EVERY
+        # startup (not guarded to "once") and is safe to do so: it always
+        # RECOMPUTES current_balance from the full linked transaction set
+        # rather than incrementing it, so a re-run is a no-op once nothing
+        # is left to link, and it self-heals if a live mutation path ever
+        # drifts from the transaction log. Scoped strictly to "shop_cash"
+        # accounts — never touches Office Cash/Home Cash/Dowa Account/etc.,
+        # whose own history (Sales, CompanyPayments, OwnerCapital, ...) is
+        # far too broad to safely reconstruct here.
+        _required = {"customers", "payment_accounts", "shop_sales", "shop_customer_payments", "shop_expense_transactions", "payments"}
+        if _required <= existing_tables:
+            shops = conn.execute(text("SELECT id, name FROM customers WHERE customer_type = 'shop'")).fetchall()
+            for shop_id, shop_name in shops:
+                row = conn.execute(
+                    text("SELECT id FROM payment_accounts WHERE account_type = 'shop_cash' AND shop_id = :sid"),
+                    {"sid": shop_id},
+                ).fetchone()
+                if row:
+                    account_id = str(row[0])
+                else:
+                    account_id = str(_uuid.uuid4())
+                    conn.execute(text("""
+                        INSERT INTO payment_accounts (id, name, kind, account_type, shop_id, opening_balance, current_balance, active)
+                        VALUES (:id, :name, 'cash', 'shop_cash', :sid, 0, 0, 'active')
+                    """), {"id": account_id, "name": f"Shop Cash — {shop_name}", "sid": shop_id})
+
+                # Backfill FK links on historical rows (all predate this
+                # column and were, by construction, this shop's own money
+                # movement) — guarded by IS NULL so a row a real request
+                # already linked (possibly to a DIFFERENT chosen account)
+                # is never overwritten.
+                conn.execute(text("""
+                    UPDATE shop_sales SET destination_account_id = :aid
+                    WHERE customer_id = :sid AND destination_account_id IS NULL
+                      AND amount_received IS NOT NULL AND amount_received > 0 AND status = 'active'
+                """), {"aid": account_id, "sid": shop_id})
+                conn.execute(text("""
+                    UPDATE shop_customer_payments SET account_id = :aid
+                    WHERE shop_id = :sid AND account_id IS NULL AND status = 'active'
+                """), {"aid": account_id, "sid": shop_id})
+                conn.execute(text("""
+                    UPDATE shop_expense_transactions SET account_id = :aid
+                    WHERE shop_id = :sid AND account_id IS NULL AND status = 'active'
+                """), {"aid": account_id, "sid": shop_id})
+                # Payment.source_account_id: before this feature existed,
+                # every Dowa payment from a shop was implicitly assumed to
+                # come from that shop's own cash (the only convention that
+                # existed) — backfilling it here preserves that same
+                # accounting for historical rows rather than silently
+                # dropping them out of Shop Cash.
+                conn.execute(text("""
+                    UPDATE payments SET source_account_id = :aid
+                    WHERE customer_id = :sid AND source_account_id IS NULL AND status = 'active'
+                """), {"aid": account_id, "sid": shop_id})
+
+                sales_sum = conn.execute(text(
+                    "SELECT COALESCE(SUM(amount_received),0) FROM shop_sales WHERE destination_account_id = :aid AND status = 'active'"
+                ), {"aid": account_id}).scalar()
+                collections_sum = conn.execute(text(
+                    "SELECT COALESCE(SUM(amount),0) FROM shop_customer_payments WHERE account_id = :aid AND status = 'active'"
+                ), {"aid": account_id}).scalar()
+                expense_sum = conn.execute(text(
+                    "SELECT COALESCE(SUM(total_amount),0) FROM shop_expense_transactions WHERE account_id = :aid AND status = 'active'"
+                ), {"aid": account_id}).scalar()
+                dowa_sum = conn.execute(text(
+                    "SELECT COALESCE(SUM(amount),0) FROM payments WHERE source_account_id = :aid AND status = 'active'"
+                ), {"aid": account_id}).scalar()
+                transfers_in = conn.execute(text(
+                    "SELECT COALESCE(SUM(amount),0) FROM account_transfers WHERE to_account_id = :aid"
+                ), {"aid": account_id}).scalar() if "account_transfers" in existing_tables else 0
+                transfers_out = conn.execute(text(
+                    "SELECT COALESCE(SUM(amount),0) FROM account_transfers WHERE from_account_id = :aid"
+                ), {"aid": account_id}).scalar() if "account_transfers" in existing_tables else 0
+                opening = conn.execute(
+                    text("SELECT opening_balance FROM payment_accounts WHERE id = :aid"), {"aid": account_id}
+                ).scalar() or 0
+
+                new_balance = opening + sales_sum + collections_sum - expense_sum - dowa_sum + transfers_in - transfers_out
+                conn.execute(
+                    text("UPDATE payment_accounts SET current_balance = :bal WHERE id = :aid"),
+                    {"bal": new_balance, "aid": account_id},
+                )

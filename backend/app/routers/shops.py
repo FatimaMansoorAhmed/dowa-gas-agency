@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
-from app.utils import next_display_id
+from app.utils import next_display_id, get_or_create_shop_account
 from app.timezone import karachi_day_bounds, karachi_today_str
 from app.routers.board_rates import resolve_board_rate
 from app.routers.ledger import _customer_corrections
@@ -130,37 +130,66 @@ def _compute_stock_summary(db: Session, shop_id, business_date: str) -> schemas.
     )
 
 
-# ---------- Shop Cash summary (derived, never stored — §24) ----------
+# ---------- Shop Cash summary (a derived HISTORICAL VIEW, §24 — reconciles
+# against but is distinct from the shop's real PaymentAccount.current_balance,
+# which every money movement below actually posts to; see
+# schemas.ShopCashSummary's docstring for the Customer-Ledger-vs-
+# Customer.current_balance analogy this mirrors) ----------
 
 def _compute_cash_summary(db: Session, shop: models.Customer, business_date: str) -> schemas.ShopCashSummary:
-    """Shop Cash = opening_cash + cash retail sales + supply-customer
-    collections − expenses − owner withdrawals − Dowa payments. Every term
-    is summed fresh from Engine 3's own history (ShopSale.payment_type ==
-    'cash', ShopCustomerPayment, ShopExpenseTransaction/Line) plus the
-    EXISTING Payment model for the Dowa-payments term (§19: don't duplicate
-    a concept the app already has) — never from a stored running balance,
+    """Shop Cash = opening_cash + cash actually received on sales (any
+    payment_type — a partially-paid credit sale still puts real cash in the
+    till, §2) + supply-customer collections + transfers in − expenses −
+    owner withdrawals − Dowa payments funded from Shop Cash − transfers out.
+    Every term is summed fresh from Engine 3's own history plus the
+    EXISTING Payment/AccountTransfer models (§19: don't duplicate a concept
+    the app already has) — never from the stored account balance itself,
     mirroring _compute_stock_summary's derive-from-history pattern."""
     day_start, day_end = karachi_day_bounds(business_date)
+    shop_account = get_or_create_shop_account(db, shop)
 
-    cash_sales = (
+    # Every term below is filtered to the transactions that actually posted
+    # to THIS shop's own account — a Shop Sale/collection/expense entered
+    # with a different destination/source account (§2/§1: "should allow the
+    # same account choices as elsewhere") never touches Shop Cash, only
+    # whichever account was actually chosen does.
+    all_sales = (
         db.query(models.ShopSale)
-        .filter(models.ShopSale.customer_id == shop.id, models.ShopSale.status == "active", models.ShopSale.payment_type == "cash")
+        .filter(
+            models.ShopSale.customer_id == shop.id, models.ShopSale.status == "active",
+            models.ShopSale.destination_account_id == shop_account.id,
+        )
         .all()
     )
     collections = (
         db.query(models.ShopCustomerPayment)
-        .filter(models.ShopCustomerPayment.shop_id == shop.id, models.ShopCustomerPayment.status == "active")
+        .filter(
+            models.ShopCustomerPayment.shop_id == shop.id, models.ShopCustomerPayment.status == "active",
+            models.ShopCustomerPayment.account_id == shop_account.id,
+        )
         .all()
     )
     expense_txns = (
         db.query(models.ShopExpenseTransaction)
-        .filter(models.ShopExpenseTransaction.shop_id == shop.id, models.ShopExpenseTransaction.status == "active")
+        .filter(
+            models.ShopExpenseTransaction.shop_id == shop.id, models.ShopExpenseTransaction.status == "active",
+            models.ShopExpenseTransaction.account_id == shop_account.id,
+        )
         .all()
     )
+    # Only Dowa payments actually funded FROM this shop's own account count
+    # against Shop Cash — one paid from a different account (e.g. Office
+    # Cash) never touches Shop Cash at all.
     dowa_payments = (
         db.query(models.Payment)
-        .filter(models.Payment.customer_id == shop.id, models.Payment.status == "active")
+        .filter(models.Payment.customer_id == shop.id, models.Payment.status == "active", models.Payment.source_account_id == shop_account.id)
         .all()
+    )
+    transfers_in_rows = (
+        db.query(models.AccountTransfer).filter(models.AccountTransfer.to_account_id == shop_account.id).all()
+    )
+    transfers_out_rows = (
+        db.query(models.AccountTransfer).filter(models.AccountTransfer.from_account_id == shop_account.id).all()
     )
 
     lines_by_txn: dict = {}
@@ -188,19 +217,29 @@ def _compute_cash_summary(db: Session, shop: models.Customer, business_date: str
     before_expense, before_withdrawal = _expense_split(before(expense_txns, "date"))
     today_expense, today_withdrawal = _expense_split(today(expense_txns, "date"))
 
+    def _received(sales) -> Decimal:
+        return sum((s.amount_received if s.amount_received is not None else Decimal("0")) for s in sales) or Decimal("0")
+
     opening_cash = (
-        shop.shop_opening_cash
-        + sum((s.total_amount for s in before(cash_sales, "date")), start=Decimal("0"))
+        shop_account.opening_balance
+        + _received(before(all_sales, "date"))
         + sum((p.amount for p in before(collections, "date")), start=Decimal("0"))
+        + sum((t.amount for t in before(transfers_in_rows, "date")), start=Decimal("0"))
         - before_expense - before_withdrawal
         - sum((p.amount for p in before(dowa_payments, "date")), start=Decimal("0"))
+        - sum((t.amount for t in before(transfers_out_rows, "date")), start=Decimal("0"))
     )
 
-    day_cash_sales = sum((s.total_amount for s in today(cash_sales, "date")), start=Decimal("0"))
+    day_cash_sales = _received(today(all_sales, "date"))
     day_collections = sum((p.amount for p in today(collections, "date")), start=Decimal("0"))
     day_dowa_payments = sum((p.amount for p in today(dowa_payments, "date")), start=Decimal("0"))
+    day_transfers_in = sum((t.amount for t in today(transfers_in_rows, "date")), start=Decimal("0"))
+    day_transfers_out = sum((t.amount for t in today(transfers_out_rows, "date")), start=Decimal("0"))
 
-    closing_cash = opening_cash + day_cash_sales + day_collections - today_expense - today_withdrawal - day_dowa_payments
+    closing_cash = (
+        opening_cash + day_cash_sales + day_collections + day_transfers_in
+        - today_expense - today_withdrawal - day_dowa_payments - day_transfers_out
+    )
 
     return schemas.ShopCashSummary(
         business_date=business_date,
@@ -210,6 +249,8 @@ def _compute_cash_summary(db: Session, shop: models.Customer, business_date: str
         expenses=today_expense,
         owner_withdrawals=today_withdrawal,
         dowa_payments=day_dowa_payments,
+        transfers_in=day_transfers_in,
+        transfers_out=day_transfers_out,
         closing_cash=closing_cash,
     )
 
@@ -258,6 +299,29 @@ def _apply_shop_sale(db: Session, shop: models.Customer, payload: schemas.ShopSa
         quantity_kg = payload.quantity * saleable_kg
     total_amount = quantity_kg * board_rate.rate_per_kg
 
+    # Inline Settlement (§2, Money Routing) — how much of total_amount was
+    # actually collected right now. A "cash"/walk-in sale is always fully
+    # paid (there's no one to owe); amount_received is force-set to
+    # total_amount server-side regardless of what was sent, rather than
+    # trusting a client-supplied figure for money that must always be
+    # 100% collected. A "credit" sale defaults to 0 (today's original
+    # all-or-nothing behavior) unless a partial/full amount was given.
+    if payload.payment_type == "cash":
+        amount_received = total_amount
+    else:
+        amount_received = payload.amount_received if payload.amount_received is not None else Decimal("0")
+        if amount_received < 0 or amount_received > total_amount:
+            raise HTTPException(400, f"amount_received must be between 0 and the sale total ({total_amount})")
+
+    destination_account = None
+    if amount_received > 0:
+        if payload.destination_account_id:
+            destination_account = db.query(models.PaymentAccount).get(payload.destination_account_id)
+            if not destination_account:
+                raise HTTPException(404, "Destination account not found")
+        else:
+            destination_account = get_or_create_shop_account(db, shop)
+
     # FIFO — oldest batch first. This ONLY decides which physical batch
     # quantity is reduced; it has no influence on the price computed above.
     batches = (
@@ -290,6 +354,8 @@ def _apply_shop_sale(db: Session, shop: models.Customer, payload: schemas.ShopSa
         quantity_kg=quantity_kg,
         supply_customer_id=supply_customer.id if supply_customer else None,
         payment_type=payload.payment_type,
+        amount_received=amount_received,
+        destination_account_id=destination_account.id if destination_account else None,
         board_rate_per_kg_used=board_rate.rate_per_kg,
         cylinder_weight_used=cylinder_weight,
         saleable_kg_used=saleable_kg,
@@ -312,14 +378,23 @@ def _apply_shop_sale(db: Session, shop: models.Customer, payload: schemas.ShopSa
         db.add(models.ShopSaleBatchConsumption(shop_sale_id=sale.id, shop_stock_batch_id=batch.id, quantity_consumed=take))
         remaining -= take
 
-    # Supply Customer receivable (§25) — a credit sale increases what this
-    # customer owes the SHOP (never the Dowa Customer Ledger/current_balance
-    # — see the module docstring). A cash sale, even one that names a
-    # customer, never touches this balance; Shop Cash picks it up instead,
-    # derived on read by _compute_cash_summary from ShopSale.payment_type.
-    if payload.payment_type == "credit" and supply_customer:
-        supply_customer.current_balance = supply_customer.current_balance + total_amount
+    # Supply Customer receivable (§25, §2) — a credit sale increases what
+    # this customer owes the SHOP by only the OUTSTANDING remainder (total
+    # minus whatever was collected right now via Inline Settlement), never
+    # the Dowa Customer Ledger/current_balance (see the module docstring).
+    # A cash sale, even one that names a customer, never touches this
+    # balance — it's always amount_received == total_amount == 0 outstanding.
+    outstanding = total_amount - amount_received
+    if payload.payment_type == "credit" and supply_customer and outstanding > 0:
+        supply_customer.current_balance = supply_customer.current_balance + outstanding
         db.add(supply_customer)
+
+    # Shop Cash Money Routing (§1/§2) — the cash portion actually collected
+    # posts to a real, stored PaymentAccount balance right now, atomically
+    # with the sale itself. Never posted for outstanding/credit portions.
+    if destination_account and amount_received > 0:
+        destination_account.current_balance = destination_account.current_balance + amount_received
+        db.add(destination_account)
 
     return sale
 
@@ -333,11 +408,18 @@ def _reverse_shop_sale(db: Session, sale: models.ShopSale) -> None:
             db.add(batch)
         db.delete(c)
 
-    if sale.payment_type == "credit" and sale.supply_customer_id:
+    outstanding = sale.total_amount - (sale.amount_received if sale.amount_received is not None else Decimal("0"))
+    if sale.payment_type == "credit" and sale.supply_customer_id and outstanding > 0:
         supply_customer = db.query(models.ShopSupplyCustomer).get(sale.supply_customer_id)
         if supply_customer:
-            supply_customer.current_balance = supply_customer.current_balance - sale.total_amount
+            supply_customer.current_balance = supply_customer.current_balance - outstanding
             db.add(supply_customer)
+
+    if sale.destination_account_id and sale.amount_received:
+        destination_account = db.query(models.PaymentAccount).get(sale.destination_account_id)
+        if destination_account:
+            destination_account.current_balance = destination_account.current_balance - sale.amount_received
+            db.add(destination_account)
 
 
 # ---------- Shop list / create / detail ----------
@@ -349,6 +431,7 @@ def list_shops(db: Session = Depends(get_db)):
     out = []
     for shop in shops:
         summary = _compute_stock_summary(db, shop.id, today)
+        shop_account = get_or_create_shop_account(db, shop)
         last_dates = [shop.last_transaction_at]
         last_shop_sale = db.query(models.ShopSale).filter(models.ShopSale.customer_id == shop.id).order_by(models.ShopSale.created_at.desc()).first()
         if last_shop_sale:
@@ -364,8 +447,10 @@ def list_shops(db: Session = Depends(get_db)):
             today_sales=summary.total_sales,
             today_returns=summary.total_returns,
             current_balance=shop.current_balance,
+            shop_cash_balance=shop_account.current_balance,
             last_activity=max(last_dates) if last_dates else None,
         ))
+    db.commit()  # persists any Shop Cash accounts that were just lazily created
     return out
 
 
@@ -374,10 +459,15 @@ def create_shop(payload: schemas.CustomerCreate, db: Session = Depends(get_db)):
     """Creates a shop — a Customer row with customer_type="shop" (§ Shop
     Management: a Shop is a Customer, not a separate table). Reuses the
     exact same creation path as routers/customers.py's create_customer so
-    display_id generation/validation never diverges between the two."""
+    display_id generation/validation never diverges between the two, then
+    creates that shop's own Shop Cash account (§ Shop Cash Money Routing) —
+    eagerly, so it's visible on the Cash Book from the moment the shop exists."""
     from app.routers.customers import create_customer as _create_customer_row
     payload.customer_type = "shop"
-    return _create_customer_row(payload, db)
+    shop = _create_customer_row(payload, db)
+    get_or_create_shop_account(db, shop)
+    db.commit()
+    return shop
 
 
 @router.get("/{shop_id}", response_model=schemas.ShopDetailOut)
@@ -396,6 +486,8 @@ def get_shop_detail(
 
     stock = _compute_stock_summary(db, shop_id, business_date)
     cash = _compute_cash_summary(db, shop, business_date)
+    shop_account = get_or_create_shop_account(db, shop)
+    db.commit()
     products = {p.id: p for p in db.query(models.Product).all()}
 
     transactions: list[schemas.ShopTransactionRow] = []
@@ -430,12 +522,18 @@ def get_shop_detail(
     for s in shop_sales:
         product_name = products.get(s.product_id).name if products.get(s.product_id) else "Product"
         qty_label = f"{s.quantity_kg} kg" if s.unit == "kg" and s.quantity_kg is not None else f"{s.quantity}"
-        credit_label = f" · CREDIT" + (f" ({s.supply_customer.name})" if s.supply_customer_id else "") if s.payment_type == "credit" else ""
+        received = s.amount_received if s.amount_received is not None else s.total_amount
+        outstanding = s.total_amount - received
+        credit_label = (
+            (f" · CREDIT (partial: {received} paid, {outstanding} due)" if 0 < received < s.total_amount else " · CREDIT")
+            + (f" ({s.supply_customer.name})" if s.supply_customer_id else "")
+        ) if s.payment_type == "credit" else ""
         transactions.append(schemas.ShopTransactionRow(
             kind="shop_sale", date=s.date, ref_id=s.id, display_id=s.display_id,
             description=f"Shop Sale — {product_name} × {qty_label}{credit_label}",
             quantity=s.quantity, board_rate_per_kg=s.board_rate_per_kg_used, cylinder_weight=s.cylinder_weight_used,
             sale_rate_per_cylinder=s.sale_rate_per_cylinder, amount=s.total_amount,
+            amount_received=received, amount_outstanding=outstanding,
             entered_by=s.entered_by, status=s.status, correctable=True,
         ))
 
@@ -471,6 +569,7 @@ def get_shop_detail(
         customer=shop,
         stock=stock,
         cash=cash,
+        account=shop_account,
         transactions=transactions,
         corrections=_customer_corrections(db, shop_id, month_start, next_month),
         shop_sale_corrections=shop_sale_corrections,
@@ -484,14 +583,55 @@ def get_shop_stock(shop_id: UUID, date: str = Query(None, description="YYYY-MM-D
 
 
 @router.get("/{shop_id}/batches", response_model=list[schemas.ShopStockBatchOut])
-def list_shop_batches(shop_id: UUID, db: Session = Depends(get_db)):
+def list_shop_batches(
+    shop_id: UUID,
+    month: str = Query(None, description="YYYY-MM — optionally narrow to batches loaded in this month, for inspecting a past month's FIFO queue. Omit for the live/current queue (every active batch, any date)."),
+    db: Session = Depends(get_db),
+):
+    """FIFO Breakdown table (Shop Detail UI) — read-only listing, never
+    touches quantity_remaining or the consumption engine itself (see
+    _apply_shop_sale/_reverse_shop_sale, the sole authority on both). The
+    `month` filter only narrows WHICH batches are listed (by
+    transaction_date) — quantity_remaining/quantity_consumed on any
+    returned row are always today's live values (there is no point-in-time
+    snapshot of a batch's past remaining quantity to reconstruct), so
+    filtering to a past month shows that month's batches with their
+    CURRENT state, not a historical reconstruction. Never mutates
+    anything — filtering here can't alter the live operational balances
+    it's reading."""
     _get_shop(db, shop_id)
-    return (
-        db.query(models.ShopStockBatch)
-        .filter(models.ShopStockBatch.customer_id == shop_id, models.ShopStockBatch.status == "active")
-        .order_by(models.ShopStockBatch.transaction_date.asc())
-        .all()
+    q = db.query(models.ShopStockBatch).filter(
+        models.ShopStockBatch.customer_id == shop_id, models.ShopStockBatch.status == "active"
     )
+    if month:
+        month_start = datetime.strptime(month, "%Y-%m")
+        next_month = datetime(month_start.year + 1, 1, 1) if month_start.month == 12 else datetime(month_start.year, month_start.month + 1, 1)
+        q = q.filter(models.ShopStockBatch.transaction_date >= month_start, models.ShopStockBatch.transaction_date < next_month)
+
+    # Deterministic FIFO-priority ordering — exactly the tie-break the
+    # consumption engine itself uses (transaction_date, created_at), plus
+    # `id` as a final guaranteed-unique tie-breaker for display purposes
+    # only (the consumption query's own ordering, routers/shops.py's
+    # _apply_shop_sale, is untouched by this).
+    batches = q.order_by(
+        models.ShopStockBatch.transaction_date.asc(),
+        models.ShopStockBatch.created_at.asc(),
+        models.ShopStockBatch.id.asc(),
+    ).all()
+
+    products = {p.id: p for p in db.query(models.Product).all()}
+    sale_ids = {b.source_sale_id for b in batches if b.source_sale_id}
+    sales = {s.id: s for s in db.query(models.Sale).filter(models.Sale.id.in_(sale_ids)).all()} if sale_ids else {}
+
+    out = []
+    for b in batches:
+        row = schemas.ShopStockBatchOut.model_validate(b)
+        product = products.get(b.product_id)
+        row.product_name = product.name if product else None
+        source_sale = sales.get(b.source_sale_id) if b.source_sale_id else None
+        row.source_display_id = source_sale.display_id if source_sale else None
+        out.append(row)
+    return out
 
 
 # ---------- Shop Sales ----------
@@ -684,16 +824,32 @@ def create_customer_payment(
         raise HTTPException(404, "Supply customer not found for this shop")
     if payload.amount <= 0:
         raise HTTPException(400, "Amount must be positive")
+    if payload.shop_sale_id:
+        linked_sale = db.query(models.ShopSale).get(payload.shop_sale_id)
+        if not linked_sale or linked_sale.customer_id != shop.id:
+            raise HTTPException(404, "Linked shop sale not found for this shop")
+
+    # Shop Cash Money Routing (§1) — defaults to the shop's own account,
+    # same account choices as elsewhere.
+    if payload.account_id:
+        account = db.query(models.PaymentAccount).get(payload.account_id)
+        if not account:
+            raise HTTPException(404, "Account not found")
+    else:
+        account = get_or_create_shop_account(db, shop)
 
     payment = models.ShopCustomerPayment(
         display_id=next_display_id(db, models.ShopCustomerPayment, "SHCPAY", width=6),
         date=payload.date, shop_id=shop.id, supply_customer_id=customer.id,
+        shop_sale_id=payload.shop_sale_id, account_id=account.id,
         amount=payload.amount, method=payload.method, notes=payload.notes,
         status="active", entered_by=payload.entered_by,
     )
     db.add(payment)
     customer.current_balance = customer.current_balance - payload.amount
     db.add(customer)
+    account.current_balance = account.current_balance + payload.amount
+    db.add(account)
     db.commit()
     db.refresh(payment)
     return payment
@@ -710,6 +866,11 @@ def cancel_customer_payment(payment_id: UUID, by: str = Query(...), db: Session 
     if customer:
         customer.current_balance = customer.current_balance + payment.amount
         db.add(customer)
+    if payment.account_id:
+        account = db.query(models.PaymentAccount).get(payment.account_id)
+        if account:
+            account.current_balance = account.current_balance - payment.amount
+            db.add(account)
     payment.status = "cancelled"
     payment.modified_at = datetime.utcnow()
     payment.modified_by = by
@@ -734,7 +895,8 @@ def _expense_txn_to_out(db: Session, txn: models.ShopExpenseTransaction) -> sche
     ]
     return schemas.ShopExpenseTransactionOut(
         id=txn.id, display_id=txn.display_id, date=txn.date, shop_id=txn.shop_id,
-        total_amount=txn.total_amount, payment_source=txn.payment_source, notes=txn.notes,
+        total_amount=txn.total_amount, account_id=txn.account_id,
+        payment_source=txn.payment_source, notes=txn.notes,
         status=txn.status, entered_by=txn.entered_by, created_at=txn.created_at, lines=line_outs,
     )
 
@@ -766,13 +928,28 @@ def create_shop_expense(shop_id: UUID, payload: schemas.ShopExpenseTransactionCr
     for line in payload.lines:
         if line.amount <= 0:
             raise HTTPException(400, "Every line amount must be positive")
-        if not db.query(models.ExpenseCategory).get(line.category_id):
-            raise HTTPException(404, f"Expense category {line.category_id} not found")
+        # A Category classifies an EXPENSE — an Owner Withdrawal isn't a
+        # category of expense, so it's never required/validated here, even
+        # if the client sent one (line creation below force-clears it).
+        if line.line_type == "expense":
+            if not line.category_id:
+                raise HTTPException(400, "category_id is required for an expense line")
+            if not db.query(models.ExpenseCategory).get(line.category_id):
+                raise HTTPException(404, f"Expense category {line.category_id} not found")
+
+    # Shop Cash Money Routing (§1) — defaults to the shop's own account,
+    # same account choices as elsewhere.
+    if payload.account_id:
+        account = db.query(models.PaymentAccount).get(payload.account_id)
+        if not account:
+            raise HTTPException(404, "Account not found")
+    else:
+        account = get_or_create_shop_account(db, shop)
 
     total = sum((l.amount for l in payload.lines), Decimal("0"))
     txn = models.ShopExpenseTransaction(
         display_id=next_display_id(db, models.ShopExpenseTransaction, "SHEXP", width=6),
-        date=payload.date, shop_id=shop.id, total_amount=total,
+        date=payload.date, shop_id=shop.id, total_amount=total, account_id=account.id,
         payment_source=payload.payment_source, notes=payload.notes,
         status="active", entered_by=payload.entered_by,
     )
@@ -780,9 +957,12 @@ def create_shop_expense(shop_id: UUID, payload: schemas.ShopExpenseTransactionCr
     db.flush()
     for line in payload.lines:
         db.add(models.ShopExpenseLine(
-            expense_transaction_id=txn.id, category_id=line.category_id,
+            expense_transaction_id=txn.id,
+            category_id=line.category_id if line.line_type == "expense" else None,
             line_type=line.line_type, amount=line.amount, description=line.description,
         ))
+    account.current_balance = account.current_balance - total
+    db.add(account)
     db.commit()
     db.refresh(txn)
     return _expense_txn_to_out(db, txn)
@@ -795,6 +975,11 @@ def cancel_shop_expense(expense_id: UUID, by: str = Query(...), db: Session = De
         raise HTTPException(404, "Expense transaction not found")
     if txn.status != "active":
         raise HTTPException(400, "Expense transaction is already cancelled")
+    if txn.account_id:
+        account = db.query(models.PaymentAccount).get(txn.account_id)
+        if account:
+            account.current_balance = account.current_balance + txn.total_amount
+            db.add(account)
     txn.status = "cancelled"
     txn.modified_at = datetime.utcnow()
     txn.modified_by = by
@@ -838,19 +1023,25 @@ def get_shop_business_ledger(
     for s in shop_sales:
         product_name = products.get(s.product_id).name if products.get(s.product_id) else "Product"
         qty_label = f"{s.quantity_kg} kg" if s.unit == "kg" and s.quantity_kg is not None else f"{s.quantity}"
+        # Amount = full sale value (always). Cash Impact = only what was
+        # actually received (§2/C2) — for a "cash" sale these are always
+        # equal (amount_received == total_amount, enforced at creation);
+        # for a "credit" sale they diverge whenever it was partially paid.
+        received = s.amount_received if s.amount_received is not None else s.total_amount
         if s.payment_type == "credit":
             sc = supply_customers.get(s.supply_customer_id)
+            paid_note = f" ({received} paid, {s.total_amount - received} outstanding)" if 0 < received < s.total_amount else ""
             rows.append(schemas.ShopBusinessLedgerRow(
                 kind="credit_sale", date=s.date, ref_id=s.id, display_id=s.display_id,
-                description=f"Credit Sale to {sc.name if sc else 'Unknown'} — {product_name} × {qty_label}",
-                amount=s.total_amount, cash_impact=Decimal("0"),
+                description=f"Credit Sale to {sc.name if sc else 'Unknown'} — {product_name} × {qty_label}{paid_note}",
+                amount=s.total_amount, cash_impact=received,
                 entered_by=s.entered_by, status=s.status,
             ))
         else:
             rows.append(schemas.ShopBusinessLedgerRow(
                 kind="cash_sale", date=s.date, ref_id=s.id, display_id=s.display_id,
                 description=f"Cash Sale — {product_name} × {qty_label}",
-                amount=s.total_amount, cash_impact=s.total_amount,
+                amount=s.total_amount, cash_impact=received,
                 entered_by=s.entered_by, status=s.status,
             ))
 
@@ -880,7 +1071,15 @@ def get_shop_business_ledger(
             lines_by_txn.setdefault(l.expense_transaction_id, []).append(l)
         for t in expense_txns:
             lines = lines_by_txn.get(t.id, [])
-            cat_names = ", ".join(categories.get(l.category_id).name if categories.get(l.category_id) else "?" for l in lines)
+            # Owner Withdrawal lines never carry a category_id (see
+            # ShopExpenseLine.category_id) — label those "Owner Withdrawal"
+            # here instead of falling into the "?" unknown-category case,
+            # which is reserved for an actual dangling/deleted category.
+            cat_names = ", ".join(
+                "Owner Withdrawal" if l.line_type == "owner_withdrawal"
+                else (categories.get(l.category_id).name if categories.get(l.category_id) else "?")
+                for l in lines
+            )
             has_withdrawal = any(l.line_type == "owner_withdrawal" for l in lines)
             has_expense = any(l.line_type == "expense" for l in lines)
             # A mixed transaction (some expense lines, some owner-withdrawal
@@ -896,18 +1095,25 @@ def get_shop_business_ledger(
                 entered_by=t.entered_by, status=t.status,
             ))
 
+    shop_account = get_or_create_shop_account(db, shop)
     dowa_payments = db.query(models.Payment).filter(
         models.Payment.customer_id == shop_id, models.Payment.status == "active", models.Payment.unified_sale_id.is_(None),
         models.Payment.date >= month_start, models.Payment.date < next_month,
     ).all()
     for p in dowa_payments:
+        # Only a payment actually funded FROM this shop's own account
+        # reduces Shop Cash — one funded from a different account (e.g.
+        # Office Cash) is still shown here (it's still this shop's Dowa
+        # payment event) but has zero impact on Shop Cash specifically.
+        funded_from_shop_cash = p.source_account_id == shop_account.id
         rows.append(schemas.ShopBusinessLedgerRow(
             kind="dowa_payment", date=p.date, ref_id=p.id, display_id=p.display_id,
-            description=f"Payment to Dowa · {p.method}",
-            amount=p.amount, cash_impact=-p.amount,
+            description=f"Payment to Dowa · {p.method}" + ("" if funded_from_shop_cash else " (funded from another account)"),
+            amount=p.amount, cash_impact=-p.amount if funded_from_shop_cash else Decimal("0"),
             entered_by=p.entered_by, status=p.status,
         ))
 
     rows.sort(key=lambda r: r.date, reverse=True)
 
+    db.commit()  # persists the shop's Shop Cash account if this request just lazily created it
     return schemas.ShopBusinessLedgerOut(business_date=business_date, cash=cash, rows=rows)

@@ -22,6 +22,7 @@ import type {
   OwnerCapital, OwnerCapitalDestination, DailyReportData, GeneratedReport, SendWhatsAppResult,
   BoardRate, ShopListRow, ShopDetailOut, ShopSale, ShopStockAdjustment, ShopStockBatch,
   ShopSupplyCustomer, ShopCustomerPayment, ShopExpenseTransaction, ShopBusinessLedgerOut,
+  AccountTransferRecord,
 } from "./types";
 
 export const api = {
@@ -93,6 +94,10 @@ export const api = {
       request<PaymentAccount>("/payment-accounts", { method: "POST", body: JSON.stringify({ name, kind, opening_balance, account_type }) }),
     transfer: (payload: { from_account_id: string; to_account_id: string; amount: number; notes?: string; entered_by: string }) =>
       request<AccountTransferResult>("/payment-accounts/transfer", { method: "POST", body: JSON.stringify(payload) }),
+    transfers: {
+      list: (accountId?: string) =>
+        request<AccountTransferRecord[]>(`/payment-accounts/transfers${accountId ? `?account_id=${accountId}` : ""}`),
+    },
   },
   expenseCategories: {
     list: () => request<ExpenseCategory[]>("/expense-categories"),
@@ -127,13 +132,15 @@ export const api = {
     create: (payload: {
       date: string; customer_id: string; sale_id?: string; amount: number;
       method: "cash" | "bank_transfer" | "cheque" | "online" | "other";
-      account_id: string; reference_no?: string; received_by?: string; notes?: string; entered_by: string;
+      account_id: string; source_account_id?: string;
+      reference_no?: string; received_by?: string; notes?: string; entered_by: string;
     }) => request<Payment>("/payments", { method: "POST", body: JSON.stringify(payload) }),
     cancel: (id: string, by: string) => request<Payment>(`/payments/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
     correct: (id: string, payload: {
       date: string; customer_id: string; sale_id?: string; amount: number;
       method: "cash" | "bank_transfer" | "cheque" | "online" | "other";
-      account_id: string; reference_no?: string; received_by?: string; notes?: string; entered_by: string;
+      account_id: string; source_account_id?: string;
+      reference_no?: string; received_by?: string; notes?: string; entered_by: string;
       correction_reason: string; corrected_by: string;
     }) => request<Payment>(`/payments/${id}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
   },
@@ -403,11 +410,16 @@ export const api = {
     },
     stock: (id: string, date?: string) =>
       request<ShopDetailOut["stock"]>(`/shops/${id}/stock${date ? `?date=${date}` : ""}`),
-    batches: (id: string) => request<ShopStockBatch[]>(`/shops/${id}/batches`),
+    batches: (id: string, month?: string) =>
+      request<ShopStockBatch[]>(`/shops/${id}/batches${month ? `?month=${month}` : ""}`),
     getSale: (saleId: string) => request<ShopSale>(`/shops/sales/${saleId}`),
     createSale: (shopId: string, payload: {
       date: string; product_id: string; quantity: number; unit?: "cylinder" | "kg";
       supply_customer_id?: string; payment_type?: "cash" | "credit";
+      // Inline Settlement (§2) — omitted means "fully paid" for cash,
+      // "fully credit" (0) for credit; a credit sale may set any amount
+      // from 0 up to the sale total for a partial payment.
+      amount_received?: number; destination_account_id?: string;
       notes?: string; entered_by: string;
     }) => request<ShopSale>(`/shops/${shopId}/sales`, { method: "POST", body: JSON.stringify(payload) }),
     cancelSale: (saleId: string, by: string) =>
@@ -415,6 +427,7 @@ export const api = {
     correctSale: (saleId: string, payload: {
       date: string; product_id: string; quantity: number; unit?: "cylinder" | "kg";
       supply_customer_id?: string; payment_type?: "cash" | "credit";
+      amount_received?: number; destination_account_id?: string;
       notes?: string; entered_by: string;
       correction_reason: string; corrected_by: string;
     }) => request<ShopSale>(`/shops/sales/${saleId}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
@@ -435,7 +448,8 @@ export const api = {
     },
     customerPayments: {
       create: (shopId: string, supplyCustomerId: string, payload: {
-        date: string; supply_customer_id: string; amount: number; method?: string; notes?: string; entered_by: string;
+        date: string; supply_customer_id: string; amount: number; method?: string;
+        account_id?: string; shop_sale_id?: string; notes?: string; entered_by: string;
       }) => request<ShopCustomerPayment>(`/shops/${shopId}/customers/${supplyCustomerId}/payments`, { method: "POST", body: JSON.stringify(payload) }),
       cancel: (paymentId: string, by: string) =>
         request<ShopCustomerPayment>(`/shops/customer-payments/${paymentId}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
@@ -445,8 +459,8 @@ export const api = {
         request<ShopExpenseTransaction[]>(`/shops/${shopId}/expenses${month ? `?month=${month}` : ""}`),
       create: (shopId: string, payload: {
         date: string;
-        lines: { category_id: string; line_type: "expense" | "owner_withdrawal"; amount: number; description?: string }[];
-        payment_source?: string; notes?: string; entered_by: string;
+        lines: { category_id?: string; line_type: "expense" | "owner_withdrawal"; amount: number; description?: string }[];
+        account_id?: string; payment_source?: string; notes?: string; entered_by: string;
       }) => request<ShopExpenseTransaction>(`/shops/${shopId}/expenses`, { method: "POST", body: JSON.stringify(payload) }),
       cancel: (expenseId: string, by: string) =>
         request<ShopExpenseTransaction>(`/shops/expenses/${expenseId}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
