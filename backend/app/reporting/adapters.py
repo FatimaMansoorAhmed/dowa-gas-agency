@@ -169,8 +169,13 @@ def _fetch_owner_capital(db: Session, start: datetime, end: datetime) -> list[Re
 
 
 def _fetch_expenses(db: Session, start: datetime, end: datetime) -> list[ReportableTransaction]:
+    # shop_id.is_(None) — a row with shop_id set was dual-written by
+    # routers/shops.py's create_shop_expense (§ Dashboard P&L / Shop
+    # Expense integration) and is ALREADY counted by _fetch_shop_expenses
+    # below (which reads ShopExpenseLine directly, unchanged); without this
+    # filter the Daily Report's net_cash_movement would double-count it.
     rows = _in_range(
-        db.query(models.Expense).filter(models.Expense.status == "active"),
+        db.query(models.Expense).filter(models.Expense.status == "active", models.Expense.shop_id.is_(None)),
         models.Expense.date, start, end,
     ).all()
     categories = {c.id: c for c in db.query(models.ExpenseCategory).all()}
@@ -186,8 +191,10 @@ def _fetch_expenses(db: Session, start: datetime, end: datetime) -> list[Reporta
 
 
 def _fetch_owner_drawings(db: Session, start: datetime, end: datetime) -> list[ReportableTransaction]:
+    # shop_id.is_(None) — mirrors _fetch_expenses above; a shop-tagged row
+    # is already counted by _fetch_shop_owner_withdrawals below.
     rows = _in_range(
-        db.query(models.OwnerDrawings).filter(models.OwnerDrawings.status == "active"),
+        db.query(models.OwnerDrawings).filter(models.OwnerDrawings.status == "active", models.OwnerDrawings.shop_id.is_(None)),
         models.OwnerDrawings.date, start, end,
     ).all()
     return [

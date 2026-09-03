@@ -45,6 +45,15 @@ def list_expenses(
         if customer_ids else {}
     )
 
+    # Dashboard P&L / Shop Expense integration (§ Dashboard) — resolve the
+    # shop name for rows dual-written from a Shop's Record Expense form,
+    # batched the same way as the customer-attribution lookup above.
+    shop_ids = {r.shop_id for r in rows if r.shop_id}
+    shops = (
+        {s.id: s for s in db.query(models.Customer).filter(models.Customer.id.in_(shop_ids)).all()}
+        if shop_ids else {}
+    )
+
     out: list[schemas.ExpenseOut] = []
     for r in rows:
         customer = None
@@ -52,6 +61,7 @@ def list_expenses(
             customer = customers.get(payments[r.source_payment_id].customer_id)
         elif r.unified_sale_id and r.unified_sale_id in batches:
             customer = customers.get(batches[r.unified_sale_id].customer_id)
+        shop = shops.get(r.shop_id) if r.shop_id else None
         out.append(schemas.ExpenseOut(
             id=r.id, display_id=r.display_id, date=r.date, category_id=r.category_id,
             amount=r.amount, account_id=r.account_id, method=r.method,
@@ -59,6 +69,7 @@ def list_expenses(
             unified_sale_id=r.unified_sale_id,
             customer_id=customer.id if customer else None,
             customer_name=customer.name if customer else None,
+            shop_id=r.shop_id, shop_name=shop.name if shop else None,
             status=r.status, entered_by=r.entered_by, created_at=r.created_at,
         ))
     return out

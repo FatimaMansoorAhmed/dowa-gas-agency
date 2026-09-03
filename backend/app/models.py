@@ -390,6 +390,15 @@ class Expense(Base):
     # Receipt's home-expense deduction — lets cancelling that receipt find
     # and reverse this row. Mirrors unified_sale_id's linkage pattern.
     source_payment_id = Column(GUID(), ForeignKey("payments.id"), nullable=True)
+    # Dashboard P&L / Shop Expense integration — dual-write only, going
+    # forward (no historical backfill). shop_id is the coarse display/
+    # filter tag (which shop); source_shop_expense_transaction_id is the
+    # precise link back to the ShopExpenseTransaction that produced this
+    # row, so cancel_shop_expense (routers/shops.py) can find and reverse
+    # it in the same operation — mirrors the source_payment_id pattern
+    # above. Both null for every plant-level Expense.
+    shop_id = Column(GUID(), ForeignKey("customers.id"), nullable=True)
+    source_shop_expense_transaction_id = Column(GUID(), ForeignKey("shop_expense_transactions.id"), nullable=True)
 
     status = Column(String, nullable=False, default="active")
     entered_by = Column(String, nullable=False)
@@ -397,6 +406,7 @@ class Expense(Base):
 
     category = relationship("ExpenseCategory")
     account = relationship("PaymentAccount")
+    shop = relationship("Customer")
 
 
 class OwnerDrawings(Base):
@@ -418,12 +428,17 @@ class OwnerDrawings(Base):
     # Set when this OwnerDrawings row was auto-created by a standalone
     # Payment Receipt's owner-drawings deduction — mirrors unified_sale_id.
     source_payment_id = Column(GUID(), ForeignKey("payments.id"), nullable=True)
+    # Dashboard P&L / Shop Expense integration — same convention as
+    # Expense.shop_id/source_shop_expense_transaction_id above.
+    shop_id = Column(GUID(), ForeignKey("customers.id"), nullable=True)
+    source_shop_expense_transaction_id = Column(GUID(), ForeignKey("shop_expense_transactions.id"), nullable=True)
 
     status = Column(String, nullable=False, default="active")
     entered_by = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     account = relationship("PaymentAccount")
+    shop = relationship("Customer")
 
 
 class OwnerCapital(Base):

@@ -152,6 +152,10 @@ export type Expense = {
   // payment (bypassing a Dowa account) — null for ordinary account-funded expenses.
   customer_id?: string | null;
   customer_name?: string | null;
+  // Dashboard P&L / Shop Expense integration (§ Dashboard) — set only for
+  // a row dual-written from a Shop's own Record Expense form.
+  shop_id?: string | null;
+  shop_name?: string | null;
 };
 
 export type LedgerRow = {
@@ -287,6 +291,10 @@ export type OwnerDrawing = {
   account_id: string | null;
   notes: string | null;
   unified_sale_id: string | null;
+  // Dashboard P&L / Shop Expense integration (§ Dashboard) — same
+  // convention as Expense.shop_id/shop_name above.
+  shop_id?: string | null;
+  shop_name?: string | null;
   status: string;
   entered_by: string;
   created_at: string;

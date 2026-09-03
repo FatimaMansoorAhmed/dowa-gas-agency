@@ -2,13 +2,15 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
 from app.deps import require_active_user, require_csrf
+from app.reporting.invoice_pdf import render_shop_sale_invoice_pdf
 from app.utils import next_display_id, get_or_create_shop_account
-from app.timezone import karachi_day_bounds, karachi_today_str
+from app.timezone import KARACHI_TZ, karachi_day_bounds, karachi_today_str
 from app.routers.board_rates import resolve_board_rate
 from app.routers.ledger import _customer_corrections
 
@@ -449,6 +451,34 @@ def create_shop(payload: schemas.CustomerCreate, db: Session = Depends(get_db)):
     return shop
 
 
+@router.get("/sales", response_model=list[schemas.ShopSaleOut])
+def list_shop_sales(month: str | None = Query(None, description="YYYY-MM"), db: Session = Depends(get_db)):
+    """Shop Sales across EVERY shop, not scoped to one — mirrors
+    routers/sales.py's list_sales / routers/purchases.py's list_purchases
+    exactly (active-only, in-Python month filter). Added for the
+    Dashboard's Total Tonnage card (§ Dashboard), which needs
+    ShopSale.quantity_kg summed across all shops for the period; no
+    per-shop endpoint gave that without an N-shop loop.
+
+    MUST be registered before GET /{shop_id} below — FastAPI/Starlette
+    matches path routes in registration order, and a single-segment
+    literal ("/sales") and a single-segment wildcard ("/{shop_id}") both
+    syntactically match a request to /shops/sales, so whichever is
+    registered first wins. Registering this after /{shop_id} would make
+    it unreachable (every request would resolve to get_shop_detail with
+    shop_id="sales" and 422 on the UUID parse instead) — caught via a
+    dry-run of this exact scenario before wiring it up live."""
+    rows = (
+        db.query(models.ShopSale)
+        .filter(models.ShopSale.status == "active")
+        .order_by(models.ShopSale.date.desc(), models.ShopSale.created_at.desc())
+        .all()
+    )
+    if month:
+        rows = [r for r in rows if r.date.strftime("%Y-%m") == month]
+    return rows
+
+
 @router.get("/{shop_id}", response_model=schemas.ShopDetailOut)
 def get_shop_detail(
     shop_id: UUID,
@@ -610,6 +640,25 @@ def get_shop_sale(sale_id: UUID, db: Session = Depends(get_db)):
     if not sale:
         raise HTTPException(404, "Shop sale not found")
     return sale
+
+
+@router.get("/sales/{sale_id}/invoice")
+def get_shop_sale_invoice(
+    sale_id: UUID, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
+    """Read-only, on-demand invoice PDF (Part B) — never stored to disk.
+    See get_sale_invoice in routers/sales.py for why a corrected record
+    always renders its own current values."""
+    sale = db.query(models.ShopSale).get(sale_id)
+    if not sale:
+        raise HTTPException(404, "Shop sale not found")
+    generated_at = datetime.now(KARACHI_TZ).strftime("%Y-%m-%d %H:%M")
+    pdf_bytes = render_shop_sale_invoice_pdf(sale, current_user.name, generated_at)
+    return Response(
+        content=pdf_bytes, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{sale.display_id}.pdf"'},
+    )
 
 
 @router.post("/{shop_id}/sales", response_model=schemas.ShopSaleOut, status_code=201)
@@ -880,6 +929,31 @@ def create_shop_expense(
             category_id=line.category_id if line.line_type == "expense" else None,
             line_type=line.line_type, amount=line.amount, description=line.description,
         ))
+        # Dashboard P&L / Shop Expense integration (§ Dashboard) — dual-
+        # write into the SAME general Expense/OwnerDrawings tables the
+        # plant-level Expenses/Cash Book pages already read, tagged with
+        # shop_id + source_shop_expense_transaction_id (the latter is what
+        # lets cancel_shop_expense below find and reverse these rows).
+        # Never touches account.current_balance here — that debit already
+        # happens once, below, for the whole transaction; doing it again
+        # per-line here would double-count it.
+        if line.line_type == "expense":
+            db.add(models.Expense(
+                display_id=next_display_id(db, models.Expense, "EXP", width=6),
+                date=payload.date, category_id=line.category_id, amount=line.amount,
+                account_id=account.id, method="cash",
+                description=line.description or f"Shop expense — {shop.name}",
+                shop_id=shop.id, source_shop_expense_transaction_id=txn.id,
+                status="active", entered_by=current_user.name,
+            ))
+        else:
+            db.add(models.OwnerDrawings(
+                display_id=next_display_id(db, models.OwnerDrawings, "DRAW", width=6),
+                date=payload.date, amount=line.amount, account_id=account.id,
+                notes=line.description or f"Shop owner withdrawal — {shop.name}",
+                shop_id=shop.id, source_shop_expense_transaction_id=txn.id,
+                status="active", entered_by=current_user.name,
+            ))
     account.current_balance = account.current_balance - total
     db.add(account)
     db.commit()
@@ -903,6 +977,24 @@ def cancel_shop_expense(expense_id: UUID, by: str = Query(...), db: Session = De
     txn.modified_at = datetime.utcnow()
     txn.modified_by = by
     db.add(txn)
+
+    # Dashboard P&L / Shop Expense integration (§ Dashboard) — keep the
+    # dual-written Expense/OwnerDrawings rows in sync: status-only flip,
+    # never touch account balance again (already reversed above once, for
+    # the whole transaction — these rows never touched it in the first
+    # place, they exist purely for Expenses-page/Cash-Book visibility and
+    # P&L reporting).
+    for exp in db.query(models.Expense).filter(
+        models.Expense.source_shop_expense_transaction_id == txn.id, models.Expense.status == "active"
+    ).all():
+        exp.status = "cancelled"
+        db.add(exp)
+    for draw in db.query(models.OwnerDrawings).filter(
+        models.OwnerDrawings.source_shop_expense_transaction_id == txn.id, models.OwnerDrawings.status == "active"
+    ).all():
+        draw.status = "cancelled"
+        db.add(draw)
+
     db.commit()
     db.refresh(txn)
     return _expense_txn_to_out(db, txn)

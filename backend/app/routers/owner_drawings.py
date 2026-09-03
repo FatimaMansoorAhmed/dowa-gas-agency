@@ -19,7 +19,24 @@ def list_owner_drawings(
     rows = q.order_by(models.OwnerDrawings.date.desc(), models.OwnerDrawings.created_at.desc()).all()
     if month:
         rows = [r for r in rows if r.date.strftime("%Y-%m") == month]
-    return rows
+
+    # Dashboard P&L / Shop Expense integration (§ Dashboard) — resolve the
+    # shop name for rows dual-written from a Shop's Record Expense form
+    # (an owner_withdrawal line), batched to avoid N+1 queries.
+    shop_ids = {r.shop_id for r in rows if r.shop_id}
+    shops = (
+        {s.id: s for s in db.query(models.Customer).filter(models.Customer.id.in_(shop_ids)).all()}
+        if shop_ids else {}
+    )
+    return [
+        schemas.OwnerDrawingsOut(
+            id=r.id, display_id=r.display_id, date=r.date, amount=r.amount,
+            account_id=r.account_id, notes=r.notes, unified_sale_id=r.unified_sale_id,
+            shop_id=r.shop_id, shop_name=shops[r.shop_id].name if r.shop_id in shops else None,
+            status=r.status, entered_by=r.entered_by, created_at=r.created_at,
+        )
+        for r in rows
+    ]
 
 
 @router.post("", response_model=schemas.OwnerDrawingsOut, status_code=201)

@@ -2,11 +2,14 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
 from app.deps import require_active_user, require_csrf
+from app.reporting.invoice_pdf import render_sale_invoice_pdf
+from app.timezone import KARACHI_TZ
 from app.utils import next_display_id, adjust_cylinder_balance, resync_unified_sale_batch_totals
 
 router = APIRouter(prefix="/sales", tags=["sales"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
@@ -328,3 +331,24 @@ def correct_sale(
     db.commit()
     db.refresh(corrected)
     return corrected
+
+
+@router.get("/{sale_id}/invoice")
+def get_sale_invoice(
+    sale_id: UUID, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
+    """Read-only, on-demand invoice PDF (Part B) — never stored to disk.
+    Renders straight from the live row, so a corrected Sale (a fresh row
+    with its own id) always produces an invoice with its own current
+    values; the superseded original is no longer reachable from any active
+    list this action is offered from."""
+    sale = db.query(models.Sale).get(sale_id)
+    if not sale:
+        raise HTTPException(404, "Sale not found")
+    generated_at = datetime.now(KARACHI_TZ).strftime("%Y-%m-%d %H:%M")
+    pdf_bytes = render_sale_invoice_pdf(sale, current_user.name, generated_at)
+    return Response(
+        content=pdf_bytes, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{sale.display_id}.pdf"'},
+    )

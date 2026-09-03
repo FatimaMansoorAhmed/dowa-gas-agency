@@ -6,7 +6,8 @@ import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption } from "@/components/ui";
 import { pkr, fmtTime, todayLocalInput } from "@/lib/format";
 import { api } from "@/lib/api";
-import type { Company, Party, RateEntry, Customer, Sale, Expense, CustomerFlag } from "@/lib/types";
+import DashboardPnLChart from "@/components/DashboardPnLChart";
+import type { Company, Party, RateEntry, Customer, Sale, Purchase, Expense, OwnerDrawing, ShopSale, CustomerFlag } from "@/lib/types";
 
 const POLL_MS = 30000;
 
@@ -23,7 +24,10 @@ function DashboardBody() {
   const [latestRates, setLatestRates] = useState<RateEntry[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [salesMTD, setSalesMTD] = useState<Sale[]>([]);
+  const [purchasesMTD, setPurchasesMTD] = useState<Purchase[]>([]);
   const [expensesMTD, setExpensesMTD] = useState<Expense[]>([]);
+  const [ownerDrawingsMTD, setOwnerDrawingsMTD] = useState<OwnerDrawing[]>([]);
+  const [shopSalesMTD, setShopSalesMTD] = useState<ShopSale[]>([]);
   const [flags, setFlags] = useState<CustomerFlag[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
@@ -35,13 +39,16 @@ function DashboardBody() {
     inFlight.current = true;
     try {
       const month = currentMonth();
-      const [c, p, r, cu, sales, expenses, fl] = await Promise.all([
+      const [c, p, r, cu, sales, purchases, expenses, ownerDrawings, shopSales, fl] = await Promise.all([
         api.companies.list(),
         api.parties.list(),
         api.rates.latest(),
         api.customers.list(),
         api.sales.list({ month }),
+        api.purchases.list({ month }),
         api.expenses.list({ month }),
+        api.ownerDrawings.list(month),
+        api.shops.salesList(month),
         api.ledger.customerFlags(month),
       ]);
 
@@ -50,7 +57,10 @@ function DashboardBody() {
       setLatestRates(r);
       setCustomers(cu);
       setSalesMTD(sales);
+      setPurchasesMTD(purchases);
       setExpensesMTD(expenses);
+      setOwnerDrawingsMTD(ownerDrawings);
+      setShopSalesMTD(shopSales);
       setFlags(fl);
       setLastSynced(new Date());
     } finally {
@@ -67,11 +77,6 @@ function DashboardBody() {
 
   if (loading) return <div className="font-body text-steel p-10">Loading…</div>;
 
-  // Sab se aakhri enter kia hua rate
-  const latestEntry = latestRates.length > 0 ? latestRates[0] : null;
-  const latestCompany = companies.find((c) => c.id === latestEntry?.company_id);
-  const latestParty = parties.find((p) => p.id === latestEntry?.party_id);
-
   // Flag Rule: this month's Closing Balance > this month's Opening Balance
   // (itself rolled over from the prior month's closing) -> Flagged.
   const flaggedAccounts = flags.filter((f) => f.flagged);
@@ -82,6 +87,53 @@ function DashboardBody() {
   const hasSalesData = salesMTD.length > 0;
   const hasExpenseData = expensesMTD.length > 0;
 
+  // Profit / Loss (§ Dashboard) — Sale Revenue − Purchase Cost (COGS) −
+  // Expenses (plant + shop, combined for free now that Shop Expenses are
+  // dual-written into the same /expenses table — see routers/shops.py's
+  // create_shop_expense). Owner Drawings deliberately kept OUT of this
+  // primary figure — OwnerDrawings' own established convention elsewhere
+  // in this app is "must never reduce reported profit" — and shown as a
+  // separate, clearly-labeled second line instead.
+  const totalPurchasesMTD = purchasesMTD.reduce((s, x) => s + parseFloat(x.total_amount), 0);
+  const totalOwnerDrawingsMTD = ownerDrawingsMTD.reduce((s, x) => s + parseFloat(x.amount), 0);
+  const netProfitLoss = totalSalesMTD - totalPurchasesMTD - totalExpensesMTD;
+  const netProfitAfterDrawings = netProfitLoss - totalOwnerDrawingsMTD;
+
+  // Sale / Purc / Total Tonnage cards (§ Dashboard) — total_kg is already
+  // stored per row at write time (Sale/Purchase), combining both cylinder
+  // types automatically; no unit branching needed. Tonnage is Sale +
+  // Shop Sale kg only (Purchases deliberately excluded, per spec), using
+  // the exact 1000kg=1ton constant already used in routers/ledger.py and
+  // app/purchases/page.tsx — not a second copy of that conversion.
+  const totalSaleKgMTD = salesMTD.reduce((s, x) => s + parseFloat(x.total_kg), 0);
+  const totalPurchaseKgMTD = purchasesMTD.reduce((s, x) => s + parseFloat(x.total_kg), 0);
+  const totalShopSaleKgMTD = shopSalesMTD.reduce((s, x) => s + parseFloat(x.quantity_kg || "0"), 0);
+  const totalTonnageMTD = (totalSaleKgMTD + totalShopSaleKgMTD) / 1000;
+
+  // Per-cylinder-type breakdown (enhancement to the cards above) — same
+  // rows/filters, just grouped by weight_per_cylinder instead of flat-summed.
+  // Sale.quantity/Purchase.quantity are already cylinder counts; ShopSale
+  // has no separate "count" field but its `quantity` is stored in the exact
+  // same cylinder-equivalent unit (see ShopSale model comment — it's what
+  // FIFO stock math consumes), and cylinder_weight_used is the frozen
+  // per-sale snapshot of Product.weight_kg, so it groups identically to
+  // Sale/Purchase's weight_per_cylinder despite the different column name.
+  // Only 11.8kg and 45.4kg products are active in this system today
+  // (confirmed against the live Products table) so those are the two
+  // buckets shown; the combined kg/ton totals above already include every
+  // weight regardless, so nothing is silently dropped if a third ever exists.
+  function sumQtyByWeight<T extends { quantity: string }>(rows: T[], weightOf: (r: T) => string, target: string): number {
+    return rows.filter((r) => parseFloat(weightOf(r)).toFixed(1) === target).reduce((s, r) => s + parseFloat(r.quantity), 0);
+  }
+  const sale118 = sumQtyByWeight(salesMTD, (r) => r.weight_per_cylinder, "11.8");
+  const sale454 = sumQtyByWeight(salesMTD, (r) => r.weight_per_cylinder, "45.4");
+  const purc118 = sumQtyByWeight(purchasesMTD, (r) => r.weight_per_cylinder, "11.8");
+  const purc454 = sumQtyByWeight(purchasesMTD, (r) => r.weight_per_cylinder, "45.4");
+  const shopSale118 = sumQtyByWeight(shopSalesMTD, (r) => r.cylinder_weight_used, "11.8");
+  const shopSale454 = sumQtyByWeight(shopSalesMTD, (r) => r.cylinder_weight_used, "45.4");
+  const tonnage118 = sale118 + shopSale118;
+  const tonnage454 = sale454 + shopSale454;
+
   return (
     <div>
       <PageHeader
@@ -91,36 +143,6 @@ function DashboardBody() {
       />
 
       <div className="grid grid-cols-3 gap-3.5 mb-4">
-        <Panel className="min-h-[96px]">
-          <Eyebrow>Companies Tracked</Eyebrow>
-          <div className="font-display font-bold text-2xl text-ink">{companies.length}</div>
-        </Panel>
-        
-        <Panel className="min-h-[96px]">
-          <Eyebrow>Parties Tracked</Eyebrow>
-          <div className="font-display font-bold text-2xl text-ink">{parties.length}</div>
-        </Panel>
-
-        {/* LATEST RATE BLOCK (Includes both 11.8kg and 45.4kg) */}
-        <Panel className="min-h-[96px]">
-          <Eyebrow>Latest Rate</Eyebrow>
-          {latestEntry ? (
-            <div>
-              <div className="font-display font-bold text-2xl text-teal">
-                {latestEntry.rate_118} <span className="text-sm text-steel font-normal">/11.8kg</span>
-              </div>
-              <div className="font-mono text-sm font-semibold text-steel mt-0.5">
-                {latestEntry.rate_454} <span className="text-xs font-normal">/45.4kg</span>
-              </div>
-              <div className="font-body text-[11px] text-steel mt-1 truncate">
-                {latestCompany?.name || "Company"} {latestParty?.name ? `· ${latestParty.name}` : ""}
-              </div>
-            </div>
-          ) : (
-            <div className="font-display font-bold text-xl text-steel">—</div>
-          )}
-        </Panel>
-
         <Panel className="min-h-[96px]">
           <Eyebrow>Customers Flagged</Eyebrow>
           <div className={`font-display font-bold text-2xl ${flaggedAccounts.length ? "text-brand-amber" : "text-ink"}`}>{flaggedAccounts.length}</div>
@@ -141,7 +163,82 @@ function DashboardBody() {
             {hasExpenseData ? "Expenses recorded this month" : "No purchases recorded yet — awaiting Purchase module"}
           </div>
         </Panel>
+
+        <Panel className="min-h-[96px]">
+          <Eyebrow>Sale</Eyebrow>
+          <div className="flex items-baseline justify-between font-body text-[11px] text-steel mt-0.5">
+            <span>11.8kg cylinders</span><span className="font-semibold text-ink">{sale118.toFixed(0)}</span>
+          </div>
+          <div className="flex items-baseline justify-between font-body text-[11px] text-steel">
+            <span>45.4kg cylinders</span><span className="font-semibold text-ink">{sale454.toFixed(0)}</span>
+          </div>
+          <div className="font-display font-bold text-2xl text-ink mt-1">{totalSaleKgMTD.toFixed(2)} <span className="text-sm text-steel font-normal">kg</span></div>
+          <div className="font-body text-[11px] text-steel mt-1">
+            {hasSalesData ? `${salesMTD.length} sale${salesMTD.length === 1 ? "" : "s"} this month` : "No sales recorded yet"}
+          </div>
+        </Panel>
+
+        <Panel className="min-h-[96px]">
+          <Eyebrow>Purc</Eyebrow>
+          <div className="flex items-baseline justify-between font-body text-[11px] text-steel mt-0.5">
+            <span>11.8kg cylinders</span><span className="font-semibold text-ink">{purc118.toFixed(0)}</span>
+          </div>
+          <div className="flex items-baseline justify-between font-body text-[11px] text-steel">
+            <span>45.4kg cylinders</span><span className="font-semibold text-ink">{purc454.toFixed(0)}</span>
+          </div>
+          <div className="font-display font-bold text-2xl text-ink mt-1">{totalPurchaseKgMTD.toFixed(2)} <span className="text-sm text-steel font-normal">kg</span></div>
+          <div className="font-body text-[11px] text-steel mt-1">
+            {purchasesMTD.length ? `${purchasesMTD.length} purchase${purchasesMTD.length === 1 ? "" : "s"} this month` : "No purchases recorded yet"}
+          </div>
+        </Panel>
+
+        <Panel className="min-h-[96px]">
+          <Eyebrow>Total Tonnage</Eyebrow>
+          <div className="flex items-baseline justify-between font-body text-[11px] text-steel mt-0.5">
+            <span>Total 11.8kg cylinders</span><span className="font-semibold text-ink">{tonnage118.toFixed(0)}</span>
+          </div>
+          <div className="flex items-baseline justify-between font-body text-[11px] text-steel">
+            <span>Total 45.4kg cylinders</span><span className="font-semibold text-ink">{tonnage454.toFixed(0)}</span>
+          </div>
+          <div className="font-display font-bold text-2xl text-ink mt-1">{totalTonnageMTD.toFixed(2)} <span className="text-sm text-steel font-normal">tons</span></div>
+          <div className="font-body text-[11px] text-steel mt-1">
+            Sale {totalSaleKgMTD.toFixed(0)}kg + Shop Sale {totalShopSaleKgMTD.toFixed(0)}kg
+          </div>
+        </Panel>
       </div>
+
+      <Panel className="mb-3.5">
+        <Eyebrow>Profit / Loss — {month}</Eyebrow>
+        <SectionCaption>
+          Sale Revenue − Purchase Cost (COGS) − Expenses (plant + shop). Owner Drawings are shown
+          separately below — they never reduce reported business profit, only personal cash taken out.
+        </SectionCaption>
+        <div className="grid grid-cols-2 gap-3.5 mt-1">
+          <div className="rounded-lg border border-hairline bg-paper px-4 py-3.5">
+            <div className="font-mono text-[10px] uppercase text-steel tracking-wide">Net Profit / Loss</div>
+            <div className={`font-display font-bold text-[26px] mt-0.5 ${netProfitLoss >= 0 ? "text-brand-green" : "text-brand-red"}`}>
+              {pkr(netProfitLoss)}
+            </div>
+            <div className="font-mono text-[10.5px] text-steel mt-1.5 flex flex-wrap gap-x-3">
+              <span>Sales {pkr(totalSalesMTD)}</span>
+              <span>− COGS {pkr(totalPurchasesMTD)}</span>
+              <span>− Expenses {pkr(totalExpensesMTD)}</span>
+            </div>
+          </div>
+          <div className="rounded-lg border border-hairline bg-paper px-4 py-3.5">
+            <div className="font-mono text-[10px] uppercase text-steel tracking-wide">After Owner Withdrawals</div>
+            <div className={`font-display font-bold text-[26px] mt-0.5 ${netProfitAfterDrawings >= 0 ? "text-ink" : "text-brand-red"}`}>
+              {pkr(netProfitAfterDrawings)}
+            </div>
+            <div className="font-mono text-[10.5px] text-steel mt-1.5">
+              Net Profit/Loss − Owner Drawings {pkr(totalOwnerDrawingsMTD)}
+            </div>
+          </div>
+        </div>
+        <div className="mt-4 pt-4 border-t border-hairline">
+          <DashboardPnLChart sales={salesMTD} purchases={purchasesMTD} expenses={expensesMTD} drawings={ownerDrawingsMTD} />
+        </div>
+      </Panel>
 
       <div className="grid grid-cols-2 gap-3.5">
         <Panel>

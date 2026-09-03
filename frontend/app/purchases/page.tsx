@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { PlusCircle, Search, Truck, Wallet, Pencil } from "lucide-react";
+import { PlusCircle, Search, Truck, Wallet, Pencil, Printer } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Th, Td, inputClass, BalanceTag, Button } from "@/components/ui";
 import NewPlantModal from "@/components/NewPlantModal";
@@ -283,19 +283,32 @@ function PurchasesBody() {
                           <Td right mono bold><BalanceTag amount={r.running_balance} /></Td>
                           <Td mono>{r.entered_by || "—"}</Td>
                           <Td center>
-                            {r.correctable && (
-                              <button
-                                onClick={() => openCorrect(r)}
-                                disabled={correctLoading === r.ref_id}
-                                title="Correct this transaction"
-                                className="print:hidden inline-flex items-center gap-1 bg-[#EAF6F6] border border-teal/40 rounded-md px-2 py-1 cursor-pointer text-teal hover:bg-teal hover:text-white disabled:opacity-40"
-                              >
-                                <Pencil size={11} />
-                                <span className="font-mono text-[10.5px] font-semibold">
-                                  {correctLoading === r.ref_id ? "Loading…" : "Correct"}
-                                </span>
-                              </button>
-                            )}
+                            <div className="print:hidden flex items-center justify-center gap-1.5">
+                              {r.correctable && (
+                                <button
+                                  onClick={() => openCorrect(r)}
+                                  disabled={correctLoading === r.ref_id}
+                                  title="Correct this transaction"
+                                  className="inline-flex items-center gap-1 bg-[#EAF6F6] border border-teal/40 rounded-md px-2 py-1 cursor-pointer text-teal hover:bg-teal hover:text-white disabled:opacity-40"
+                                >
+                                  <Pencil size={11} />
+                                  <span className="font-mono text-[10.5px] font-semibold">
+                                    {correctLoading === r.ref_id ? "Loading…" : "Correct"}
+                                  </span>
+                                </button>
+                              )}
+                              {(r.kind === "purchase" || r.kind === "payment") && (
+                                <a
+                                  href={r.kind === "purchase" ? api.purchases.invoiceUrl(r.ref_id) : api.companyPayments.invoiceUrl(r.ref_id)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title="View/print invoice"
+                                  className="inline-flex items-center justify-center p-1.5 rounded-md text-steel hover:bg-paper hover:text-teal"
+                                >
+                                  <Printer size={13} />
+                                </a>
+                              )}
+                            </div>
                           </Td>
                         </tr>
                       );

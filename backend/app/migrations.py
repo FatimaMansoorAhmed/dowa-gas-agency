@@ -76,6 +76,12 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     ("sales", "corrected_from_id", "GUID"),
     # Emergency Transfer (§ Shop — Emergency Transfer).
     ("sales", "emergency_transfer_shop_id", "GUID"),
+    # Dashboard P&L / Shop Expense integration (§ Dashboard) — dual-write
+    # tags, going forward only.
+    ("expenses", "shop_id", "GUID"),
+    ("expenses", "source_shop_expense_transaction_id", "GUID"),
+    ("owner_drawings", "shop_id", "GUID"),
+    ("owner_drawings", "source_shop_expense_transaction_id", "GUID"),
     ("payments", "corrected_by", "VARCHAR(255)"),
     ("payments", "corrected_at", "TIMESTAMP"),
     ("payments", "correction_reason", "VARCHAR(255)"),

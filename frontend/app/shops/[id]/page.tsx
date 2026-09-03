@@ -21,6 +21,7 @@ import {
   Banknote,
   AlertCircle,
   Zap,
+  Printer,
 } from "lucide-react";
 
 import AuthGate from "@/components/AuthGate";
@@ -344,26 +345,48 @@ function TransactionHistoryModal({
                     </td>
 
                     <td className="px-4 py-3 text-center">
-                      {t.correctable && (
-                        <button
-                          onClick={() => onCorrect(t)}
-                          disabled={correctLoading === t.ref_id}
-                          title="Correct this transaction"
-                          className="
-                            inline-flex h-8 w-8
-                            items-center justify-center
-                            rounded-lg
-                            text-slate-400
-                            transition
-                            hover:bg-teal/10
-                            hover:text-teal
-                            disabled:opacity-40
-                            cursor-pointer
-                          "
-                        >
-                          <Pencil size={14} />
-                        </button>
-                      )}
+                      <div className="flex items-center justify-center gap-1">
+                        {t.correctable && (
+                          <button
+                            onClick={() => onCorrect(t)}
+                            disabled={correctLoading === t.ref_id}
+                            title="Correct this transaction"
+                            className="
+                              inline-flex h-8 w-8
+                              items-center justify-center
+                              rounded-lg
+                              text-slate-400
+                              transition
+                              hover:bg-teal/10
+                              hover:text-teal
+                              disabled:opacity-40
+                              cursor-pointer
+                            "
+                          >
+                            <Pencil size={14} />
+                          </button>
+                        )}
+                        {t.kind === "shop_sale" && (
+                          <a
+                            href={api.shops.saleInvoiceUrl(t.ref_id)}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="View/print invoice"
+                            className="
+                              inline-flex h-8 w-8
+                              items-center justify-center
+                              rounded-lg
+                              text-slate-400
+                              transition
+                              hover:bg-teal/10
+                              hover:text-teal
+                              cursor-pointer
+                            "
+                          >
+                            <Printer size={14} />
+                          </a>
+                        )}
+                      </div>
                     </td>
 
                   </tr>

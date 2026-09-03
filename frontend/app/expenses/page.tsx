@@ -1102,7 +1102,7 @@ function ExpensesBody() {
                 <tr className="border-b border-hairline">
                   <Th>ID</Th>
                   <Th>Category</Th>
-                  <Th>Customer</Th>
+                  <Th>Source</Th>
                   <Th right>Amount</Th>
                   <Th right>Date</Th>
                 </tr>
@@ -1142,7 +1142,12 @@ function ExpensesBody() {
                       </Td>
 
                       <Td>
-                        {expense.customer_name ? (
+                        {expense.shop_name ? (
+                          <span className="font-body text-[12px] text-ink inline-flex items-center gap-1">
+                            <span className="font-mono text-[9px] uppercase tracking-wide text-teal bg-teal/10 px-1.5 py-0.5 rounded">Shop</span>
+                            {expense.shop_name}
+                          </span>
+                        ) : expense.customer_name ? (
                           <span className="font-body text-[12px] text-ink">
                             {expense.customer_name}
                           </span>

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { PlusCircle, Check, X, AlertTriangle, CheckCircle2, Pencil, Ban, ThumbsUp, Building2, Wallet, ArrowRight } from "lucide-react";
+import { PlusCircle, Check, X, AlertTriangle, CheckCircle2, Pencil, Ban, ThumbsUp, Building2, Wallet, ArrowRight, Printer } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, Th, Td } from "@/components/ui";
 import NewPlantModal from "@/components/NewPlantModal";
@@ -16,9 +16,8 @@ import type {
 } from "@/lib/types";
 
 // Date filter shape shared by the Approved Sale / Approved Payments cards
-// below — same "24h / day / month / year" convention as the existing
-// Approved Sales (batch) modal, kept as its own small type+component so
-// two more filter toolbars don't duplicate that modal's inline JSX.
+// below — "24h / day / month / year" convention, kept as its own small
+// type+component so the two filter toolbars don't duplicate inline JSX.
 type DateFilter = { type: "24h" | "day" | "month" | "year"; date: string; month: string; year: string };
 const defaultDateFilter = (): DateFilter => ({
   type: "24h", date: todayLocalInput(), month: todayLocalInput().slice(0, 7), year: todayLocalInput().slice(0, 4),
@@ -79,11 +78,6 @@ function StatusBadge({ status }: { status: string }) {
 
 function UnifiedSaleBody() {
   const { user } = useAuth();
-  // Date Filter States
-const [filterType, setFilterType] = useState<"24h" | "day" | "month" | "year">("24h");
-const [filterDate, setFilterDate] = useState(todayLocalInput()); // format: YYYY-MM-DD
-const [filterMonth, setFilterMonth] = useState(() => todayLocalInput().slice(0, 7)); // format: YYYY-MM
-const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)); // format: YYYY
 
   const [companies, setCompanies] = useState<Company[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -95,14 +89,11 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
 
   const [showNewPlant, setShowNewPlant] = useState(false);
   const [showSaleForm, setShowSaleForm] = useState(false);
-  const [showApprovedModal, setShowApprovedModal] = useState(false);
-
   // Approved Sale / Approved Payments (§3/§4) — plain, individual Sale/
   // Payment records (system-wide, not scoped to Unified Sale batches),
   // with Edit wired to the existing, already-proven reverse-then-repost
   // CorrectTransactionModal (see routers/sales.py::correct_sale,
-  // routers/payments.py::correct_payment). Deliberately separate from the
-  // "Approved Sales" batch card above — that one stays untouched.
+  // routers/payments.py::correct_payment).
   const [allSales, setAllSales] = useState<Sale[]>([]);
   const [allPayments, setAllPayments] = useState<Payment[]>([]);
   // Purchase Rate (§3) — a plain Sale has no FK to a specific Purchase; only
@@ -477,45 +468,6 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
   const salePendingOrders = useMemo(() => recent.filter((r) => r.sale_status === "pending"), [recent]);
   const paymentPendingOrders = useMemo(() => recent.filter((r) => r.payment_status === "pending"), [recent]);
 
-  const completedOrders = useMemo(() => {
-  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-  const now = Date.now();
-
-  return recent.filter((r) => {
-    if (r.sale_status !== "approved") return false;
-
-    // Use approved date/timestamp or order date
-    const rawDate = r.sale_approved_at || r.date;
-    const orderTime = new Date(rawDate).getTime();
-
-    // Asia/Karachi calendar date, not the viewer's own local date — raw
-    // `new Date(rawDate).getFullYear()/getMonth()/getDate()` misparses a
-    // marker-less backend timestamp as local time instead of UTC, which
-    // made the "Day" filter return zero matches (§ Day-wise Date Filtering
-    // Mismatch).
-    const localYYYYMMDD = toKarachiDateString(rawDate); // e.g. "2026-08-22"
-
-    if (filterType === "24h") {
-      return now - orderTime < ONE_DAY_MS;
-    }
-
-    if (filterType === "day") {
-      // Compares local date against selected filter date
-      return localYYYYMMDD === filterDate;
-    }
-
-    if (filterType === "month") {
-      return localYYYYMMDD.slice(0, 7) === filterMonth;
-    }
-
-    if (filterType === "year") {
-      return localYYYYMMDD.slice(0, 4) === filterYear;
-    }
-
-    return true;
-  });
-}, [recent, filterType, filterDate, filterMonth, filterYear]);
-
   const getDestinationLabel = (r: UnifiedSaleBatch) => {
     if (r.destination_type === "account") {
       return resolveAccountLabel(r.account_id, accounts);
@@ -589,21 +541,6 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
           <div className="mt-2 font-display text-2xl font-bold text-[#8A6D00]">{paymentPendingOrders.length}</div>
           <div className="mt-1 font-body text-xs text-steel">Pending settlement approvals</div>
         </Panel>
-
-        <button
-          type="button"
-          onClick={() => setShowApprovedModal(true)}
-          className="group rounded-xl border border-hairline bg-panel hover:bg-paper transition-colors p-5 text-left"
-        >
-          <div className="flex items-center gap-2">
-            <CheckCircle2 size={15} className="text-[#1E8A5F]" />
-            <span className="font-mono text-[10px] uppercase tracking-wide text-steel font-semibold">Approved Sales</span>
-          </div>
-          <div className="mt-2 font-display text-2xl font-bold text-[#1E8A5F]">{completedOrders.length}</div>
-          <div className="mt-1 font-body text-xs text-teal flex items-center gap-1">
-            View approved sales <ArrowRight size={12} />
-          </div>
-        </button>
 
         <button
           type="button"
@@ -1245,152 +1182,6 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
             </div>
           </Panel>
 
-          {/* Approved Sales — full history, opened from the compact card above */}
-          {showApprovedModal && (
-          <div
-            className="fixed inset-0 z-40 bg-black/40 p-3 sm:p-5 flex items-center justify-center"
-            onMouseDown={(e) => { if (e.target === e.currentTarget) setShowApprovedModal(false); }}
-          >
-          <div className="w-full max-w-6xl max-h-[90vh] overflow-hidden bg-white rounded-xl shadow-2xl flex flex-col">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-hairline shrink-0">
-              <div>
-                <Eyebrow>Approved Sales</Eyebrow>
-                <div className="font-body text-xs text-steel mt-1">Sale/load orders that have been approved, regardless of payment status.</div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowApprovedModal(false)}
-                className="p-2 rounded-md hover:bg-paper text-steel hover:text-ink"
-                title="Close"
-              >
-                <X size={18} />
-              </button>
-            </div>
-          <div className="overflow-y-auto p-3 sm:p-5">
-          <Panel>
-            <Eyebrow>Processed Unified Sales</Eyebrow>
-            <SectionCaption>Recent approved and cancelled transactions.</SectionCaption>
-
-            <div className="mt-3">
-              <div className="overflow-x-auto">
-                {/* Filter Toolbar */}
-    <div className="flex flex-wrap items-center gap-2">
-      <select
-        value={filterType}
-        onChange={(e) => setFilterType(e.target.value as any)}
-        className="px-2.5 py-1 bg-paper border border-hairline rounded-md text-xs font-semibold text-ink focus:outline-none"
-      >
-        <option value="24h">Last 24 Hours</option>
-        <option value="day">By Specific Day</option>
-        <option value="month">By Month</option>
-        <option value="year">By Year</option>
-      </select>
-
-      {/* Dynamic Date Inputs based on Filter Selection */}
-      {filterType === "day" && (
-        <input
-          type="date"
-          value={filterDate}
-          onChange={(e) => setFilterDate(e.target.value)}
-          className="px-2 py-1 bg-white border border-hairline rounded-md text-xs font-mono text-ink"
-        />
-      )}
-
-      {filterType === "month" && (
-        <input
-          type="month"
-          value={filterMonth}
-          onChange={(e) => setFilterMonth(e.target.value)}
-          className="px-2 py-1 bg-white border border-hairline rounded-md text-xs font-mono text-ink"
-        />
-      )}
-
-      {filterType === "year" && (
-        <input
-          type="number"
-          min="2020"
-          max="2099"
-          value={filterYear}
-          onChange={(e) => setFilterYear(e.target.value)}
-          placeholder="YYYY"
-          className="w-20 px-2 py-1 bg-white border border-hairline rounded-md text-xs font-mono text-ink"
-        />
-      )}
-    </div>
-  </div>
-
-  <div className="mt-3">
-    {/* Table renders `completedOrders` here */}
-    ...
-                <table className="w-full min-w-[1050px] border-collapse">
-                  <thead>
-                    <tr className="border-b border-hairline text-left">
-                      <Th>ID</Th>
-                      <Th>CUSTOMER</Th>
-                      <Th right>11.8 KG</Th>
-                      <Th right>45.4 KG</Th>
-                      <Th>PLANT</Th>
-                      <Th right>SALE</Th>
-                      <Th right>SETTLED</Th>
-                      <Th>DESTINATION</Th>
-                      <Th>GATE PASS</Th>
-                      <Th>VEHICLE</Th>
-                      <Th>NOTES</Th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-hairline">
-                    {completedOrders.map((r) => {
-                      const c = customers.find((x) => x.id === r.customer_id);
-                      const plant = companies.find((x) => x.id === r.company_id);
-                      return (
-                        <tr key={r.id} className="hover:bg-paper/60 transition-colors">
-                          <Td mono>
-                            <button
-                              type="button"
-                              onClick={() => handleViewTransaction(r.id)}
-                              className="text-teal hover:underline font-mono text-[11px] cursor-pointer font-bold whitespace-nowrap"
-                            >
-                              {r.display_id}
-                            </button>
-                          </Td>
-                          <Td bold>{c?.name || "—"}</Td>
-                          <Td right mono>{Number(r.qty_11_8kg || 0)}</Td>
-                          <Td right mono>{Number(r.qty_45_4kg || 0)}</Td>
-                          <Td>
-                            <span className="inline-flex items-center px-2 py-1 rounded-md bg-slate-100 text-slate-800 text-[11px] font-medium border border-slate-200 whitespace-nowrap">
-                              {plant?.name || r.company_id || "—"}
-                            </span>
-                          </Td>
-                          <Td right mono color="#0F8B8D">{pkr(r.total_selling_amount)}</Td>
-                          <Td right mono color="#1E8A5F" bold>{pkr(r.total_credit_received)}</Td>
-                          <Td>
-                            <span className="whitespace-nowrap font-body text-xs text-slate-700 font-semibold">
-                              {getDestinationLabel(r)}
-                            </span>
-                          </Td>
-                          <Td mono color="#8E8E93">{r.gate_pass_no || "—"}</Td>
-                          <Td mono color="#8E8E93">{r.vehicle_no || "—"}</Td>
-                          <Td color="#8E8E93"><span className="whitespace-nowrap">{r.notes || "—"}</span></Td>
-                        </tr>
-                      );
-                    })}
-                    {!completedOrders.length && (
-                      <tr>
-                        <td colSpan={10} className="text-steel font-body text-[13px] py-6 text-center">
-                          No approved sales found.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </Panel>
-          </div>
-          </div>
-          </div>
-          )}
-
           {/* APPROVED SALE — plain Sale records, system-wide (§3/§4) */}
           {showApprovedSaleModal && (
             <div
@@ -1443,9 +1234,14 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
                                 <Td right mono bold>{pkr(s.total_amount)}</Td>
                                 <Td mono>{s.entered_by}</Td>
                                 <Td center>
-                                  <button type="button" onClick={() => setCorrectTarget({ kind: "sale", transaction: s })} className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title="Correct this sale">
-                                    <Pencil size={13} />
-                                  </button>
+                                  <div className="flex items-center justify-center gap-1">
+                                    <button type="button" onClick={() => setCorrectTarget({ kind: "sale", transaction: s })} className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title="Correct this sale">
+                                      <Pencil size={13} />
+                                    </button>
+                                    <a href={api.sales.invoiceUrl(s.id)} target="_blank" rel="noreferrer" className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title="View/print invoice">
+                                      <Printer size={13} />
+                                    </a>
+                                  </div>
                                 </Td>
                               </tr>
                             );
@@ -1511,9 +1307,14 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
                                 <Td right mono color="#8E8E93">{rate ? pkr(rate) : "—"}</Td>
                                 <Td mono>{p.entered_by}</Td>
                                 <Td center>
-                                  <button type="button" onClick={() => setCorrectTarget({ kind: "payment", transaction: p })} className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title="Correct this payment">
-                                    <Pencil size={13} />
-                                  </button>
+                                  <div className="flex items-center justify-center gap-1">
+                                    <button type="button" onClick={() => setCorrectTarget({ kind: "payment", transaction: p })} className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title="Correct this payment">
+                                      <Pencil size={13} />
+                                    </button>
+                                    <a href={api.payments.invoiceUrl(p.id)} target="_blank" rel="noreferrer" className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title="View/print invoice">
+                                      <Printer size={13} />
+                                    </a>
+                                  </div>
                                 </Td>
                               </tr>
                             );

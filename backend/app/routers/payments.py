@@ -1,11 +1,14 @@
 from datetime import datetime
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
 from app.deps import require_active_user, require_csrf
+from app.reporting.invoice_pdf import render_payment_invoice_pdf
+from app.timezone import KARACHI_TZ
 from app.utils import next_display_id, resync_unified_sale_batch_totals
 
 router = APIRouter(prefix="/payments", tags=["payments"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
@@ -193,3 +196,22 @@ def correct_payment(
     db.commit()
     db.refresh(corrected)
     return corrected
+
+
+@router.get("/{payment_id}/invoice")
+def get_payment_invoice(
+    payment_id: UUID, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
+    """Read-only, on-demand invoice PDF (Part B) — never stored to disk.
+    See get_sale_invoice in routers/sales.py for why a corrected record
+    always renders its own current values."""
+    payment = db.query(models.Payment).get(payment_id)
+    if not payment:
+        raise HTTPException(404, "Payment not found")
+    generated_at = datetime.now(KARACHI_TZ).strftime("%Y-%m-%d %H:%M")
+    pdf_bytes = render_payment_invoice_pdf(payment, current_user.name, generated_at)
+    return Response(
+        content=pdf_bytes, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{payment.display_id}.pdf"'},
+    )

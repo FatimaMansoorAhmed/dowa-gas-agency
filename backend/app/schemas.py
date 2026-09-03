@@ -1236,6 +1236,12 @@ class ExpenseOut(BaseModel):
     # Sale's) — never set for an expense paid from a real PaymentAccount.
     customer_id: Optional[UUID] = None
     customer_name: Optional[str] = None
+    # Dashboard P&L / Shop Expense integration (§ Dashboard) — set only for
+    # a row dual-written from a Shop's own Record Expense form
+    # (routers/shops.py's create_shop_expense); null for a plant-level
+    # expense entered directly on this page.
+    shop_id: Optional[UUID] = None
+    shop_name: Optional[str] = None
     status: str
     entered_by: str
     created_at: datetime
@@ -1535,6 +1541,10 @@ class OwnerDrawingsOut(BaseModel):
     account_id: Optional[UUID]
     notes: Optional[str]
     unified_sale_id: Optional[UUID] = None
+    # Dashboard P&L / Shop Expense integration (§ Dashboard) — same
+    # convention as ExpenseOut.shop_id/shop_name above.
+    shop_id: Optional[UUID] = None
+    shop_name: Optional[str] = None
     status: str
     entered_by: str
     created_at: datetime

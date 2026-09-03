@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Wallet, Home, Landmark, ArrowRightLeft, Building2, Send, X, Calendar, Banknote, ArrowDownRight, Layers } from "lucide-react";
+import { Wallet, Home, Landmark, ArrowRightLeft, Building2, Send, X, Calendar, Banknote, ArrowDownRight, Layers, Store } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { Panel, Eyebrow, Field, inputClass, Th, Td, Button } from "@/components/ui";
 import { api } from "@/lib/api";
@@ -246,6 +246,26 @@ function CashManagementBody() {
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [filteredOwnerDrawings, unifiedSales, customers, accounts]);
 
+  // Dashboard P&L / Shop Expense integration (§ Dashboard) — dual-written
+  // from a Shop's own Record Expense form (an owner_withdrawal line).
+  // Additive, own section: the Audit Ledger table above is deliberately
+  // scoped to unified_sale-sourced drawings only (pre-existing, untouched)
+  // so this stays separate rather than broadening that table's own filter.
+  const shopDrawingRows = useMemo(() => {
+    return filteredOwnerDrawings
+      .filter((d) => d.shop_id)
+      .map((d) => ({
+        id: d.id,
+        displayId: d.display_id,
+        shopName: d.shop_name || "—",
+        date: d.date,
+        sourceAccount: d.account_id ? accounts.find((a) => a.id === d.account_id)?.name || "—" : "—",
+        amount: parseFloat(d.amount || "0"),
+        notes: d.notes,
+      }))
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [filteredOwnerDrawings, accounts]);
+
   return (
     <div className="space-y-5">
       {/* HEADER CARD WITH DARK NAVY (#0b2138) */}
@@ -438,6 +458,50 @@ function CashManagementBody() {
                   <tr key={row.id}>
                     <Td bold>{row.customerName}</Td>
                     <Td mono bold color="#0b2138">{row.saleId}</Td>
+                    <Td mono color="#2D3748">{fmtTime(row.date)}</Td>
+                    <Td>
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-[#F4F1EA] text-ink border border-hairline">
+                        {row.sourceAccount}
+                      </span>
+                    </Td>
+                    <Td right mono bold color="#0b2138">{pkr(row.amount)}</Td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
+      {/* SHOP OWNER WITHDRAWALS (§ Dashboard P&L / Shop Expense integration) */}
+      <Panel>
+        <div className="flex items-center gap-2 border-b border-hairline pb-3 mb-4">
+          <Store size={16} className="text-[#0b2138]" />
+          <Eyebrow>Shop Owner Withdrawals</Eyebrow>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse">
+            <thead>
+              <tr>
+                <Th>ID</Th>
+                <Th>Shop</Th>
+                <Th>Date</Th>
+                <Th>Account</Th>
+                <Th right>Amount</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {shopDrawingRows.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="text-steel font-body text-[13px] py-6 text-center">
+                    {loading ? "Loading…" : "No shop owner withdrawals for the selected filter."}
+                  </td>
+                </tr>
+              ) : (
+                shopDrawingRows.map((row) => (
+                  <tr key={row.id}>
+                    <Td mono color="#2D3748">{row.displayId}</Td>
+                    <Td bold>{row.shopName}</Td>
                     <Td mono color="#2D3748">{fmtTime(row.date)}</Td>
                     <Td>
                       <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-[#F4F1EA] text-ink border border-hairline">

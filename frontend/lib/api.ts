@@ -193,6 +193,7 @@ export const api = {
       correction_reason: string; corrected_by: string;
       emergency_transfer_shop_id?: string;
     }) => request<Sale>(`/sales/${id}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
+    invoiceUrl: (id: string) => `${BASE}/sales/${id}/invoice`,
   },
   // Emergency Transfer (§ Shop — Emergency Transfer) — a real (non-shop)
   // customer needs cylinders urgently and is directed to a shop instead
@@ -226,6 +227,7 @@ export const api = {
       reference_no?: string; received_by?: string; notes?: string; entered_by: string;
       correction_reason: string; corrected_by: string;
     }) => request<Payment>(`/payments/${id}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
+    invoiceUrl: (id: string) => `${BASE}/payments/${id}/invoice`,
   },
   
   // Endpoint group for Standalone Payment Receipts with destination routing
@@ -291,6 +293,7 @@ export const api = {
       driver_name?: string; driver_contact?: string; notes?: string; entered_by: string;
       correction_reason: string; corrected_by: string;
     }) => request<Purchase>(`/purchases/${id}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
+    invoiceUrl: (id: string) => `${BASE}/purchases/${id}/invoice`,
   },
   companyPayments: {
     list: (params?: { company_id?: string; month?: string }) => {
@@ -309,6 +312,7 @@ export const api = {
       account_id?: string; reference_no?: string; paid_by?: string; notes?: string; entered_by: string;
       correction_reason: string; corrected_by: string;
     }) => request<CompanyPayment>(`/company-payments/${id}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
+    invoiceUrl: (id: string) => `${BASE}/company-payments/${id}/invoice`,
   },
   cylinderTransactions: {
     list: (params?: { customer_id?: string; product_id?: string; month?: string }) => {
@@ -483,6 +487,9 @@ export const api = {
   // server-side, in that same request.
   shops: {
     list: () => request<ShopListRow[]>("/shops"),
+    // Shop Sales across every shop, not scoped to one — used by the
+    // Dashboard's Total Tonnage card (§ Dashboard) to sum quantity_kg.
+    salesList: (month?: string) => request<ShopSale[]>(`/shops/sales${month ? `?month=${month}` : ""}`),
     create: (payload: {
       name: string; mobile: string; address?: string; city_area?: string;
       opening_balance?: number; opening_balance_date?: string; entered_by?: string;
@@ -514,6 +521,7 @@ export const api = {
       notes?: string; entered_by: string;
       correction_reason: string; corrected_by: string;
     }) => request<ShopSale>(`/shops/sales/${saleId}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
+    saleInvoiceUrl: (saleId: string) => `${BASE}/shops/sales/${saleId}/invoice`,
 
     // ---- Engine 3: Shop Business Finance ----
     customers: {
