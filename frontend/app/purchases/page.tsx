@@ -9,7 +9,7 @@ import RecordPlantPaymentModal from "@/components/RecordPlantPaymentModal";
 import CorrectTransactionModal, { CorrectableKind } from "@/components/CorrectTransactionModal";
 import PrintButton from "@/components/PrintButton";
 import { api } from "@/lib/api";
-import { pkr, fmtTime, fmtClock, todayLocalInput } from "@/lib/format";
+import { pkr, fmtTime, fmtClock, todayLocalInput, fmtNumber } from "@/lib/format";
 import type { PlantLedgerSummaryRow, CompanyLedgerSummary, CompanyLedgerRow, Purchase, CompanyPayment } from "@/lib/types";
 
 // Derived from the Asia/Karachi-aware todayLocalInput() ("YYYY-MM-DD"), so
@@ -181,10 +181,10 @@ function PurchasesBody() {
                       <Td bold>{r.company.name}</Td>
                       <Td mono>{r.company.mobile || "—"}</Td>
                       <Td right mono>{pkr(r.opening_balance)}</Td>
-                      <Td right mono>{r.total_118 || 0}</Td>
-                      <Td right mono>{r.total_454 || 0}</Td>
-                      <Td right mono>{rowKg.toLocaleString()}</Td>
-                      <Td right mono>{rowTon}</Td>
+                      <Td right mono>{fmtNumber(r.total_118 || 0)}</Td>
+                      <Td right mono>{fmtNumber(r.total_454 || 0)}</Td>
+                      <Td right mono>{fmtNumber(rowKg)}</Td>
+                      <Td right mono>{fmtNumber(rowTon, 2)}</Td>
                       <Td right mono>{pkr(r.total_purchases)}</Td>
                       <Td right mono>{pkr(r.total_payments)}</Td>
                       <Td right mono bold><BalanceTag amount={r.closing_balance} /></Td>
@@ -199,10 +199,10 @@ function PurchasesBody() {
                   <Td bold color="#fff">Totals</Td>
                   <Td color="#fff">—</Td>
                   <Td right mono bold color="#fff">{pkr(totals.opening)}</Td>
-                  <Td right mono bold color="#fff">{totals.t118}</Td>
-                  <Td right mono bold color="#fff">{totals.t454}</Td>
-                  <Td right mono bold color="#fff">{totals.kg.toLocaleString()}</Td>
-                  <Td right mono bold color="#fff">{totals.ton.toFixed(2)}</Td>
+                  <Td right mono bold color="#fff">{fmtNumber(totals.t118)}</Td>
+                  <Td right mono bold color="#fff">{fmtNumber(totals.t454)}</Td>
+                  <Td right mono bold color="#fff">{fmtNumber(totals.kg)}</Td>
+                  <Td right mono bold color="#fff">{fmtNumber(totals.ton, 2)}</Td>
                   <Td right mono bold color="#fff">{pkr(totals.purchases)}</Td>
                   <Td right mono bold color="#fff">{pkr(totals.payments)}</Td>
                   <Td right mono bold color="#fff">{pkr(totals.closing)}</Td>

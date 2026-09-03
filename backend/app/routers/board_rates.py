@@ -4,8 +4,9 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.deps import require_active_user, require_csrf
 
-router = APIRouter(prefix="/board-rates", tags=["board-rates"])
+router = APIRouter(prefix="/board-rates", tags=["board-rates"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
 def resolve_board_rate(db: Session, on_date: datetime) -> models.BoardRate:
@@ -36,11 +37,14 @@ def latest_board_rate(date: datetime | None = Query(None, description="Defaults 
 
 
 @router.post("", response_model=schemas.BoardRateOut, status_code=201)
-def create_board_rate(payload: schemas.BoardRateCreate, db: Session = Depends(get_db)):
+def create_board_rate(
+    payload: schemas.BoardRateCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     rate = models.BoardRate(
         effective_date=payload.effective_date,
         rate_per_kg=payload.rate_per_kg,
-        entered_by=payload.entered_by,
+        entered_by=current_user.name,
     )
     db.add(rate)
     db.commit()

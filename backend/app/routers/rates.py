@@ -6,8 +6,9 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.deps import require_active_user, require_csrf
 
-router = APIRouter(prefix="/rates", tags=["rates"])
+router = APIRouter(prefix="/rates", tags=["rates"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
 @router.get("", response_model=list[schemas.RateOut])
@@ -53,7 +54,10 @@ def latest_rates(db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=schemas.RateOut, status_code=201)
-def create_rate(payload: schemas.RateCreate, db: Session = Depends(get_db)):
+def create_rate(
+    payload: schemas.RateCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     party = db.query(models.Party).get(payload.party_id)
     if not party or party.company_id != payload.company_id:
         raise HTTPException(400, "Party does not belong to the given company")
@@ -64,7 +68,7 @@ def create_rate(payload: schemas.RateCreate, db: Session = Depends(get_db)):
         party_id=payload.party_id,
         rate_118=payload.rate_118,
         rate_454=rate_454,
-        entered_by=payload.entered_by,
+        entered_by=current_user.name,
         timestamp=payload.timestamp or datetime.utcnow(),
     )
     db.add(entry)

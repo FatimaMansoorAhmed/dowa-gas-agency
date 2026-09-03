@@ -4,8 +4,9 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.deps import require_active_user, require_csrf
 
-router = APIRouter(prefix="/payment-accounts", tags=["payment-accounts"])
+router = APIRouter(prefix="/payment-accounts", tags=["payment-accounts"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
 @router.get("", response_model=list[schemas.PaymentAccountOut])
@@ -30,7 +31,10 @@ def create_account(payload: schemas.PaymentAccountCreate, db: Session = Depends(
 
 
 @router.post("/transfer", response_model=schemas.AccountTransferOut)
-def transfer_between_accounts(payload: schemas.AccountTransferCreate, db: Session = Depends(get_db)):
+def transfer_between_accounts(
+    payload: schemas.AccountTransferCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     """Moves real money between two PaymentAccount rows the agency actually
     holds (e.g. Office Cash -> Dowa Account) — debits the source and
     credits the destination in one transaction. No overdraft: the source
@@ -60,7 +64,7 @@ def transfer_between_accounts(payload: schemas.AccountTransferCreate, db: Sessio
     # all. Written atomically with the balance mutations above.
     db.add(models.AccountTransfer(
         from_account_id=from_account.id, to_account_id=to_account.id,
-        amount=payload.amount, notes=payload.notes, entered_by=payload.entered_by,
+        amount=payload.amount, notes=payload.notes, entered_by=current_user.name,
     ))
 
     db.commit()

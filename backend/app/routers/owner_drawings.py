@@ -4,9 +4,10 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.deps import require_active_user, require_csrf
 from app.utils import next_display_id
 
-router = APIRouter(prefix="/owner-drawings", tags=["owner-drawings"])
+router = APIRouter(prefix="/owner-drawings", tags=["owner-drawings"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
 @router.get("", response_model=list[schemas.OwnerDrawingsOut])
@@ -22,7 +23,10 @@ def list_owner_drawings(
 
 
 @router.post("", response_model=schemas.OwnerDrawingsOut, status_code=201)
-def create_owner_drawing(payload: schemas.OwnerDrawingsCreate, db: Session = Depends(get_db)):
+def create_owner_drawing(
+    payload: schemas.OwnerDrawingsCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     account = None
     if payload.account_id:
         account = db.query(models.PaymentAccount).get(payload.account_id)
@@ -36,7 +40,7 @@ def create_owner_drawing(payload: schemas.OwnerDrawingsCreate, db: Session = Dep
         account_id=payload.account_id,
         notes=payload.notes,
         status="active",
-        entered_by=payload.entered_by,
+        entered_by=current_user.name,
     )
     db.add(drawing)
 

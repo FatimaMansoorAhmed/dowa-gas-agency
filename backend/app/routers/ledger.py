@@ -7,8 +7,9 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.deps import require_active_user, require_csrf
 
-router = APIRouter(prefix="/ledger", tags=["ledger"])
+router = APIRouter(prefix="/ledger", tags=["ledger"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
 def _batch_cylinder_totals(db: Session, model, batch_id, products: dict) -> tuple[Decimal, Decimal, Decimal]:
@@ -16,7 +17,11 @@ def _batch_cylinder_totals(db: Session, model, batch_id, products: dict) -> tupl
     (Sale or Purchase) of one Unified Sale batch — used to build the single
     aggregated ledger row for that batch, instead of emitting one row per
     line item."""
-    items = db.query(model).filter(model.unified_sale_id == batch_id).all()
+    # active-only: a corrected line item's replacement carries the same
+    # unified_sale_id (routers/sales.py::correct_sale preserves it), so
+    # without this filter a corrected Sale/Purchase and its repost would
+    # both be summed here, double-counting the batch's quantities.
+    items = db.query(model).filter(model.unified_sale_id == batch_id, model.status == "active").all()
     q118 = Decimal("0")
     q454 = Decimal("0")
     kg = Decimal("0")
@@ -244,12 +249,21 @@ def customer_monthly_ledger(
             q454 = s.quantity if w is not None and 44.0 <= w <= 47.0 else Decimal("0")
             total_118 += q118
             total_454 += q454
+            # Emergency Transfer (§ Shop — Emergency Transfer) — same Sale
+            # row, same ledger math above; only the description changes so
+            # it reads as clearly distinct from an ordinary sale.
+            if s.emergency_transfer_shop_id:
+                shop = db.query(models.Customer).get(s.emergency_transfer_shop_id)
+                description = f"Emergency Transfer — {product.name if product else 'Product'} × {s.quantity} (from {shop.name if shop else 'shop'})"
+            else:
+                description = f"{product.name if product else 'Product'} × {s.quantity}"
             rows.append(schemas.LedgerRow(
                 date=s.date, kind="sale", ref_id=s.id, display_id=s.display_id,
-                description=f"{product.name if product else 'Product'} × {s.quantity}",
+                description=description,
                 sale_amount=s.total_amount, payment_amount=0, running_balance=running,
                 qty_118=q118, qty_454=q454, cyl_out=s.quantity,
                 entered_by=s.entered_by, correctable=True,
+                rate_per_cylinder=s.rate_per_cylinder, rate_per_kg=s.rate_per_kg,
             ))
         elif e["kind"] == "payment":
             p: models.Payment = e["obj"]
@@ -272,11 +286,27 @@ def customer_monthly_ledger(
             total_118 += q118
             total_454 += q454
             total_kg += kg
+            # Rate column (§3) — a batch can span several products/rates,
+            # so this stays a per-item list (each child Sale's own
+            # rate_per_cylinder) rather than one blended average, matching
+            # how the rest of this row is already per-batch-aggregated
+            # but never invents a number none of the child Sales actually
+            # charged.
+            # active-only — see _batch_cylinder_totals above for why: a
+            # corrected Sale's repost carries the same unified_sale_id, so
+            # without this filter a rate that was just corrected away would
+            # still show up here alongside its replacement.
+            batch_rates = [
+                bs.rate_per_cylinder for bs in
+                db.query(models.Sale).filter(models.Sale.unified_sale_id == b.id, models.Sale.status == "active").all()
+                if bs.rate_per_cylinder is not None
+            ]
             rows.append(schemas.LedgerRow(
                 date=b.sale_approved_at or b.date, kind="unified_sale", ref_id=b.id, display_id=b.display_id,
                 description="Unified Sale — sale & settlement",
                 sale_amount=b.total_selling_amount, payment_amount=b.total_credit_received,
                 running_balance=running, qty_118=q118, qty_454=q454, cyl_out=q118 + q454,
+                unified_sale_rates=batch_rates or None,
             ))
         elif e["kind"] == "empty_cylinder_sale":
             ecs: models.EmptyCylinderSale = e["obj"]

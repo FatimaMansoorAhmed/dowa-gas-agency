@@ -126,6 +126,50 @@ def get_or_create_shop_account(db: Session, shop):
     return account
 
 
+def resync_unified_sale_batch_totals(db: Session, unified_sale_id) -> None:
+    """Keeps UnifiedSaleBatch.total_selling_amount/total_credit_received/
+    net_plant_payment in sync after a child Sale or Payment is corrected
+    (routers/sales.py::correct_sale, routers/payments.py::correct_payment).
+
+    These are stored (not computed-on-read) fields, set once at
+    create/approve time and otherwise read only for DISPLAY — the ledger's
+    "unified_sale" row (routers/ledger.py) walks total_selling_amount
+    straight into its running_balance math. Without this resync, correcting
+    a batch-linked Sale/Payment leaves that stored total pointing at the
+    pre-correction amount forever, so every ledger row after it silently
+    drifts from the customer's real current_balance even though the
+    customer's own balance (updated directly by correct_sale/correct_payment)
+    is correct.
+
+    Deliberately does NOT touch net_plant_payment's downstream settlement
+    effect (the plant-payable / account credit routed in
+    approve_unified_sale_payment) — that money already moved, once, at
+    approval; this only fixes the batch's own bookkeeping fields, never
+    re-routes funds a second time."""
+    from app import models  # local import avoids a circular import with models.py
+
+    if not unified_sale_id:
+        return
+    batch = db.query(models.UnifiedSaleBatch).get(unified_sale_id)
+    if not batch:
+        return
+
+    total_selling_amount = (
+        db.query(func.coalesce(func.sum(models.Sale.total_amount), 0))
+        .filter(models.Sale.unified_sale_id == unified_sale_id, models.Sale.status == "active")
+        .scalar()
+    )
+    total_credit_received = (
+        db.query(func.coalesce(func.sum(models.Payment.amount), 0))
+        .filter(models.Payment.unified_sale_id == unified_sale_id, models.Payment.status == "active")
+        .scalar()
+    )
+    batch.total_selling_amount = total_selling_amount
+    batch.total_credit_received = total_credit_received
+    batch.net_plant_payment = total_credit_received - (batch.home_expense_amount or 0) - (batch.owner_drawings_amount or 0)
+    db.add(batch)
+
+
 def adjust_cylinder_balance(db: Session, customer_id, product_id, delta):
     """Applies delta (qty_out - qty_in) to a customer's running per-product
     cylinder balance, creating the row if it doesn't exist yet. Shared by

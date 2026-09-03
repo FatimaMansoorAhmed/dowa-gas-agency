@@ -2,10 +2,12 @@
 import { useEffect, useState } from "react";
 import { X, Check } from "lucide-react";
 import { Field, inputClass, Button } from "./ui";
+import AmountInput from "./AmountInput";
+import ExpenseWithdrawLines, { ExpenseLine, expenseLinesValid, hasFilledExpenseLines, toExpenseLinesPayload } from "./ExpenseWithdrawLines";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { todayLocalInput } from "@/lib/format";
-import type { ShopSupplyCustomer, PaymentAccount } from "@/lib/types";
+import { todayLocalInput, pkr } from "@/lib/format";
+import type { ShopSupplyCustomer, PaymentAccount, ExpenseCategory } from "@/lib/types";
 
 /** Record a Supply Customer's payment to the shop (§25) — collects against
  * a credit ShopSale's receivable, increases Shop Cash (§ Shop Cash Money
@@ -21,12 +23,15 @@ export default function RecordSupplyCustomerPaymentModal({
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
   const [accountId, setAccountId] = useState("");
   const [notes, setNotes] = useState("");
+  const [categories, setCategories] = useState<ExpenseCategory[]>([]);
+  const [expenseLines, setExpenseLines] = useState<ExpenseLine[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => { api.paymentAccounts.list().then((a) => setAccounts(a.filter((x) => x.active === "active"))); }, []);
+  useEffect(() => { api.expenseCategories.list().then(setCategories); }, []);
 
-  const canSubmit = parseFloat(amount) > 0 && date;
+  const canSubmit = parseFloat(amount) > 0 && date && expenseLinesValid(expenseLines);
 
   const submit = async () => {
     if (!canSubmit || !user) return;
@@ -48,6 +53,15 @@ export default function RecordSupplyCustomerPaymentModal({
         notes: notes || undefined,
         entered_by: user.name,
       });
+
+      if (hasFilledExpenseLines(expenseLines)) {
+        await api.shops.expenses.create(shopId, {
+          date: isoDate,
+          lines: toExpenseLinesPayload(expenseLines),
+          entered_by: user.name,
+        });
+      }
+
       onSaved();
     } catch (e) {
       setError("Could not save the payment — check the fields and try again.");
@@ -64,14 +78,14 @@ export default function RecordSupplyCustomerPaymentModal({
           <button onClick={onClose} className="bg-transparent border-none cursor-pointer"><X size={16} className="text-steel" /></button>
         </div>
         <div className="font-body text-[12px] text-steel mb-3">
-          Outstanding: {customer.current_balance}
+          Outstanding: {pkr(customer.current_balance)}
         </div>
         <div className="flex flex-col gap-3">
           <Field label="Date">
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} />
           </Field>
           <Field label="Amount">
-            <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} className={inputClass} />
+            <AmountInput value={amount} onChange={setAmount} className={inputClass} />
           </Field>
           <Field label="Method">
             <select value={method} onChange={(e) => setMethod(e.target.value)} className={inputClass}>
@@ -89,6 +103,7 @@ export default function RecordSupplyCustomerPaymentModal({
           <Field label="Notes (optional)">
             <input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputClass} />
           </Field>
+          <ExpenseWithdrawLines lines={expenseLines} onChange={setExpenseLines} categories={categories} />
         </div>
         {error && <div className="font-body text-xs text-brand-red mt-2">{error}</div>}
         <div className="mt-4">

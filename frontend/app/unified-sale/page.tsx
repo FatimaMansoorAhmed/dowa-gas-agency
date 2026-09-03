@@ -4,13 +4,60 @@ import { PlusCircle, Check, X, AlertTriangle, CheckCircle2, Pencil, Ban, ThumbsU
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, Th, Td } from "@/components/ui";
 import NewPlantModal from "@/components/NewPlantModal";
+import AmountInput from "@/components/AmountInput";
+import CorrectTransactionModal, { CorrectableKind } from "@/components/CorrectTransactionModal";
 import { api } from "@/lib/api";
-import { pkr, fmtTime, todayLocalInput, toKarachiDateString, ACCOUNT_TYPE_LABELS, resolveAccountLabel } from "@/lib/format";
+import { pkr, fmtTime, todayLocalInput, toKarachiDateString, ACCOUNT_TYPE_LABELS, resolveAccountLabel, fmtNumber } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import type {
   Company, Customer, Product, ExpenseCategory, RateEntry, PaymentAccount,
   UnifiedSaleBatch, UnifiedSaleResult, DestinationType, AccountType,
+  Sale, Payment, Purchase,
 } from "@/lib/types";
+
+// Date filter shape shared by the Approved Sale / Approved Payments cards
+// below — same "24h / day / month / year" convention as the existing
+// Approved Sales (batch) modal, kept as its own small type+component so
+// two more filter toolbars don't duplicate that modal's inline JSX.
+type DateFilter = { type: "24h" | "day" | "month" | "year"; date: string; month: string; year: string };
+const defaultDateFilter = (): DateFilter => ({
+  type: "24h", date: todayLocalInput(), month: todayLocalInput().slice(0, 7), year: todayLocalInput().slice(0, 4),
+});
+function matchesDateFilter(isoDate: string, f: DateFilter): boolean {
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+  const t = new Date(isoDate).getTime();
+  const localYYYYMMDD = toKarachiDateString(isoDate);
+  if (f.type === "24h") return Date.now() - t < ONE_DAY_MS;
+  if (f.type === "day") return localYYYYMMDD === f.date;
+  if (f.type === "month") return localYYYYMMDD.slice(0, 7) === f.month;
+  if (f.type === "year") return localYYYYMMDD.slice(0, 4) === f.year;
+  return true;
+}
+function DateFilterToolbar({ value, onChange }: { value: DateFilter; onChange: (f: DateFilter) => void }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <select
+        value={value.type}
+        onChange={(e) => onChange({ ...value, type: e.target.value as DateFilter["type"] })}
+        className="px-2.5 py-1 bg-paper border border-hairline rounded-md text-xs font-semibold text-ink focus:outline-none"
+      >
+        <option value="24h">Last 24 Hours</option>
+        <option value="day">By Specific Day</option>
+        <option value="month">By Month</option>
+        <option value="year">By Year</option>
+      </select>
+      {value.type === "day" && (
+        <input type="date" value={value.date} onChange={(e) => onChange({ ...value, date: e.target.value })} className="px-2 py-1 bg-white border border-hairline rounded-md text-xs font-mono text-ink" />
+      )}
+      {value.type === "month" && (
+        <input type="month" value={value.month} onChange={(e) => onChange({ ...value, month: e.target.value })} className="px-2 py-1 bg-white border border-hairline rounded-md text-xs font-mono text-ink" />
+      )}
+      {value.type === "year" && (
+        <input type="number" min="2020" max="2099" value={value.year} onChange={(e) => onChange({ ...value, year: e.target.value })} placeholder="YYYY" className="w-20 px-2 py-1 bg-white border border-hairline rounded-md text-xs font-mono text-ink" />
+      )}
+    </div>
+  );
+}
 
 const EPSILON = 0.01;
 
@@ -49,6 +96,26 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
   const [showNewPlant, setShowNewPlant] = useState(false);
   const [showSaleForm, setShowSaleForm] = useState(false);
   const [showApprovedModal, setShowApprovedModal] = useState(false);
+
+  // Approved Sale / Approved Payments (§3/§4) — plain, individual Sale/
+  // Payment records (system-wide, not scoped to Unified Sale batches),
+  // with Edit wired to the existing, already-proven reverse-then-repost
+  // CorrectTransactionModal (see routers/sales.py::correct_sale,
+  // routers/payments.py::correct_payment). Deliberately separate from the
+  // "Approved Sales" batch card above — that one stays untouched.
+  const [allSales, setAllSales] = useState<Sale[]>([]);
+  const [allPayments, setAllPayments] = useState<Payment[]>([]);
+  // Purchase Rate (§3) — a plain Sale has no FK to a specific Purchase; only
+  // for a Unified-Sale-originated Sale can its matching Purchase be found
+  // (same unified_sale_id + same product_id — Unified Sale creates one
+  // Sale + one Purchase per line item). Non-Unified-Sale rows show "—".
+  const [allPurchases, setAllPurchases] = useState<Purchase[]>([]);
+  const [showApprovedSaleModal, setShowApprovedSaleModal] = useState(false);
+  const [showApprovedPaymentsModal, setShowApprovedPaymentsModal] = useState(false);
+  const [saleDateFilter, setSaleDateFilter] = useState<DateFilter>(defaultDateFilter);
+  const [paymentDateFilter, setPaymentDateFilter] = useState<DateFilter>(defaultDateFilter);
+  const [correctTarget, setCorrectTarget] = useState<{ kind: CorrectableKind; transaction: Sale | Payment } | null>(null);
+
   const [addingCategory, setAddingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   // Per-row draft for the settlement reference (bank transfer/cheque no.)
@@ -94,10 +161,15 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
 
   const load = async () => {
-    const [c, cu, p, cat, acc, r, ru] = await Promise.all([
+    const [c, cu, p, cat, acc, r, ru, sales, payments, purchases] = await Promise.all([
       api.companies.list(), api.customers.list(), api.products.list(),
       api.expenseCategories.list(), api.paymentAccounts.list(), api.rates.latest(),
       api.unifiedSale.list(),
+      // Approved Sale / Approved Payments (§3/§4) — refreshed on the exact
+      // same triggers as `recent` above (mount + after every create/
+      // approve/edit/cancel action that already calls this function), so
+      // a Unified-Sale-approved Sale/Payment shows up here immediately.
+      api.sales.list(), api.payments.list(), api.purchases.list(),
     ]);
     // Active-only: an accidental duplicate product row (same weight_kg as
     // a real one, e.g. a stray "11.8 KG Cylinder2") must not show up as a
@@ -107,6 +179,7 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
     // specific id, which the duplicate never matched.
     setCompanies(c); setCustomers(cu); setProducts(p.filter((x) => x.active === "active"));
     setCategories(cat); setAccounts(acc); setRates(r); setRecent(ru);
+    setAllSales(sales); setAllPayments(payments); setAllPurchases(purchases);
   };
   useEffect(() => { load(); }, []);
 
@@ -216,9 +289,13 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
     setAddingCategory(false);
   };
 
+  // Vehicle No is only meaningful when cylinders are actually moving —
+  // a pure settlement (no items, credit-only) never has a vehicle to
+  // record, so it must not block submission.
+  const vehicleRequired = activeItems.length > 0;
   const canSubmit =
     !!customerId && !!companyId && !!date &&
-    !!vehicleNo.trim() &&
+    (!vehicleRequired || !!vehicleNo.trim()) &&
     (activeItems.length > 0 || totalCreditNum > 0) &&
     settlementValid &&
     (homeExpenseNum <= 0 || !!homeExpenseCategoryId);
@@ -447,6 +524,36 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
     return plant ? plant.name : "Plant";
   };
 
+  // Approved Sale / Approved Payments (§3/§4) — active only, newest first,
+  // narrowed by their own independent date filters.
+  const approvedSales = useMemo(
+    () => allSales
+      .filter((s) => s.status === "active" && matchesDateFilter(s.date, saleDateFilter))
+      .sort((a, b) => (a.date < b.date ? 1 : -1)),
+    [allSales, saleDateFilter]
+  );
+  const approvedPayments = useMemo(
+    () => allPayments
+      .filter((p) => p.status === "active" && matchesDateFilter(p.date, paymentDateFilter))
+      .sort((a, b) => (a.date < b.date ? 1 : -1)),
+    [allPayments, paymentDateFilter]
+  );
+  // See the Purchase Rate comment on `allPurchases` above — only resolvable
+  // for a Unified-Sale-originated Sale.
+  const purchaseRateFor = (s: Sale): string | null => {
+    if (!s.unified_sale_id) return null;
+    const match = allPurchases.find((p) => p.unified_sale_id === s.unified_sale_id && p.product_id === s.product_id);
+    return match?.rate_per_cylinder ?? null;
+  };
+  // Approved Payments Rate (§3) — a Payment has no rate of its own; if it
+  // settles a specific Sale (Payment.sale_id, optional), show that Sale's
+  // rate for context rather than inventing one.
+  const rateForPayment = (p: Payment): string | null => {
+    if (!p.sale_id) return null;
+    const sale = allSales.find((s) => s.id === p.sale_id);
+    return sale?.rate_per_cylinder ?? null;
+  };
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -455,7 +562,7 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
         caption="The customer sale/load and the plant payment/settlement are two separate real-world events. Each is approved on its own — approving the sale never posts the plant payment, and approving the payment never re-posts the sale."
       />
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4">
         <button
           type="button"
           onClick={() => { resetForm(); setShowSaleForm(true); }}
@@ -495,6 +602,36 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
           <div className="mt-2 font-display text-2xl font-bold text-[#1E8A5F]">{completedOrders.length}</div>
           <div className="mt-1 font-body text-xs text-teal flex items-center gap-1">
             View approved sales <ArrowRight size={12} />
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowApprovedSaleModal(true)}
+          className="group rounded-xl border border-hairline bg-panel hover:bg-paper transition-colors p-5 text-left"
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 size={15} className="text-[#1E8A5F]" />
+            <span className="font-mono text-[10px] uppercase tracking-wide text-steel font-semibold">Approved Sale</span>
+          </div>
+          <div className="mt-2 font-display text-2xl font-bold text-[#1E8A5F]">{allSales.filter((s) => s.status === "active").length}</div>
+          <div className="mt-1 font-body text-xs text-teal flex items-center gap-1">
+            View all sales <ArrowRight size={12} />
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowApprovedPaymentsModal(true)}
+          className="group rounded-xl border border-hairline bg-panel hover:bg-paper transition-colors p-5 text-left"
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 size={15} className="text-[#1E8A5F]" />
+            <span className="font-mono text-[10px] uppercase tracking-wide text-steel font-semibold">Approved Payments</span>
+          </div>
+          <div className="mt-2 font-display text-2xl font-bold text-[#1E8A5F]">{allPayments.filter((p) => p.status === "active").length}</div>
+          <div className="mt-1 font-body text-xs text-teal flex items-center gap-1">
+            View all payments <ArrowRight size={12} />
           </div>
         </button>
       </div>
@@ -613,8 +750,8 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
                         </div>
                         <div className="grid grid-cols-3 gap-2">
                           <input type="number" value={row.qty} onChange={(e) => setItemField(p.id, "qty", e.target.value)} placeholder="Qty" className={inputClass} />
-                          <input type="number" value={row.purchaseRate} onChange={(e) => setItemField(p.id, "purchaseRate", e.target.value)} placeholder="Purchase" className={inputClass} />
-                          <input type="number" value={row.sellingRate} onChange={(e) => setItemField(p.id, "sellingRate", e.target.value)} placeholder="Selling" className={inputClass} />
+                          <AmountInput value={row.purchaseRate} onChange={(v) => setItemField(p.id, "purchaseRate", v)} placeholder="Purchase" className={inputClass} />
+                          <AmountInput value={row.sellingRate} onChange={(v) => setItemField(p.id, "sellingRate", v)} placeholder="Selling" className={inputClass} />
                         </div>
                       </div>
                     );
@@ -643,8 +780,8 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
               <div className="border-t border-hairline pt-4">
                 <Eyebrow>Delivery Details</Eyebrow>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
-                  <Field label="Vehicle No *">
-                    <input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} required className={inputClass} />
+                  <Field label={vehicleRequired ? "Vehicle No *" : "Vehicle No (optional — no cylinders on this transaction)"}>
+                    <input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} required={vehicleRequired} className={inputClass} />
                   </Field>
                   <Field label="Gate Pass No">
                     <input value={gatePassNo} onChange={(e) => setGatePassNo(e.target.value)} className={inputClass} />
@@ -675,13 +812,13 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
                   </Field>
 
                   <Field label="Total Received (PKR)">
-                    <input type="number" value={totalCreditReceived} onChange={(e) => setTotalCreditReceived(e.target.value)} placeholder="0" className={`${inputClass} font-mono font-bold text-teal`} />
+                    <AmountInput value={totalCreditReceived} onChange={setTotalCreditReceived} placeholder="0" className={`${inputClass} font-mono font-bold text-teal`} />
                   </Field>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <Field label="Home Expense">
-                    <input type="number" value={homeExpenseAmount} onChange={(e) => setHomeExpenseAmount(e.target.value)} placeholder="0" className={inputClass} />
+                    <AmountInput value={homeExpenseAmount} onChange={setHomeExpenseAmount} placeholder="0" className={inputClass} />
                   </Field>
                   <Field label="Expense Category">
                     {!addingCategory ? (
@@ -703,7 +840,7 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
                 </div>
 
                 <Field label="Owner Drawings">
-                  <input type="number" value={ownerDrawingsAmount} onChange={(e) => setOwnerDrawingsAmount(e.target.value)} placeholder="0" className={inputClass} />
+                  <AmountInput value={ownerDrawingsAmount} onChange={setOwnerDrawingsAmount} placeholder="0" className={inputClass} />
                 </Field>
 
                 {/* Destination Routing Selector */}
@@ -837,7 +974,7 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
                       const product = products.find((p) => p.id === sale.product_id);
                       return (
                         <div key={sale.id} className="flex justify-between text-xs">
-                          <span>{product?.name || "Product"} × {sale.quantity}</span>
+                          <span>{product?.name || "Product"} × {fmtNumber(sale.quantity, 2)}</span>
                           <span>{pkr(sale.total_amount)}</span>
                         </div>
                       );
@@ -1252,6 +1389,154 @@ const [filterYear, setFilterYear] = useState(() => todayLocalInput().slice(0, 4)
           </div>
           </div>
           </div>
+          )}
+
+          {/* APPROVED SALE — plain Sale records, system-wide (§3/§4) */}
+          {showApprovedSaleModal && (
+            <div
+              className="fixed inset-0 z-40 bg-black/40 p-3 sm:p-5 flex items-center justify-center"
+              onMouseDown={(e) => { if (e.target === e.currentTarget) setShowApprovedSaleModal(false); }}
+            >
+              <div className="w-full max-w-6xl max-h-[90vh] overflow-hidden bg-white rounded-xl shadow-2xl flex flex-col">
+                <div className="flex items-center justify-between px-5 py-4 border-b border-hairline shrink-0">
+                  <div>
+                    <Eyebrow>Approved Sale</Eyebrow>
+                    <div className="font-body text-xs text-steel mt-1">Every active Sale record — Edit reverses the original and reposts the corrected transaction.</div>
+                  </div>
+                  <button type="button" onClick={() => setShowApprovedSaleModal(false)} className="p-2 rounded-md hover:bg-paper text-steel hover:text-ink" title="Close">
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="overflow-y-auto p-3 sm:p-5">
+                  <Panel>
+                    <div className="mt-1"><DateFilterToolbar value={saleDateFilter} onChange={setSaleDateFilter} /></div>
+                    <div className="mt-3 overflow-x-auto">
+                      <table className="w-full min-w-[1050px] border-collapse">
+                        <thead>
+                          <tr className="border-b border-hairline text-left">
+                            <Th>ID</Th>
+                            <Th>DATE</Th>
+                            <Th>CUSTOMER</Th>
+                            <Th>PRODUCT</Th>
+                            <Th right>QTY</Th>
+                            <Th right>SELLING RATE</Th>
+                            <Th right>PURCHASE RATE</Th>
+                            <Th right>AMOUNT</Th>
+                            <Th>ENTERED BY</Th>
+                            <Th center>EDIT</Th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-hairline">
+                          {approvedSales.map((s) => {
+                            const c = customers.find((x) => x.id === s.customer_id);
+                            const product = products.find((x) => x.id === s.product_id);
+                            const purchaseRate = purchaseRateFor(s);
+                            return (
+                              <tr key={s.id} className="hover:bg-paper/60 transition-colors">
+                                <Td mono>{s.display_id}</Td>
+                                <Td mono>{fmtTime(s.date)}</Td>
+                                <Td bold>{c?.name || "—"}</Td>
+                                <Td>{product?.name || "—"}</Td>
+                                <Td right mono>{fmtNumber(s.quantity, 2)}</Td>
+                                <Td right mono>{s.rate_per_cylinder ? pkr(s.rate_per_cylinder) : "—"}</Td>
+                                <Td right mono color="#8E8E93">{purchaseRate ? pkr(purchaseRate) : "—"}</Td>
+                                <Td right mono bold>{pkr(s.total_amount)}</Td>
+                                <Td mono>{s.entered_by}</Td>
+                                <Td center>
+                                  <button type="button" onClick={() => setCorrectTarget({ kind: "sale", transaction: s })} className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title="Correct this sale">
+                                    <Pencil size={13} />
+                                  </button>
+                                </Td>
+                              </tr>
+                            );
+                          })}
+                          {!approvedSales.length && (
+                            <tr><td colSpan={10} className="text-steel font-body text-[13px] py-6 text-center">No sales found for this filter.</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </Panel>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* APPROVED PAYMENTS — plain Payment records, system-wide (§3/§4) */}
+          {showApprovedPaymentsModal && (
+            <div
+              className="fixed inset-0 z-40 bg-black/40 p-3 sm:p-5 flex items-center justify-center"
+              onMouseDown={(e) => { if (e.target === e.currentTarget) setShowApprovedPaymentsModal(false); }}
+            >
+              <div className="w-full max-w-6xl max-h-[90vh] overflow-hidden bg-white rounded-xl shadow-2xl flex flex-col">
+                <div className="flex items-center justify-between px-5 py-4 border-b border-hairline shrink-0">
+                  <div>
+                    <Eyebrow>Approved Payments</Eyebrow>
+                    <div className="font-body text-xs text-steel mt-1">Every active Payment record — Edit reverses the original and reposts the corrected transaction.</div>
+                  </div>
+                  <button type="button" onClick={() => setShowApprovedPaymentsModal(false)} className="p-2 rounded-md hover:bg-paper text-steel hover:text-ink" title="Close">
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="overflow-y-auto p-3 sm:p-5">
+                  <Panel>
+                    <div className="mt-1"><DateFilterToolbar value={paymentDateFilter} onChange={setPaymentDateFilter} /></div>
+                    <div className="mt-3 overflow-x-auto">
+                      <table className="w-full min-w-[950px] border-collapse">
+                        <thead>
+                          <tr className="border-b border-hairline text-left">
+                            <Th>ID</Th>
+                            <Th>DATE</Th>
+                            <Th>CUSTOMER</Th>
+                            <Th right>AMOUNT</Th>
+                            <Th>METHOD</Th>
+                            <Th>ACCOUNT</Th>
+                            <Th right>RATE</Th>
+                            <Th>ENTERED BY</Th>
+                            <Th center>EDIT</Th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-hairline">
+                          {approvedPayments.map((p) => {
+                            const c = customers.find((x) => x.id === p.customer_id);
+                            const rate = rateForPayment(p);
+                            return (
+                              <tr key={p.id} className="hover:bg-paper/60 transition-colors">
+                                <Td mono>{p.display_id}</Td>
+                                <Td mono>{fmtTime(p.date)}</Td>
+                                <Td bold>{c?.name || "—"}</Td>
+                                <Td right mono bold color="#1E8A5F">{pkr(p.amount)}</Td>
+                                <Td mono>{p.method}</Td>
+                                <Td mono color="#8E8E93">{resolveAccountLabel(p.account_id, accounts)}</Td>
+                                <Td right mono color="#8E8E93">{rate ? pkr(rate) : "—"}</Td>
+                                <Td mono>{p.entered_by}</Td>
+                                <Td center>
+                                  <button type="button" onClick={() => setCorrectTarget({ kind: "payment", transaction: p })} className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title="Correct this payment">
+                                    <Pencil size={13} />
+                                  </button>
+                                </Td>
+                              </tr>
+                            );
+                          })}
+                          {!approvedPayments.length && (
+                            <tr><td colSpan={9} className="text-steel font-body text-[13px] py-6 text-center">No payments found for this filter.</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </Panel>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {correctTarget && (
+            <CorrectTransactionModal
+              kind={correctTarget.kind}
+              transaction={correctTarget.transaction}
+              onClose={() => setCorrectTarget(null)}
+              onSaved={() => { setCorrectTarget(null); load(); }}
+            />
           )}
         </div>
       </div>

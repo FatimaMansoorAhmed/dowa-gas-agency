@@ -1,10 +1,11 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { PlusCircle, Store } from "lucide-react";
+import { PlusCircle, Store, Gauge } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, Th, Td, BalanceTag, Button } from "@/components/ui";
 import AddShopModal from "@/components/AddShopModal";
+import BoardRateModal from "@/components/BoardRateModal";
 import { api } from "@/lib/api";
 import { pkr, fmtTime } from "@/lib/format";
 import type { ShopListRow } from "@/lib/types";
@@ -17,6 +18,7 @@ function ShopsBody() {
   const [rows, setRows] = useState<ShopListRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
+  const [showBoardRate, setShowBoardRate] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -31,9 +33,14 @@ function ShopsBody() {
         title="Shop inventory & board-rate sales"
         caption="Each shop's current stock, today's load/sales/returns, and payable — a Load is entered once, in the ordinary Sale flow, and the shop's stock updates automatically."
         action={
-          <Button variant="primary" onClick={() => setShowAdd(true)}>
-            <PlusCircle size={14} /> Add Shop
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setShowBoardRate(true)}>
+              <Gauge size={14} /> Board Rate
+            </Button>
+            <Button variant="primary" onClick={() => setShowAdd(true)}>
+              <PlusCircle size={14} /> Add Shop
+            </Button>
+          </div>
         }
       />
 
@@ -64,7 +71,7 @@ function ShopsBody() {
                   </span>
                   <span>Shop Cash: <span className="font-semibold text-ink">{pkr(r.shop_cash_balance)}</span></span>
                 </div>
-                <div className="grid grid-cols-4 gap-2">
+                <div className="grid grid-cols-3 gap-2">
                   <div>
                     <div className="font-mono text-[10px] uppercase text-steel">Current Stock</div>
                     <div className="font-mono font-semibold text-[15px] text-ink">{r.current_stock}</div>
@@ -76,10 +83,6 @@ function ShopsBody() {
                   <div>
                     <div className="font-mono text-[10px] uppercase text-steel">Today's Sales</div>
                     <div className="font-mono font-semibold text-[15px] text-ink">-{r.today_sales}</div>
-                  </div>
-                  <div>
-                    <div className="font-mono text-[10px] uppercase text-steel">Today's Returns</div>
-                    <div className="font-mono font-semibold text-[15px] text-ink">{r.today_returns}</div>
                   </div>
                 </div>
               </div>
@@ -93,6 +96,10 @@ function ShopsBody() {
           onClose={() => setShowAdd(false)}
           onCreated={() => { setShowAdd(false); load(); }}
         />
+      )}
+
+      {showBoardRate && (
+        <BoardRateModal onClose={() => setShowBoardRate(false)} />
       )}
     </div>
   );

@@ -22,7 +22,7 @@ import {
   CalendarClock,
   FileStack,
   Store,
-  Gauge,
+  UserCog,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { CylinderStripe } from "./ui";
@@ -45,11 +45,15 @@ const NAV = [
    { href: "/cash-managment", label: "Cash Book", icon: Wallet },
   { href: "/owner-capital", label: "Owner Investment", icon: Banknote },
   { href: "/shops", label: "Shops", icon: Store },
-  { href: "/board-rates", label: "Board Rates", icon: Gauge },
   { href: "/daily-activity", label: "Daily Activity", icon: CalendarClock },
   { href: "/reports", label: "Reports", icon: FileStack },
 
 ];
+
+// Owner-only — cosmetic gating (real enforcement is the backend's
+// require_owner dependency on /users/*). Kept separate from NAV rather
+// than baked in since it's the only role-conditional entry.
+const OWNER_NAV = { href: "/users", label: "User Management", icon: UserCog };
 
 export default function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -58,9 +62,9 @@ export default function Shell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex">
-      <div className="w-[220px] bg-ink min-h-screen flex-shrink-0 sticky top-0 h-screen">
+      <div className="w-[220px] bg-ink min-h-screen flex-shrink-0 sticky top-0 h-screen flex flex-col">
         {/* Sidebar Header with White Badge Container */}
-        <div className="flex items-center gap-3 px-4 pt-[20px] pb-[18px]">
+        <div className="flex items-center gap-3 px-4 pt-[20px] pb-[18px] shrink-0">
           {/* White Circular Background Wrapper for Logo */}
           <div className="w-10 h-10 rounded-full bg-white p-1 flex items-center justify-center shrink-0 overflow-hidden shadow-sm">
             <Image
@@ -78,8 +82,8 @@ export default function Shell({ children }: { children: ReactNode }) {
           </div>
         </div>
 
-        <div className="px-3">
-          {NAV.map((n) => {
+        <div className="px-3 flex-1 min-h-0 overflow-y-auto">
+          {(user?.role === "owner" ? [...NAV, OWNER_NAV] : NAV).map((n) => {
             const Icon = n.icon;
             const active = pathname === n.href;
             return (
@@ -106,11 +110,11 @@ export default function Shell({ children }: { children: ReactNode }) {
           })}
         </div>
 
-        <div className="absolute bottom-0 w-[220px] px-5 py-3.5 border-t border-white/10">
+        <div className="shrink-0 w-[220px] px-5 py-3.5 border-t border-white/10">
           <div className="flex justify-between items-center">
             <div>
               <div className="font-body text-[12.5px] text-white font-semibold">{user?.name}</div>
-              <div className="font-mono text-[9.5px] text-[#7FA9AA]">{user?.role}</div>
+              <div className="font-mono text-[9.5px] text-[#7FA9AA]">{user?.role === "owner" ? "Owner" : "Staff"}</div>
             </div>
             <button
               onClick={() => {

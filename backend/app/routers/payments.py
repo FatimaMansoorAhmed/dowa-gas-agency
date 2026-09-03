@@ -5,9 +5,10 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
-from app.utils import next_display_id
+from app.deps import require_active_user, require_csrf
+from app.utils import next_display_id, resync_unified_sale_batch_totals
 
-router = APIRouter(prefix="/payments", tags=["payments"])
+router = APIRouter(prefix="/payments", tags=["payments"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
 @router.get("", response_model=list[schemas.PaymentOut])
@@ -124,8 +125,11 @@ def _reverse_payment(db: Session, payment: models.Payment) -> None:
 
 
 @router.post("", response_model=schemas.PaymentOut, status_code=201)
-def create_payment(payload: schemas.PaymentCreate, db: Session = Depends(get_db)):
-    payment = _apply_payment(db, payload, payload.entered_by)
+def create_payment(
+    payload: schemas.PaymentCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
+    payment = _apply_payment(db, payload, current_user.name)
     db.commit()
     db.refresh(payment)
     return payment
@@ -152,7 +156,10 @@ def cancel_payment(payment_id: UUID, by: str = Query(...), db: Session = Depends
 
 
 @router.patch("/{payment_id}/correct", response_model=schemas.PaymentOut)
-def correct_payment(payment_id: UUID, payload: schemas.PaymentCorrect, db: Session = Depends(get_db)):
+def correct_payment(
+    payment_id: UUID, payload: schemas.PaymentCorrect, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     """Ledger Correction (§1) — see correct_sale in routers/sales.py for
     the full pattern this mirrors."""
     if not payload.correction_reason.strip():
@@ -167,15 +174,21 @@ def correct_payment(payment_id: UUID, payload: schemas.PaymentCorrect, db: Sessi
     _reverse_payment(db, original)
 
     original.status = "corrected"
-    original.corrected_by = payload.corrected_by
+    original.corrected_by = current_user.name
     original.corrected_at = datetime.utcnow()
     original.correction_reason = payload.correction_reason
     db.add(original)
     db.flush()
 
-    corrected = _apply_payment(db, payload, payload.corrected_by)
+    corrected = _apply_payment(db, payload, current_user.name)
     corrected.corrected_from_id = original.id
+    # Same fix as correct_sale in routers/sales.py — preserve the Unified
+    # Sale batch link across a correction, since PaymentCreate/PaymentCorrect
+    # carry no unified_sale_id field for the form to send it.
+    corrected.unified_sale_id = original.unified_sale_id
     db.add(corrected)
+    db.flush()
+    resync_unified_sale_batch_totals(db, corrected.unified_sale_id)
 
     db.commit()
     db.refresh(corrected)

@@ -7,9 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.deps import require_active_user, require_csrf
 from app.utils import next_display_id, resolve_account_or_bucket
 
-router = APIRouter(prefix="/payment-receipts", tags=["payment-receipts"])
+router = APIRouter(prefix="/payment-receipts", tags=["payment-receipts"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 EPSILON = Decimal("0.01")
 
@@ -72,7 +73,10 @@ def list_payment_receipts(
 
 
 @router.post("", response_model=schemas.PaymentReceiptOut, status_code=201)
-def create_payment_receipt(payload: schemas.PaymentReceiptCreate, db: Session = Depends(get_db)):
+def create_payment_receipt(
+    payload: schemas.PaymentReceiptCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     """Records a customer payment and, like a Unified Sale settlement,
     splits it three ways: home_expense_amount / owner_drawings_amount
     bypass every Dowa account; the remainder is routed per destination_type.
@@ -117,7 +121,7 @@ def create_payment_receipt(payload: schemas.PaymentReceiptCreate, db: Session = 
             account_category=account_category,
             net_settlement_amount=net_settlement_amount,
             status="active",
-            entered_by=payload.entered_by,
+            entered_by=current_user.name,
         )
         db.add(payment)
         db.flush()
@@ -138,7 +142,7 @@ def create_payment_receipt(payload: schemas.PaymentReceiptCreate, db: Session = 
                 date=payload.date, category_id=payload.home_expense_category_id,
                 amount=payload.home_expense_amount, account_id=None, method="cash",
                 description=f"Auto-created from Payment Receipt {payment.display_id}",
-                status="active", entered_by=payload.entered_by, source_payment_id=payment.id,
+                status="active", entered_by=current_user.name, source_payment_id=payment.id,
             ))
 
         if payload.owner_drawings_amount > 0:
@@ -146,7 +150,7 @@ def create_payment_receipt(payload: schemas.PaymentReceiptCreate, db: Session = 
                 display_id=next_display_id(db, models.OwnerDrawings, "DRAW", width=6),
                 date=payload.date, amount=payload.owner_drawings_amount, account_id=None,
                 notes=f"Auto-created from Payment Receipt {payment.display_id}",
-                status="active", entered_by=payload.entered_by, source_payment_id=payment.id,
+                status="active", entered_by=current_user.name, source_payment_id=payment.id,
             ))
 
         if net_settlement_amount > 0:
@@ -160,7 +164,7 @@ def create_payment_receipt(payload: schemas.PaymentReceiptCreate, db: Session = 
                     method="direct_settlement", account_id=None,
                     notes=f"3-way settlement via Payment Receipt {payment.display_id} — customer paid plant directly",
                     excess_amount=c_excess_amount, status="active",
-                    entered_by=payload.entered_by, source_payment_id=payment.id,
+                    entered_by=current_user.name, source_payment_id=payment.id,
                 ))
                 company.current_balance = company.current_balance - net_settlement_amount
                 company.last_overpayment_amount = c_excess_amount

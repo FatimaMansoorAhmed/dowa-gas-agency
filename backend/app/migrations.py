@@ -74,6 +74,8 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     ("sales", "corrected_at", "TIMESTAMP"),
     ("sales", "correction_reason", "VARCHAR(255)"),
     ("sales", "corrected_from_id", "GUID"),
+    # Emergency Transfer (§ Shop — Emergency Transfer).
+    ("sales", "emergency_transfer_shop_id", "GUID"),
     ("payments", "corrected_by", "VARCHAR(255)"),
     ("payments", "corrected_at", "TIMESTAMP"),
     ("payments", "correction_reason", "VARCHAR(255)"),

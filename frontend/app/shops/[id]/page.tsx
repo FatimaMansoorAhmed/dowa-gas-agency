@@ -20,6 +20,7 @@ import {
   Package,
   Banknote,
   AlertCircle,
+  Zap,
 } from "lucide-react";
 
 import AuthGate from "@/components/AuthGate";
@@ -35,10 +36,10 @@ import {
 
 import ReceivePaymentModal from "@/components/ReceivePaymentModal";
 import RecordShopSaleModal from "@/components/RecordShopSaleModal";
-import RecordShopAdjustmentModal from "@/components/RecordShopAdjustmentModal";
 import AddSupplyCustomerModal from "@/components/AddSupplyCustomerModal";
 import RecordSupplyCustomerPaymentModal from "@/components/RecordSupplyCustomerPaymentModal";
 import RecordShopExpenseModal from "@/components/RecordShopExpenseModal";
+import EmergencyTransferModal from "@/components/EmergencyTransferModal";
 import CorrectTransactionModal, {
   CorrectableKind,
 } from "@/components/CorrectTransactionModal";
@@ -47,7 +48,7 @@ import ShopStockBatchesPanel from "@/components/ShopStockBatchesPanel";
 
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { pkr, fmtTime, todayLocalInput, toKarachiDateString } from "@/lib/format";
+import { pkr, fmtTime, todayLocalInput, toKarachiDateString, fmtNumber } from "@/lib/format";
 
 import type {
   ShopDetailOut,
@@ -69,8 +70,6 @@ function transactionLabel(kind: string) {
     load: "Load",
     shop_sale: "Shop Sale",
     payment: "Payment",
-    return: "Return",
-    adjustment: "Adjustment",
   };
 
   return labels[kind] ?? kind;
@@ -282,9 +281,6 @@ function TransactionHistoryModal({
                               ? "bg-emerald-50 text-emerald-700"
                               : t.kind === "shop_sale"
                               ? "bg-blue-50 text-blue-700"
-                              : t.kind === "return" ||
-                                t.kind === "adjustment"
-                              ? "bg-amber-50 text-amber-700"
                               : "bg-slate-100 text-slate-600"
                           }
                         `}
@@ -441,9 +437,9 @@ function ShopDetailBody() {
 
   const [showPay, setShowPay] = useState(false);
   const [showSale, setShowSale] = useState(false);
-  const [showAdjustment, setShowAdjustment] = useState(false);
   const [showCorrections, setShowCorrections] = useState(false);
   const [showAddCustomer, setShowAddCustomer] = useState(false);
+  const [showEmergencyTransfer, setShowEmergencyTransfer] = useState(false);
   const [showExpense, setShowExpense] = useState(false);
 
   const [showTransactions, setShowTransactions] = useState(false);
@@ -625,14 +621,6 @@ function ShopDetailBody() {
 
               <Button
                 variant="outline"
-                onClick={() => setShowAdjustment(true)}
-              >
-                <RefreshCw size={14} />
-                Return / Adjustment
-              </Button>
-
-              <Button
-                variant="outline"
                 onClick={() => setShowExpense(true)}
               >
                 <Wallet size={14} />
@@ -645,6 +633,14 @@ function ShopDetailBody() {
               >
                 <Users size={14} />
                 Add Supply Customer
+              </Button>
+
+              <Button
+                variant="outline"
+                onClick={() => setShowEmergencyTransfer(true)}
+              >
+                <Zap size={14} />
+                Emergency Transfer
               </Button>
 
               <PrintButton label="Print" />
@@ -850,42 +846,6 @@ function ShopDetailBody() {
               new Set(batches.map((b) => toKarachiDateString(b.transaction_date).slice(0, 7)))
             ).sort((a, b) => (a < b ? 1 : -1))}
           />
-
-
-          {/* ---------------------------------------------------------------- */}
-          {/* RETURNS / ADJUSTMENTS                                            */}
-          {/* ---------------------------------------------------------------- */}
-
-          {(s.total_returns !== "0" ||
-            s.total_adjustments !== "0") && (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-
-              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-
-                <div className="text-xs font-medium text-slate-500">
-                  Today's Returns
-                </div>
-
-                <div className="mt-1 font-display text-xl font-bold text-slate-900">
-                  {s.total_returns}
-                </div>
-
-              </div>
-
-              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-
-                <div className="text-xs font-medium text-slate-500">
-                  Today's Adjustments
-                </div>
-
-                <div className="mt-1 font-display text-xl font-bold text-slate-900">
-                  {s.total_adjustments}
-                </div>
-
-              </div>
-
-            </div>
-          )}
 
 
           {/* ---------------------------------------------------------------- */}
@@ -1098,15 +1058,15 @@ function ShopDetailBody() {
                         </td>
 
                         <td className="px-5 py-4 text-right font-mono text-xs text-slate-600">
-                          {p.cylinder_weight} kg
+                          {fmtNumber(p.cylinder_weight, 2)} kg
                         </td>
 
                         <td className="px-5 py-4 text-right font-mono text-xs text-slate-600">
-                          -{p.wastage_kg} kg
+                          -{fmtNumber(p.wastage_kg, 2)} kg
                         </td>
 
                         <td className="px-5 py-4 text-right font-mono text-xs font-semibold text-slate-700">
-                          {p.saleable_kg} kg
+                          {fmtNumber(p.saleable_kg, 2)} kg
                         </td>
 
                         <td className="px-5 py-4 text-right font-mono text-xs text-slate-600">
@@ -1408,8 +1368,8 @@ function ShopDetailBody() {
                   </div>
 
                   <p className="mt-1 max-w-xl text-sm leading-6 text-slate-500">
-                    View loads, shop sales, payments, returns and
-                    adjustments in the complete transaction register.
+                    View loads, shop sales and payments in the complete
+                    transaction register.
                   </p>
 
                 </div>
@@ -1759,18 +1719,6 @@ function ShopDetailBody() {
       )}
 
 
-      {showAdjustment && (
-        <RecordShopAdjustmentModal
-          shopId={shopId}
-          onClose={() => setShowAdjustment(false)}
-          onSaved={() => {
-            setShowAdjustment(false);
-            load();
-          }}
-        />
-      )}
-
-
       {showExpense && (
         <RecordShopExpenseModal
           shopId={shopId}
@@ -1789,6 +1737,19 @@ function ShopDetailBody() {
           onClose={() => setShowAddCustomer(false)}
           onCreated={() => {
             setShowAddCustomer(false);
+            load();
+          }}
+        />
+      )}
+
+      {showEmergencyTransfer && (
+        <EmergencyTransferModal
+          shopId={shopId}
+          shopName={detail.customer.name}
+          stockProducts={detail.stock.products}
+          onClose={() => setShowEmergencyTransfer(false)}
+          onSaved={() => {
+            setShowEmergencyTransfer(false);
             load();
           }}
         />

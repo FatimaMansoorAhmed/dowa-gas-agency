@@ -4,9 +4,10 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.deps import require_active_user, require_csrf
 from app.utils import next_display_id
 
-router = APIRouter(prefix="/expenses", tags=["expenses"])
+router = APIRouter(prefix="/expenses", tags=["expenses"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
 @router.get("", response_model=list[schemas.ExpenseOut])
@@ -64,7 +65,10 @@ def list_expenses(
 
 
 @router.post("", response_model=schemas.ExpenseOut, status_code=201)
-def create_expense(payload: schemas.ExpenseCreate, db: Session = Depends(get_db)):
+def create_expense(
+    payload: schemas.ExpenseCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     category = db.query(models.ExpenseCategory).get(payload.category_id)
     if not category:
         raise HTTPException(404, "Expense category not found")
@@ -86,7 +90,7 @@ def create_expense(payload: schemas.ExpenseCreate, db: Session = Depends(get_db)
         vendor=payload.vendor,
         reference_no=payload.reference_no,
         status="active",
-        entered_by=payload.entered_by,
+        entered_by=current_user.name,
     )
     db.add(expense)
 

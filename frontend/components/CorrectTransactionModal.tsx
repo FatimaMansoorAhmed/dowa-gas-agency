@@ -5,7 +5,7 @@ import { Field, inputClass, Button } from "./ui";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { toKarachiDateString } from "@/lib/format";
-import type { PaymentAccount, Sale, Payment, Purchase, CompanyPayment, ShopSale, ShopSupplyCustomer } from "@/lib/types";
+import type { PaymentAccount, Sale, Payment, Purchase, CompanyPayment, ShopSale, ShopSupplyCustomer, ShopListRow } from "@/lib/types";
 
 export type CorrectableKind = "sale" | "payment" | "purchase" | "companyPayment" | "shopSale";
 
@@ -40,8 +40,18 @@ export default function CorrectTransactionModal({
     if (kind === "shopSale") {
       api.shops.customers.list((transaction as ShopSale).customer_id).then(setSupplyCustomers);
     }
+    // Emergency Transfer (§ Shop — Emergency Transfer) — only a Sale that
+    // was already an emergency transfer gets the shop selector; a normal
+    // Sale's correction form never offers to turn it into one.
+    if (kind === "sale" && (transaction as Sale).emergency_transfer_shop_id) {
+      api.shops.list().then(setShops);
+    }
   }, [kind]);
   const [supplyCustomers, setSupplyCustomers] = useState<ShopSupplyCustomer[]>([]);
+  const [shops, setShops] = useState<ShopListRow[]>([]);
+  const [emergencyTransferShopId, setEmergencyTransferShopId] = useState(
+    kind === "sale" ? (transaction as Sale).emergency_transfer_shop_id || "" : ""
+  );
 
   // Sale fields
   const sale = transaction as Sale;
@@ -121,6 +131,9 @@ export default function CorrectTransactionModal({
     date &&
     (kind === "sale" || kind === "purchase"
       ? parseFloat(quantity) > 0 && parseFloat(ratePerCylinder) > 0
+        // Once an emergency transfer, always needs a shop to draw from —
+        // the correction form never lets this be cleared to empty.
+        && (!sale.emergency_transfer_shop_id || !!emergencyTransferShopId)
       : kind === "shopSale"
       ? parseFloat(quantity) > 0 && (paymentType === "cash" || !!supplyCustomerId)
         && (paymentType === "cash" || (parseFloat(amountReceived) || 0) >= 0)
@@ -154,6 +167,7 @@ export default function CorrectTransactionModal({
           notes: notes || undefined,
           entered_by: user.name,
           cylinders_returned: parseFloat(cylindersReturned) || 0,
+          emergency_transfer_shop_id: emergencyTransferShopId || undefined,
           correction_reason: reason,
           corrected_by: user.name,
         });
@@ -269,6 +283,16 @@ export default function CorrectTransactionModal({
                     onChange={(e) => setCylindersReturned(e.target.value)}
                     className={inputClass}
                   />
+                </Field>
+              )}
+              {kind === "sale" && sale.emergency_transfer_shop_id && (
+                <Field label="Emergency Transfer — Shop">
+                  <select value={emergencyTransferShopId} onChange={(e) => setEmergencyTransferShopId(e.target.value)} className={inputClass}>
+                    <option value="">Select shop</option>
+                    {shops.map((s) => (
+                      <option key={s.customer.id} value={s.customer.id}>{s.customer.name}</option>
+                    ))}
+                  </select>
                 </Field>
               )}
               {kind === "purchase" && (

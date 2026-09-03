@@ -38,6 +38,16 @@ export const pkr = (n: number | string) => {
   return (neg ? "-" : "") + "Rs " + v.toLocaleString("en-US");
 };
 
+// Plain thousands-separated number, no "Rs " prefix — for quantities/kg/
+// weights/other non-currency figures. `decimals` preserves fractional
+// digits (e.g. a KG or cylinder-equivalent quantity) instead of pkr()'s
+// always-rounds-to-integer behavior, which is wrong for those values.
+export const fmtNumber = (n: number | string, decimals = 0) => {
+  const num = typeof n === "string" ? parseFloat(n) : n;
+  if (n === "" || n == null || isNaN(num)) return "";
+  return num.toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+};
+
 // Backend timestamps are sometimes naive (no trailing Z / offset) — e.g.
 // "2026-08-20T05:00:00". Without a timezone marker, `new Date(...)`
 // interprets that string as LOCAL time instead of UTC, so a naive UTC

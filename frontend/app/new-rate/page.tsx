@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { PlusCircle, Check, X } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, Th, Td } from "@/components/ui";
+import AmountInput from "@/components/AmountInput";
 import { api } from "@/lib/api";
 import { fmtTime, isSameKarachiDay } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
@@ -166,7 +167,7 @@ function NewRateBody() {
             </Field>
 
             <Field label="Rate — 11.8kg (domestic)">
-              <input type="number" value={rate118} onChange={(e) => setRate118(e.target.value)} placeholder="e.g. 3410" className={inputClass} />
+              <AmountInput value={rate118} onChange={setRate118} placeholder="e.g. 3410" className={inputClass} />
             </Field>
 
             <div className="flex justify-between items-center px-3 py-2.5 bg-paper rounded-lg border border-hairline">

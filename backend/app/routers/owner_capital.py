@@ -6,9 +6,10 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.deps import require_active_user, require_csrf
 from app.utils import next_display_id, resolve_account_or_bucket
 
-router = APIRouter(prefix="/owner-capital", tags=["owner-capital"])
+router = APIRouter(prefix="/owner-capital", tags=["owner-capital"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
 @router.get("", response_model=list[schemas.OwnerCapitalOut])
@@ -27,7 +28,10 @@ def list_owner_capital(
 
 
 @router.post("", response_model=schemas.OwnerCapitalOut, status_code=201)
-def create_owner_capital(payload: schemas.OwnerCapitalCreate, db: Session = Depends(get_db)):
+def create_owner_capital(
+    payload: schemas.OwnerCapitalCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     """Records owner capital injected into the business and routes it to
     exactly one destination — never both, never an unrelated Sale/Expense:
 
@@ -57,7 +61,7 @@ def create_owner_capital(payload: schemas.OwnerCapitalCreate, db: Session = Depe
             target_plant_id=None,
             notes=payload.notes,
             status="active",
-            entered_by=payload.entered_by,
+            entered_by=current_user.name,
         )
         db.add(capital)
 
@@ -88,7 +92,7 @@ def create_owner_capital(payload: schemas.OwnerCapitalCreate, db: Session = Depe
             target_plant_id=payload.target_plant_id,
             notes=payload.notes,
             status="active",
-            entered_by=payload.entered_by,
+            entered_by=current_user.name,
         )
         db.add(capital)
         db.flush()
@@ -111,7 +115,7 @@ def create_owner_capital(payload: schemas.OwnerCapitalCreate, db: Session = Depe
             notes=f"Owner Capital (Direct) — Re-Investment {capital.display_id}",
             excess_amount=excess_amount,
             status="active",
-            entered_by=payload.entered_by,
+            entered_by=current_user.name,
             source_owner_capital_id=capital.id,
         )
         db.add(company_payment)

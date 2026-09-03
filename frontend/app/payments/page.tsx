@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo } from "react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, Th, Td } from "@/components/ui";
+import AmountInput from "@/components/AmountInput";
 import { api } from "@/lib/api";
 import { pkr, fmtTime, todayLocalInput, resolveAccountLabel } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
@@ -509,10 +510,9 @@ function PaymentsBody() {
                 </Field>
 
                 <Field label="Total Credit / Payment Received (PKR)">
-                  <input
-                    type="number"
+                  <AmountInput
                     value={totalCreditReceived}
-                    onChange={(e) => setTotalCreditReceived(e.target.value)}
+                    onChange={setTotalCreditReceived}
                     placeholder="0"
                     className={`${inputClass} text-base font-mono font-bold text-teal`}
                   />
@@ -526,10 +526,9 @@ function PaymentsBody() {
 
                   <div className="grid grid-cols-2 gap-2">
                     <Field label="Home Expense (PKR)">
-                      <input
-                        type="number"
+                      <AmountInput
                         value={homeExpenseAmount}
-                        onChange={(e) => setHomeExpenseAmount(e.target.value)}
+                        onChange={setHomeExpenseAmount}
                         placeholder="0"
                         className={inputClass}
                       />
@@ -552,10 +551,9 @@ function PaymentsBody() {
                   </div>
 
                   <Field label="Owner Drawings Amount (PKR)">
-                    <input
-                      type="number"
+                    <AmountInput
                       value={ownerDrawingsAmount}
-                      onChange={(e) => setOwnerDrawingsAmount(e.target.value)}
+                      onChange={setOwnerDrawingsAmount}
                       placeholder="0"
                       className={inputClass}
                     />

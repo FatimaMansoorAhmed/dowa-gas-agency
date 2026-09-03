@@ -5,9 +5,10 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.deps import require_active_user, require_csrf
 from app.utils import next_display_id
 
-router = APIRouter(prefix="/company-payments", tags=["company-payments"])
+router = APIRouter(prefix="/company-payments", tags=["company-payments"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
 @router.get("", response_model=list[schemas.CompanyPaymentOut])
@@ -100,8 +101,11 @@ def _reverse_company_payment(db: Session, payment: models.CompanyPayment) -> Non
 
 
 @router.post("", response_model=schemas.CompanyPaymentOut, status_code=201)
-def create_company_payment(payload: schemas.CompanyPaymentCreate, db: Session = Depends(get_db)):
-    payment = _apply_company_payment(db, payload, payload.entered_by)
+def create_company_payment(
+    payload: schemas.CompanyPaymentCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
+    payment = _apply_company_payment(db, payload, current_user.name)
     db.commit()
     db.refresh(payment)
     return payment
@@ -128,7 +132,10 @@ def cancel_company_payment(payment_id: UUID, by: str = Query(...), db: Session =
 
 
 @router.patch("/{payment_id}/correct", response_model=schemas.CompanyPaymentOut)
-def correct_company_payment(payment_id: UUID, payload: schemas.CompanyPaymentCorrect, db: Session = Depends(get_db)):
+def correct_company_payment(
+    payment_id: UUID, payload: schemas.CompanyPaymentCorrect, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     """Ledger Correction (§1) — see correct_sale in routers/sales.py for
     the full pattern this mirrors."""
     if not payload.correction_reason.strip():
@@ -143,13 +150,13 @@ def correct_company_payment(payment_id: UUID, payload: schemas.CompanyPaymentCor
     _reverse_company_payment(db, original)
 
     original.status = "corrected"
-    original.corrected_by = payload.corrected_by
+    original.corrected_by = current_user.name
     original.corrected_at = datetime.utcnow()
     original.correction_reason = payload.correction_reason
     db.add(original)
     db.flush()
 
-    corrected = _apply_company_payment(db, payload, payload.corrected_by)
+    corrected = _apply_company_payment(db, payload, current_user.name)
     corrected.corrected_from_id = original.id
     db.add(corrected)
 

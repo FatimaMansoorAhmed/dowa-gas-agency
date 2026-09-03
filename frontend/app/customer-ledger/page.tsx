@@ -5,7 +5,7 @@ import { Search, PlusCircle, Pencil } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Th, Td, inputClass, BalanceTag, Button } from "@/components/ui";
 import { api } from "@/lib/api";
-import { pkr, fmtTime, todayLocalInput } from "@/lib/format";
+import { pkr, fmtTime, todayLocalInput, fmtNumber } from "@/lib/format";
 import ReceivePaymentModal from "@/components/ReceivePaymentModal";
 import CorrectTransactionModal, { CorrectableKind } from "@/components/CorrectTransactionModal";
 import PrintButton from "@/components/PrintButton";
@@ -143,7 +143,7 @@ function CustomerLedgerBody() {
                     amount={customerId === c.id && summary ? summary.closing_balance : c.current_balance}
                   />
                   <span className="font-mono text-[10px] text-steel">
-                    11.8k: {c.cylinder_balance_118 || 0}
+                    11.8k: {fmtNumber(c.cylinder_balance_118 || 0)}
                   </span>
                 </div>
               </button>
@@ -258,18 +258,18 @@ function CustomerLedgerBody() {
                     <Panel>
                       <Eyebrow>11.8 KG Sold</Eyebrow>
                       <div className="font-mono font-semibold text-base text-amber-600">
-                        {summary.total_118 || 0}
+                        {fmtNumber(summary.total_118 || 0)}
                       </div>
                     </Panel>
                     <Panel>
                       <Eyebrow>45.4 KG Sold</Eyebrow>
                       <div className="font-mono font-semibold text-base text-purple-600">
-                        {summary.total_454 || 0}
+                        {fmtNumber(summary.total_454 || 0)}
                       </div>
                     </Panel>
                     <Panel>
                       <Eyebrow>Total KG Sold</Eyebrow>
-                      <div className="font-mono font-semibold text-base text-ink">{summary.total_kg}</div>
+                      <div className="font-mono font-semibold text-base text-ink">{fmtNumber(summary.total_kg)}</div>
                     </Panel>
                     <Panel>
                       <Eyebrow>Total Ton</Eyebrow>
@@ -297,6 +297,7 @@ function CustomerLedgerBody() {
                           <Th>Date</Th>
                           <Th>ID</Th>
                           <Th>Description</Th>
+                          <Th right>Rate</Th>
                           <Th right>11.8 KG Sold</Th>
                           <Th right>45.4 KG Sold</Th>
                           <Th right>Sale</Th>
@@ -308,7 +309,7 @@ function CustomerLedgerBody() {
                       </thead>
                       <tbody>
                         <tr>
-                          <Td colSpan={7}>Opening balance</Td>
+                          <Td colSpan={8}>Opening balance</Td>
                           <Td right mono bold>
                             {pkr(summary.opening_balance)}
                           </Td>
@@ -319,6 +320,13 @@ function CustomerLedgerBody() {
                             <Td mono>{fmtTime(r.date)}</Td>
                             <Td mono>{r.display_id ?? ""}</Td>
                             <Td>{r.description}</Td>
+                            <Td right mono>
+                              {r.kind === "unified_sale" && r.unified_sale_rates?.length
+                                ? r.unified_sale_rates.map((rate) => pkr(rate)).join(", ")
+                                : r.rate_per_cylinder
+                                ? pkr(r.rate_per_cylinder)
+                                : "—"}
+                            </Td>
                             <Td right mono>{parseFloat(r.qty_118) ? r.qty_118 : "—"}</Td>
                             <Td right mono>{parseFloat(r.qty_454) ? r.qty_454 : "—"}</Td>
                             <Td right mono>
@@ -347,7 +355,7 @@ function CustomerLedgerBody() {
                         ))}
                         {!summary.rows.length && (
                           <tr>
-                            <td colSpan={10} className="text-steel font-body text-[13px] py-4 text-center">
+                            <td colSpan={11} className="text-steel font-body text-[13px] py-4 text-center">
                               No transactions this month.
                             </td>
                           </tr>

@@ -1,13 +1,15 @@
 from datetime import datetime
+from decimal import Decimal
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
-from app.utils import next_display_id, adjust_cylinder_balance
+from app.deps import require_active_user, require_csrf
+from app.utils import next_display_id, adjust_cylinder_balance, resync_unified_sale_batch_totals
 
-router = APIRouter(prefix="/sales", tags=["sales"])
+router = APIRouter(prefix="/sales", tags=["sales"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
 def _log(db: Session, entity_type: str, entity_id, action: str, by: str, field=None, old=None, new=None):
@@ -33,6 +35,70 @@ def list_sales(
         # SQLite (local dev) and Postgres (production) without dialect-specific date functions.
         rows = [r for r in rows if r.date.strftime("%Y-%m") == month]
     return rows
+
+
+def _consume_shop_stock_for_emergency_transfer(db: Session, sale: models.Sale, shop_id, product_id, quantity) -> None:
+    """FIFO-deducts `quantity` of `product_id` from `shop_id`'s existing
+    ShopStockBatch rows, oldest first — same loop pattern as
+    routers/shops.py's _apply_shop_sale, reused here rather than
+    duplicated by intent. Raises (before any commit) if the shop doesn't
+    have enough — the caller's transaction is never partially applied,
+    see _apply_sale/create_sale's single db.commit() at the very end."""
+    batches = (
+        db.query(models.ShopStockBatch)
+        .filter(
+            models.ShopStockBatch.customer_id == shop_id,
+            models.ShopStockBatch.product_id == product_id,
+            models.ShopStockBatch.status == "active",
+            models.ShopStockBatch.quantity_remaining > 0,
+        )
+        .order_by(models.ShopStockBatch.transaction_date.asc(), models.ShopStockBatch.created_at.asc())
+        .all()
+    )
+    available = sum((b.quantity_remaining for b in batches), start=Decimal("0"))
+    if available < quantity:
+        raise HTTPException(
+            400,
+            f"Insufficient stock at this shop for this product — only {available} cylinder(s) available, {quantity} requested",
+        )
+
+    remaining = quantity
+    for batch in batches:
+        if remaining <= 0:
+            break
+        take = min(batch.quantity_remaining, remaining)
+        batch.quantity_remaining = batch.quantity_remaining - take
+        db.add(batch)
+        db.add(models.EmergencyTransferBatchConsumption(sale_id=sale.id, shop_stock_batch_id=batch.id, quantity_consumed=take))
+        remaining -= take
+
+
+def _restore_shop_stock_for_emergency_transfer(db: Session, sale: models.Sale) -> None:
+    """Undoes exactly what _consume_shop_stock_for_emergency_transfer did —
+    restores quantity_remaining onto the EXACT original batches it was
+    taken from (never a new adjustment batch), so each batch's
+    transaction_date/created_at, and therefore its FIFO ordering, is
+    never disturbed by a correction or cancellation (confirmed design,
+    see routers/sales.py module notes)."""
+    consumptions = (
+        db.query(models.EmergencyTransferBatchConsumption)
+        .filter(models.EmergencyTransferBatchConsumption.sale_id == sale.id)
+        .all()
+    )
+    for c in consumptions:
+        batch = db.query(models.ShopStockBatch).get(c.shop_stock_batch_id)
+        if batch:
+            batch.quantity_remaining = batch.quantity_remaining + c.quantity_consumed
+            db.add(batch)
+        db.delete(c)
+    # This session is autoflush=False (database.py) — without an explicit
+    # flush here, a correction's immediately-following re-deduction query
+    # (_consume_shop_stock_for_emergency_transfer, run moments later in the
+    # SAME request) would issue its SELECT against the database before
+    # these UPDATEs/DELETEs are sent, reading stale pre-restore quantities
+    # and silently discarding the restoration. Confirmed by testing: this
+    # is exactly what happened before this flush was added.
+    db.flush()
 
 
 def _apply_sale(db: Session, payload: schemas.SaleCreate, entered_by: str) -> models.Sale:
@@ -71,6 +137,7 @@ def _apply_sale(db: Session, payload: schemas.SaleCreate, entered_by: str) -> mo
         notes=payload.notes,
         status="active",
         entered_by=entered_by,
+        emergency_transfer_shop_id=payload.emergency_transfer_shop_id,
     )
     db.add(sale)
     db.flush()  # assigns sale.id so the audit log row / cylinder txn can reference it
@@ -117,6 +184,15 @@ def _apply_sale(db: Session, payload: schemas.SaleCreate, entered_by: str) -> mo
         )
         db.add(batch)
 
+    # Emergency Transfer (§ Shop — Emergency Transfer) — mutually exclusive
+    # with the branch above by construction (the customer here is never a
+    # shop; validated in create_emergency_transfer). FIFO-deducts from the
+    # NAMED shop's existing stock instead of creating a new batch.
+    if payload.emergency_transfer_shop_id:
+        _consume_shop_stock_for_emergency_transfer(
+            db, sale, payload.emergency_transfer_shop_id, payload.product_id, payload.quantity
+        )
+
     return sale
 
 
@@ -159,11 +235,23 @@ def _reverse_sale(db: Session, sale: models.Sale, by: str) -> None:
         batch.status = "cancelled"
         db.add(batch)
 
+    # Emergency Transfer (§ Shop — Emergency Transfer) — restores stock
+    # into the exact original batches it was FIFO-deducted from (see
+    # _restore_shop_stock_for_emergency_transfer's docstring for why never
+    # a new adjustment batch). No availability guard needed here, unlike
+    # the Load-reversal branch above — giving stock back can never make it
+    # negative.
+    if sale.emergency_transfer_shop_id:
+        _restore_shop_stock_for_emergency_transfer(db, sale)
+
 
 @router.post("", response_model=schemas.SaleOut, status_code=201)
-def create_sale(payload: schemas.SaleCreate, db: Session = Depends(get_db)):
-    sale = _apply_sale(db, payload, payload.entered_by)
-    _log(db, "sale", sale.id, "create", payload.entered_by, new=str(sale.total_amount))
+def create_sale(
+    payload: schemas.SaleCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
+    sale = _apply_sale(db, payload, current_user.name)
+    _log(db, "sale", sale.id, "create", current_user.name, new=str(sale.total_amount))
     db.commit()
     db.refresh(sale)
     return sale
@@ -194,7 +282,10 @@ def cancel_sale(sale_id: UUID, by: str = Query(...), db: Session = Depends(get_d
 
 
 @router.patch("/{sale_id}/correct", response_model=schemas.SaleOut)
-def correct_sale(sale_id: UUID, payload: schemas.SaleCorrect, db: Session = Depends(get_db)):
+def correct_sale(
+    sale_id: UUID, payload: schemas.SaleCorrect, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     """Ledger Correction (§1): reverses this sale's effect, marks it
     "corrected" (kept forever, never deleted), and posts a brand-new Sale
     with the corrected values — traceable back via corrected_from_id."""
@@ -207,20 +298,32 @@ def correct_sale(sale_id: UUID, payload: schemas.SaleCorrect, db: Session = Depe
     if original.status != "active":
         raise HTTPException(400, "Only an active sale can be corrected")
 
-    _reverse_sale(db, original, payload.corrected_by)
+    _reverse_sale(db, original, current_user.name)
 
     original.status = "corrected"
-    original.corrected_by = payload.corrected_by
+    original.corrected_by = current_user.name
     original.corrected_at = datetime.utcnow()
     original.correction_reason = payload.correction_reason
     db.add(original)
     db.flush()
 
-    corrected = _apply_sale(db, payload, payload.corrected_by)
+    corrected = _apply_sale(db, payload, current_user.name)
     corrected.corrected_from_id = original.id
+    # _apply_sale has no way to know this — SaleCreate/SaleCorrect carry no
+    # unified_sale_id field (it's not something the correction form lets
+    # anyone edit). Without this, correcting a Unified-Sale-originated Sale
+    # silently detaches the repost from its batch: the batch's own line-item
+    # list (get_unified_sale) loses the row, and the customer ledger's
+    # kind="unified_sale" aggregate row drops its rate — while the repost
+    # shows up as an orphaned standalone kind="sale" ledger line instead
+    # (routers/ledger.py filters sales by unified_sale_id.is_(None) to pick
+    # which bucket a Sale belongs in).
+    corrected.unified_sale_id = original.unified_sale_id
     db.add(corrected)
+    db.flush()
+    resync_unified_sale_batch_totals(db, corrected.unified_sale_id)
 
-    _log(db, "sale", original.id, "correct", payload.corrected_by, old=str(original.total_amount), new=str(corrected.total_amount))
+    _log(db, "sale", original.id, "correct", current_user.name, old=str(original.total_amount), new=str(corrected.total_amount))
 
     db.commit()
     db.refresh(corrected)

@@ -4,8 +4,9 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.deps import require_active_user, require_csrf
 
-router = APIRouter(prefix="/expense-categories", tags=["expense-categories"])
+router = APIRouter(prefix="/expense-categories", tags=["expense-categories"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
 @router.get("", response_model=list[schemas.ExpenseCategoryOut])

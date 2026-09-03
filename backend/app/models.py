@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    Column, String, Numeric, DateTime, ForeignKey, UniqueConstraint,
+    Column, String, Numeric, DateTime, ForeignKey, UniqueConstraint, Boolean, Integer,
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import relationship
@@ -268,6 +268,18 @@ class Sale(Base):
 
     unified_sale_id = Column(GUID(), ForeignKey("unified_sale_batches.id"), nullable=True)
 
+    # Emergency Transfer (§ Shop — Emergency Transfer) — null for every
+    # ordinary sale. When set, this Sale's cylinders were drawn from THIS
+    # shop's own existing FIFO stock (see EmergencyTransferBatchConsumption)
+    # rather than a new plant Load — the customer is a real, non-shop
+    # Customer row; company_id stays null since there's no plant-purchase
+    # counterpart. Tags the row for Customer Ledger display
+    # (routers/ledger.py) and drives the extra FIFO restore/re-deduct
+    # branches in _apply_sale/_reverse_sale (routers/sales.py) — reusing
+    # the exact same create/correct/cancel endpoints every other Sale uses,
+    # not a parallel transaction type.
+    emergency_transfer_shop_id = Column(GUID(), ForeignKey("customers.id"), nullable=True)
+
     status = Column(String, nullable=False, default="active")  # active | cancelled | reversed | corrected
     entered_by = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -284,7 +296,10 @@ class Sale(Base):
     correction_reason = Column(String, nullable=True)
     corrected_from_id = Column(GUID(), nullable=True)
 
-    customer = relationship("Customer")
+    # foreign_keys= required on both — two FKs to customers.id (customer_id,
+    # emergency_transfer_shop_id) makes the join ambiguous otherwise.
+    customer = relationship("Customer", foreign_keys=[customer_id])
+    emergency_transfer_shop = relationship("Customer", foreign_keys=[emergency_transfer_shop_id])
     product = relationship("Product")
     company = relationship("Company")
 
@@ -785,10 +800,9 @@ class ShopStockBatch(Base):
     quantity_remaining is a LIVE, FIFO-mutated counter used only to decide
     which batch a ShopSale draws from next — it is never the source for
     period/historical stock reporting (see ShopSale/reporting, which always
-    sums the immutable quantity_received/ShopSale.quantity/
-    ShopStockAdjustment.quantity_delta logs instead, mirroring how
-    routers/ledger.py derives opening balances from summed history rather
-    than a stored running field)."""
+    sums the immutable quantity_received/ShopSale.quantity logs instead,
+    mirroring how routers/ledger.py derives opening balances from summed
+    history rather than a stored running field)."""
     __tablename__ = "shop_stock_batches"
 
     id = Column(GUID(), primary_key=True, default=gen_uuid)
@@ -907,32 +921,23 @@ class ShopSaleBatchConsumption(Base):
     quantity_consumed = Column(Numeric(10, 4), nullable=False)  # 4dp — see ShopStockBatch.quantity_remaining
 
 
-class ShopStockAdjustment(Base):
-    """A standalone Return/Adjustment stock movement for a shop — kept
-    deliberately simple: it does NOT create, consume, or otherwise touch
-    any ShopStockBatch/FIFO layer (that interaction is intentionally left
-    undefined until the business rule for it is decided). It only ever
-    contributes its own signed quantity_delta as an independent term in
-    the derived Closing Stock formula (Opening + Load + Adjustments −
-    Sales) — stock-only, never touches any money/balance field."""
-    __tablename__ = "shop_stock_adjustments"
+class EmergencyTransferBatchConsumption(Base):
+    """Same purpose as ShopSaleBatchConsumption, mirrored for Emergency
+    Transfer (§ Shop — Emergency Transfer): records exactly which
+    ShopStockBatch row(s) an emergency-transfer Sale drew from via FIFO,
+    and how much. Reversing (cancel or the reverse-half of a correct)
+    restores quantity_remaining onto these EXACT original batches — never
+    a newly created adjustment batch — so a batch's transaction_date/
+    created_at (and therefore its FIFO ordering) is never disturbed by a
+    correction/cancellation. A dedicated table rather than reusing
+    ShopSaleBatchConsumption because that one's FK is specifically to
+    shop_sales.id, not sales.id."""
+    __tablename__ = "emergency_transfer_batch_consumptions"
 
     id = Column(GUID(), primary_key=True, default=gen_uuid)
-    display_id = Column(String, unique=True, nullable=False)  # e.g. SHADJ-000123
-    date = Column(DateTime, nullable=False)
-    customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
-    product_id = Column(GUID(), ForeignKey("products.id"), nullable=False)
-    adjustment_type = Column(String, nullable=False)  # "return" | "adjustment"
-    quantity_delta = Column(Numeric(10, 2), nullable=False)  # signed: +in / -out
-    reason = Column(String, nullable=True)
-    status = Column(String, nullable=False, default="active")
-    entered_by = Column(String, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    modified_at = Column(DateTime, nullable=True)
-    modified_by = Column(String, nullable=True)
-
-    customer = relationship("Customer")
-    product = relationship("Product")
+    sale_id = Column(GUID(), ForeignKey("sales.id"), nullable=False)
+    shop_stock_batch_id = Column(GUID(), ForeignKey("shop_stock_batches.id"), nullable=False)
+    quantity_consumed = Column(Numeric(10, 4), nullable=False)  # 4dp — see ShopStockBatch.quantity_remaining
 
 
 # ============================================================
@@ -1067,3 +1072,73 @@ class ShopExpenseLine(Base):
 
     transaction = relationship("ShopExpenseTransaction", back_populates="lines")
     category = relationship("ExpenseCategory")
+
+
+# ---------- Authentication (§ Auth Module) ----------
+class User(Base):
+    """A real account. `role` is informational/UI only — access control is
+    entirely by `status`, never by role (both roles get identical API
+    access once active). See routers/auth.py, routers/users.py, deps.py."""
+    __tablename__ = "users"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=False, unique=True)
+    password_hash = Column(String, nullable=False)  # Argon2id, via argon2-cffi
+    role = Column(String, nullable=False, default="staff")  # "owner" | "staff"
+    status = Column(String, nullable=False, default="pending")  # pending | active | suspended | rejected
+    # Reserved — no verification email is sent this phase (no mail library
+    # in requirements.txt); never checked by any auth dependency. Present
+    # only because the spec calls for the column; do not wire this to
+    # gate access without also building the actual send-a-verification-
+    # email flow first.
+    email_verified = Column(Boolean, nullable=False, default=False)
+    # Per-account login lockout (§ rate limiting) — reset to 0/None on
+    # every successful login.
+    failed_login_count = Column(Integer, nullable=False, default=0)
+    locked_until = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    approved_at = Column(DateTime, nullable=True)
+    approved_by = Column(GUID(), ForeignKey("users.id"), nullable=True)
+    last_login_at = Column(DateTime, nullable=True)
+
+
+class UserSession(Base):
+    """A DB-backed session — checked live on every protected request, so a
+    suspended user is blocked on their very next request, not just their
+    next login (§ session mechanism). Never a JWT/stateless token."""
+    __tablename__ = "user_sessions"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    user_id = Column(GUID(), ForeignKey("users.id"), nullable=False)
+    # sha256 of the raw cookie token — the raw token itself only ever
+    # exists in the httpOnly cookie and in-flight, never at rest, so a
+    # DB-only leak (backup, read replica) can't be replayed as a live
+    # session.
+    token_hash = Column(String, nullable=False, unique=True, index=True)
+    # Returned in the login/`/auth/me` JSON body, never as a cookie —
+    # see deps.py's CSRF check.
+    csrf_token = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)  # created_at + 14 days, fixed
+    revoked_at = Column(DateTime, nullable=True)
+    user_agent = Column(String, nullable=True)
+    ip_address = Column(String, nullable=True)
+
+
+class UserAccessAudit(Base):
+    """Every account state change AND every login/logout — mirrors the
+    existing AuditLog convention above, kept as its own table since this
+    tracks account/access events, not financial edits."""
+    __tablename__ = "user_access_audit"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    # Nullable: a login_failed attempt against a nonexistent email has no
+    # user to attach to — this is also exactly the case per-IP rate
+    # limiting needs to catch.
+    user_id = Column(GUID(), ForeignKey("users.id"), nullable=True)
+    action = Column(String, nullable=False)  # register|approve|reject|suspend|reactivate|login|login_failed|logout
+    performed_by = Column(GUID(), ForeignKey("users.id"), nullable=True)
+    reason = Column(String, nullable=True)
+    ip_address = Column(String, nullable=True)  # populated on login/login_failed rows — drives per-IP rate limiting
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

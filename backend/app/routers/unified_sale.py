@@ -7,9 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.deps import require_active_user, require_csrf
 from app.utils import next_display_id, resolve_account_or_bucket
 
-router = APIRouter(prefix="/sales", tags=["unified-sale"])
+router = APIRouter(prefix="/sales", tags=["unified-sale"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 EPSILON = Decimal("0.01")  # rounding tolerance for the settlement-sum check
 
@@ -104,7 +105,7 @@ def _sync_legacy_status(batch: models.UnifiedSaleBatch) -> None:
         batch.status = "pending"
 
 
-def _create_pending_children(db: Session, payload: schemas.UnifiedSaleCreate, batch, products_by_id):
+def _create_pending_children(db: Session, payload: schemas.UnifiedSaleCreate, batch, products_by_id, entered_by: str):
     """Creates Sale/Purchase/CompanyPayment/Expense/OwnerDrawings rows with
     status='pending' and unified_sale_id set — none of these touch any
     balance yet. That only happens on /approve.
@@ -129,7 +130,7 @@ def _create_pending_children(db: Session, payload: schemas.UnifiedSaleCreate, ba
             rate_per_kg=round(item.selling_rate / product.weight_kg, 2) if product.weight_kg else None,
             rate_per_cylinder=item.selling_rate, total_amount=item.quantity * item.selling_rate,
             gate_pass_no=payload.gate_pass_no, vehicle_no=payload.vehicle_no, notes=payload.notes,
-            status="pending", entered_by=payload.entered_by, unified_sale_id=batch.id,
+            status="pending", entered_by=entered_by, unified_sale_id=batch.id,
         )
         db.add(sale)
         db.flush()
@@ -143,7 +144,7 @@ def _create_pending_children(db: Session, payload: schemas.UnifiedSaleCreate, ba
             rate_per_kg=round(item.purchase_rate / product.weight_kg, 2) if product.weight_kg else None,
             rate_per_cylinder=item.purchase_rate, total_amount=item.quantity * item.purchase_rate,
             gate_pass_no=payload.gate_pass_no, vehicle_no=payload.vehicle_no, notes=payload.notes,
-            status="pending", entered_by=payload.entered_by, unified_sale_id=batch.id,
+            status="pending", entered_by=entered_by, unified_sale_id=batch.id,
         )
         db.add(purchase)
         db.flush()
@@ -158,7 +159,7 @@ def _create_pending_children(db: Session, payload: schemas.UnifiedSaleCreate, ba
             date=payload.date, company_id=batch.target_plant_id, amount=net_plant_payment,
             method="direct_settlement", account_id=None,
             notes=f"3-way settlement via Unified Sale {batch.display_id} — customer paid plant directly",
-            status="pending", entered_by=payload.entered_by, unified_sale_id=batch.id,
+            status="pending", entered_by=entered_by, unified_sale_id=batch.id,
         )
         db.add(plant_payment)
         db.flush()
@@ -169,7 +170,7 @@ def _create_pending_children(db: Session, payload: schemas.UnifiedSaleCreate, ba
             display_id=next_display_id(db, models.Expense, "EXP", width=6),
             date=payload.date, category_id=s.home_expense_category_id, amount=s.home_expense_amount,
             account_id=None, method="cash", description=f"Auto-created from Unified Sale {batch.display_id}",
-            status="pending", entered_by=payload.entered_by, unified_sale_id=batch.id,
+            status="pending", entered_by=entered_by, unified_sale_id=batch.id,
         )
         db.add(expense)
         db.flush()
@@ -180,7 +181,7 @@ def _create_pending_children(db: Session, payload: schemas.UnifiedSaleCreate, ba
             display_id=next_display_id(db, models.OwnerDrawings, "DRAW", width=6),
             date=payload.date, amount=s.owner_drawings_amount, account_id=None,
             notes=f"Auto-created from Unified Sale {batch.display_id}",
-            status="pending", entered_by=payload.entered_by, unified_sale_id=batch.id,
+            status="pending", entered_by=entered_by, unified_sale_id=batch.id,
         )
         db.add(owner_drawing)
         db.flush()
@@ -276,7 +277,10 @@ def get_unified_sale(unified_sale_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/unified", response_model=schemas.UnifiedSaleOut, status_code=201)
-def create_unified_sale(payload: schemas.UnifiedSaleCreate, db: Session = Depends(get_db)):
+def create_unified_sale(
+    payload: schemas.UnifiedSaleCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     """Creates a PENDING Unified Sale."""
     customer, company, products_by_id, destination_type, target_plant_id, account_id = _validate_and_load(db, payload)
 
@@ -308,12 +312,12 @@ def create_unified_sale(payload: schemas.UnifiedSaleCreate, db: Session = Depend
             status="pending",
             sale_status="pending",
             payment_status="pending",
-            entered_by=payload.entered_by,
+            entered_by=current_user.name,
         )
         db.add(batch)
         db.flush()
 
-        sales, purchases, payment, expense, owner_drawing = _create_pending_children(db, payload, batch, products_by_id)
+        sales, purchases, payment, expense, owner_drawing = _create_pending_children(db, payload, batch, products_by_id, current_user.name)
         db.commit()
 
     except HTTPException:
@@ -328,7 +332,10 @@ def create_unified_sale(payload: schemas.UnifiedSaleCreate, db: Session = Depend
 
 
 @router.put("/unified/{unified_sale_id}", response_model=schemas.UnifiedSaleOut)
-def edit_unified_sale(unified_sale_id: UUID, payload: schemas.UnifiedSaleEdit, db: Session = Depends(get_db)):
+def edit_unified_sale(
+    unified_sale_id: UUID, payload: schemas.UnifiedSaleEdit, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     """Only allowed while PENDING."""
     batch = db.query(models.UnifiedSaleBatch).get(unified_sale_id)
     if not batch:
@@ -368,7 +375,7 @@ def edit_unified_sale(unified_sale_id: UUID, payload: schemas.UnifiedSaleEdit, d
         db.add(batch)
         db.flush()
 
-        sales, purchases, payment, expense, owner_drawing = _create_pending_children(db, payload, batch, products_by_id)
+        sales, purchases, payment, expense, owner_drawing = _create_pending_children(db, payload, batch, products_by_id, current_user.name)
         db.commit()
     except HTTPException:
         db.rollback()

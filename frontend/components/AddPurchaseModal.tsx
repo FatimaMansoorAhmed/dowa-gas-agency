@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { X, Check, PlusCircle } from "lucide-react";
 import { Field, inputClass, Button } from "./ui";
+import AmountInput from "./AmountInput";
 import NewPlantModal from "./NewPlantModal";
 import { api } from "@/lib/api";
 import { pkr, todayLocalInput } from "@/lib/format";
@@ -206,21 +207,21 @@ const isoDate = fullDateTime.toISOString();
             <div className="flex flex-col gap-2">
               <div className="font-mono text-[10.5px] tracking-wide uppercase text-steel">11.8 KG</div>
               <input type="number" value={qty118} onChange={(e) => setQty118(e.target.value)} placeholder="Qty" className={inputClass} />
-              <input type="number" value={rate118} onChange={(e) => handleRate118Change(e.target.value)} placeholder="Rate / cylinder" className={inputClass} />
+              <AmountInput value={rate118} onChange={handleRate118Change} placeholder="Rate / cylinder" className={inputClass} />
               <div className="font-mono text-xs text-teal font-semibold">{cylinderTotal118 > 0 ? pkr(cylinderTotal118) : "—"}</div>
             </div>
             <div className="flex flex-col gap-2">
               <div className="font-mono text-[10.5px] tracking-wide uppercase text-steel">45.4 KG</div>
               <input type="number" value={qty454} onChange={(e) => setQty454(e.target.value)} placeholder="Qty" className={inputClass} />
-              <input type="number" value={rate454} onChange={(e) => setRate454(e.target.value)} placeholder="Rate / cylinder" className={inputClass} />
+              <AmountInput value={rate454} onChange={setRate454} placeholder="Rate / cylinder" className={inputClass} />
               <div className="font-mono text-xs text-teal font-semibold">{cylinderTotal454 > 0 ? pkr(cylinderTotal454) : "—"}</div>
             </div>
           </div>
 
           <div className="grid grid-cols-3 gap-3">
-            <Field label="Additional Charges"><input type="number" value={additionalCharges} onChange={(e) => setAdditionalCharges(e.target.value)} placeholder="0" className={inputClass} /></Field>
-            <Field label="Transport Charges"><input type="number" value={transportCharges} onChange={(e) => setTransportCharges(e.target.value)} placeholder="0" className={inputClass} /></Field>
-            <Field label="Other Charges"><input type="number" value={otherCharges} onChange={(e) => setOtherCharges(e.target.value)} placeholder="0" className={inputClass} /></Field>
+            <Field label="Additional Charges"><AmountInput value={additionalCharges} onChange={setAdditionalCharges} placeholder="0" className={inputClass} /></Field>
+            <Field label="Transport Charges"><AmountInput value={transportCharges} onChange={setTransportCharges} placeholder="0" className={inputClass} /></Field>
+            <Field label="Other Charges"><AmountInput value={otherCharges} onChange={setOtherCharges} placeholder="0" className={inputClass} /></Field>
           </div>
 
           <div className="flex justify-between items-center px-3 py-2.5 bg-ink rounded-lg">

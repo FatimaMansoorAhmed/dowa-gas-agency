@@ -5,9 +5,10 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.deps import require_active_user, require_csrf
 from app.utils import next_display_id, adjust_cylinder_balance
 
-router = APIRouter(prefix="/cylinder-transactions", tags=["cylinder-transactions"])
+router = APIRouter(prefix="/cylinder-transactions", tags=["cylinder-transactions"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
 @router.get("", response_model=list[schemas.CylinderTransactionOut])
@@ -37,7 +38,10 @@ def list_balances(customer_id: UUID | None = Query(None), db: Session = Depends(
 
 
 @router.post("", response_model=schemas.CylinderTransactionOut, status_code=201)
-def create_cylinder_transaction(payload: schemas.CylinderTransactionCreate, db: Session = Depends(get_db)):
+def create_cylinder_transaction(
+    payload: schemas.CylinderTransactionCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     """Standalone entry — a customer dropping off empties or collecting
     filled cylinders outside of a sale. Sales create their own linked row
     via POST /sales; this endpoint always leaves sale_id null."""
@@ -61,7 +65,7 @@ def create_cylinder_transaction(payload: schemas.CylinderTransactionCreate, db: 
         qty_in=payload.qty_in,
         notes=payload.notes,
         status="active",
-        entered_by=payload.entered_by,
+        entered_by=current_user.name,
     )
     db.add(txn)
     adjust_cylinder_balance(db, payload.customer_id, payload.product_id, payload.qty_out - payload.qty_in)

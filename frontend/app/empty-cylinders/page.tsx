@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Search, X, AlertTriangle } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, Th, Td } from "@/components/ui";
+import AmountInput from "@/components/AmountInput";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import type { Customer } from "@/lib/types";
@@ -296,11 +297,9 @@ function EmptyCylindersBody() {
                 />
               </Field>
               <Field label="Sale Amount (PKR)">
-                <input
-                  type="number"
-                  min="0"
+                <AmountInput
                   value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
+                  onChange={setAmount}
                   className={inputClass}
                 />
               </Field>

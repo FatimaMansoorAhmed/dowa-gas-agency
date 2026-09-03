@@ -1,12 +1,80 @@
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 export const API_BASE = BASE;
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+// CSRF token (§ Auth Module) — handed to us only in the login/`/auth/me`
+// JSON response body, never as a cookie (a cross-site attacker's forged
+// request can carry the session cookie but can't read that response, per
+// Same-Origin Policy, so it can't know this value). Kept in memory only —
+// lib/auth.tsx sets it after login/hydration, never persisted to storage.
+let csrfToken: string | null = null;
+export function setCsrfToken(token: string | null) {
+  csrfToken = token;
+}
+
+// Set by lib/auth.tsx so ANY 401/403 (not just the initial /auth/me
+// hydration) resyncs local auth state against the server's real, current
+// session — a suspended user's very next request anywhere in the app, or
+// (§ stale-tab bug) a tab whose React state still shows an old identity
+// after a different account logged in elsewhere in the same browser
+// (cookies are shared across tabs, but in-memory `user` state isn't —
+// nothing previously resynced it on a plain role/permission 403, only on
+// a CSRF-flavored one, so a tab could go on showing "Owner" indefinitely
+// after the real cookie became a staff session in another tab). Called
+// with the fetched /auth/me payload so callers always get the true
+// current identity, never a guess.
+let onAuthResync: ((me: { authenticated: boolean; user?: unknown; csrf_token?: string }) => void) | null = null;
+export function setAuthResyncHandler(handler: typeof onAuthResync) {
+  onAuthResync = handler;
+}
+
+async function fetchMe(): Promise<{ authenticated: boolean; user?: unknown; csrf_token?: string }> {
+  const res = await fetch(`${BASE}/auth/me`, { credentials: "include", cache: "no-store" });
+  return res.json();
+}
+
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+async function request<T>(path: string, options?: RequestInit, _retried = false): Promise<T> {
+  const method = (options?.method || "GET").toUpperCase();
+  const headers: Record<string, string> = { "Content-Type": "application/json", ...(options?.headers as Record<string, string> || {}) };
+  if (MUTATING_METHODS.has(method) && csrfToken) {
+    headers["X-CSRF-Token"] = csrfToken;
+  }
+
   const res = await fetch(`${BASE}${path}`, {
     ...options,
-    headers: { "Content-Type": "application/json", ...(options?.headers || {}) },
+    headers,
+    credentials: "include",
     cache: "no-store",
   });
+
+  if (res.status === 401) {
+    const me = await fetchMe().catch(() => ({ authenticated: false as const }));
+    onAuthResync?.(me);
+    const body = await res.text();
+    throw new Error(`API ${path} failed (401): ${body}`);
+  }
+
+  if (res.status === 403 && !_retried) {
+    const bodyText = await res.text();
+    const me = await fetchMe().catch(() => ({ authenticated: false as const }));
+    onAuthResync?.(me);
+    if (bodyText.includes("CSRF") && me.authenticated && me.csrf_token) {
+      // Stale in-memory token specifically (e.g. another tab logged out
+      // and back in) — the resynced identity is still valid, so retry
+      // this exact request once with the fresh token rather than
+      // surfacing a confusing CSRF error for what's really a timing gap.
+      setCsrfToken(me.csrf_token);
+      return request<T>(path, options, true);
+    }
+    // Any other 403 (role/permission denial, e.g. "Owner access
+    // required") means the REAL current session genuinely can't do
+    // this — onAuthResync above already corrected local state so the UI
+    // reflects who's actually logged in; still throw so the caller's
+    // error handling surfaces it.
+    throw new Error(`API ${path} failed (403): ${bodyText}`);
+  }
+
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`API ${path} failed (${res.status}): ${body}`);
@@ -20,9 +88,9 @@ import type {
   CompanyLedgerSummary, PlantLedgerSummaryRow, CylinderTransaction, CylinderBalance, OwnerDrawing, UnifiedSaleBatch, UnifiedSaleResult, DestinationType,
   AccountType, AccountTransferResult, CylinderTransactionCreate, CustomerCombinedLedger, EmptyCylinderSale,
   OwnerCapital, OwnerCapitalDestination, DailyReportData, GeneratedReport, SendWhatsAppResult,
-  BoardRate, ShopListRow, ShopDetailOut, ShopSale, ShopStockAdjustment, ShopStockBatch,
+  BoardRate, ShopListRow, ShopDetailOut, ShopSale, ShopStockBatch,
   ShopSupplyCustomer, ShopCustomerPayment, ShopExpenseTransaction, ShopBusinessLedgerOut,
-  AccountTransferRecord,
+  AccountTransferRecord, User, UserAccessAuditRow,
 } from "./types";
 
 export const api = {
@@ -113,6 +181,7 @@ export const api = {
       date: string; customer_id: string; product_id: string; company_id?: string;
       quantity: number; rate_per_cylinder: number; gate_pass_no?: string;
       vehicle_no?: string; notes?: string; entered_by: string; cylinders_returned?: number;
+      emergency_transfer_shop_id?: string;
     }) => request<Sale>("/sales", { method: "POST", body: JSON.stringify(payload) }),
     cancel: (id: string, by: string) => request<Sale>(`/sales/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
     // Ledger Correction (§1): reverses this sale, marks it "corrected"
@@ -122,7 +191,21 @@ export const api = {
       quantity: number; rate_per_cylinder: number; gate_pass_no?: string;
       vehicle_no?: string; notes?: string; entered_by: string; cylinders_returned?: number;
       correction_reason: string; corrected_by: string;
+      emergency_transfer_shop_id?: string;
     }) => request<Sale>(`/sales/${id}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
+  },
+  // Emergency Transfer (§ Shop — Emergency Transfer) — a real (non-shop)
+  // customer needs cylinders urgently and is directed to a shop instead
+  // of a plant. Posts a genuine Sale (see api.sales above for correct/
+  // cancel — reused as-is, no separate endpoints needed) while drawing
+  // physical stock from the named shop's own FIFO stock.
+  emergencyTransfer: {
+    create: (payload: {
+      date: string; customer_id: string; shop_id: string; product_id: string;
+      quantity: number; rate_per_cylinder: number; notes?: string;
+      amount_collected_now?: number; payment_method?: "cash" | "bank_transfer" | "cheque" | "online" | "other";
+      destination_account_id?: string;
+    }) => request<Sale>("/sales/emergency-transfer", { method: "POST", body: JSON.stringify(payload) }),
   },
   payments: {
     list: (params?: { customer_id?: string; month?: string }) => {
@@ -431,12 +514,6 @@ export const api = {
       notes?: string; entered_by: string;
       correction_reason: string; corrected_by: string;
     }) => request<ShopSale>(`/shops/sales/${saleId}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
-    createAdjustment: (shopId: string, payload: {
-      date: string; product_id: string; adjustment_type: "return" | "adjustment";
-      quantity_delta: number; reason?: string; entered_by: string;
-    }) => request<ShopStockAdjustment>(`/shops/${shopId}/adjustments`, { method: "POST", body: JSON.stringify(payload) }),
-    cancelAdjustment: (adjustmentId: string, by: string) =>
-      request<ShopStockAdjustment>(`/shops/adjustments/${adjustmentId}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
 
     // ---- Engine 3: Shop Business Finance ----
     customers: {
@@ -469,5 +546,17 @@ export const api = {
       const q = new URLSearchParams(params as Record<string, string>).toString();
       return request<ShopBusinessLedgerOut>(`/shops/${shopId}/business-ledger${q ? `?${q}` : ""}`);
     },
+  },
+  users: {
+    list: (status?: string) => request<User[]>(`/users${status ? `?status=${status}` : ""}`),
+    audit: (userId: string) => request<UserAccessAuditRow[]>(`/users/${userId}/audit`),
+    approve: (userId: string, role: "owner" | "staff") =>
+      request<User>(`/users/${userId}/approve`, { method: "PATCH", body: JSON.stringify({ role }) }),
+    reject: (userId: string, reason?: string) =>
+      request<User>(`/users/${userId}/reject`, { method: "PATCH", body: JSON.stringify({ reason }) }),
+    suspend: (userId: string, reason?: string) =>
+      request<User>(`/users/${userId}/suspend`, { method: "PATCH", body: JSON.stringify({ reason }) }),
+    reactivate: (userId: string) =>
+      request<User>(`/users/${userId}/reactivate`, { method: "PATCH" }),
   },
 };

@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 
 import { Field, inputClass, Button } from "./ui";
+import AmountInput from "./AmountInput";
+import ExpenseWithdrawLines, { ExpenseLine, expenseLinesValid, hasFilledExpenseLines, toExpenseLinesPayload } from "./ExpenseWithdrawLines";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { todayLocalInput, pkr } from "@/lib/format";
@@ -22,6 +24,7 @@ import type {
   ShopSupplyCustomer,
   PaymentAccount,
   ShopProductStockSummary,
+  ExpenseCategory,
 } from "@/lib/types";
 
 /**
@@ -69,6 +72,9 @@ export default function RecordShopSaleModal({
 
   const [notes, setNotes] = useState("");
 
+  const [categories, setCategories] = useState<ExpenseCategory[]>([]);
+  const [expenseLines, setExpenseLines] = useState<ExpenseLine[]>([]);
+
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -83,6 +89,8 @@ export default function RecordShopSaleModal({
       );
     });
   }, []);
+
+  useEffect(() => { api.expenseCategories.list().then(setCategories); }, []);
 
   useEffect(() => {
     api.shops.customers.list(shopId).then(setCustomers);
@@ -149,7 +157,8 @@ export default function RecordShopSaleModal({
       !!supplyCustomerId) &&
     (paymentType === "cash" ||
       !receivePayment ||
-      parseFloat(amountReceived) > 0);
+      parseFloat(amountReceived) > 0) &&
+    expenseLinesValid(expenseLines);
 
   /* -------------------------------------------------------------
      SUBMIT
@@ -204,6 +213,14 @@ export default function RecordShopSaleModal({
         notes: notes || undefined,
         entered_by: user.name,
       });
+
+      if (hasFilledExpenseLines(expenseLines)) {
+        await api.shops.expenses.create(shopId, {
+          date: isoDate,
+          lines: toExpenseLinesPayload(expenseLines),
+          entered_by: user.name,
+        });
+      }
 
       onSaved();
     } catch (e: any) {
@@ -733,16 +750,9 @@ export default function RecordShopSaleModal({
 
                         <Field label="Amount Received">
 
-                          <input
-                            type="number"
-                            min="0"
-                            step="any"
+                          <AmountInput
                             value={amountReceived}
-                            onChange={(e) =>
-                              setAmountReceived(
-                                e.target.value
-                              )
-                            }
+                            onChange={setAmountReceived}
                             placeholder="e.g. 20000"
                             className={`${inputClass} h-12`}
                           />
@@ -862,6 +872,14 @@ export default function RecordShopSaleModal({
 
               </Field>
 
+            </section>
+
+            {/* =================================================
+                EXPENSE / WITHDRAWAL (optional)
+            ================================================== */}
+
+            <section>
+              <ExpenseWithdrawLines lines={expenseLines} onChange={setExpenseLines} categories={categories} />
             </section>
 
             {/* =================================================

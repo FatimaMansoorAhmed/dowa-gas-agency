@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Search, ChevronRight, X, AlertTriangle, Plus } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, Field, inputClass, Button, Th, Td, BalanceTag } from "@/components/ui";
+import AmountInput from "@/components/AmountInput";
 import { api } from "@/lib/api";
 import { pkr } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
@@ -151,7 +152,7 @@ function CustomerBody() {
               <Field label="Mobile Number"><input value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} placeholder="03XX-XXXXXXX" className={inputClass} /></Field>
               <Field label="Shop / Business Name (optional)"><input value={form.shopName} onChange={(e) => setForm({ ...form, shopName: e.target.value })} className={inputClass} /></Field>
               <Field label="Address (optional)"><input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className={inputClass} /></Field>
-              <Field label="Opening Balance"><input type="number" value={form.openingBalance} onChange={(e) => setForm({ ...form, openingBalance: e.target.value })} placeholder="0" className={inputClass} /></Field>
+              <Field label="Opening Balance"><AmountInput value={form.openingBalance} onChange={(v) => setForm({ ...form, openingBalance: v })} placeholder="0" className={inputClass} /></Field>
 
               <div className="border-t border-hairline pt-3">
                 <div className="font-mono text-[10.5px] tracking-wide uppercase text-steel mb-2">Empty Cylinders (Opening) — 11.8 KG</div>
@@ -193,7 +194,7 @@ function CustomerBody() {
             </div>
             <div className="flex flex-col gap-3">
               <Field label="Amount">
-                <input type="number" autoFocus value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className={inputClass} />
+                <AmountInput autoFocus value={payAmount} onChange={setPayAmount} className={inputClass} />
               </Field>
               <Field label="Method">
                 <select value={payMethod} onChange={(e) => setPayMethod(e.target.value as typeof payMethod)} className={inputClass}>
@@ -240,7 +241,7 @@ function CustomerBody() {
               For manual balance corrections only -- a real sale should go through New Sale so it's tied to a product and rate.
             </div>
             <Field label="Amount">
-              <input type="number" autoFocus value={chargeAmount} onChange={(e) => setChargeAmount(e.target.value)} className={inputClass} />
+              <AmountInput autoFocus value={chargeAmount} onChange={setChargeAmount} className={inputClass} />
             </Field>
             <div className="mt-4 flex gap-2 justify-end">
               <Button variant="outline" onClick={() => setChargeModal(null)}>Cancel</Button>

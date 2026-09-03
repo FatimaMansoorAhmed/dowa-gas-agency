@@ -6,9 +6,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.database import get_db
 from app import models, schemas
+from app.deps import require_active_user, require_csrf
 from app.utils import next_display_id
 
-router = APIRouter(prefix="/customers", tags=["customers"])
+router = APIRouter(prefix="/customers", tags=["customers"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
 # 1. GET ALL CUSTOMERS
@@ -193,7 +194,8 @@ def set_customer_status(customer_id: UUID, status: str = Query(..., pattern="^(a
 def add_cylinder_transaction(
     customer_id: UUID,
     payload: schemas.CylinderTransactionCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user)
 ):
     customer = db.query(models.Customer).get(customer_id)
     if not customer:
@@ -217,7 +219,7 @@ def add_cylinder_transaction(
         qty_in=payload.qty_in,
         transaction_type=payload.transaction_type,
         notes=payload.notes,
-        entered_by=payload.entered_by,
+        entered_by=current_user.name,
         status="active"
     )
     db.add(txn)
@@ -245,6 +247,7 @@ def sell_empty_cylinders(
     customer_id: UUID,
     payload: schemas.EmptyCylinderSaleCreate,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
 ):
     customer = db.query(models.Customer).get(customer_id)
     if not customer:
@@ -289,7 +292,7 @@ def sell_empty_cylinders(
         amount=payload.amount,
         notes=payload.notes,
         status="active",
-        entered_by=payload.entered_by,
+        entered_by=current_user.name,
     )
     db.add(sale)
 

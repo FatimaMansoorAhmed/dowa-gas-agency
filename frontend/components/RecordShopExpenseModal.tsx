@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { X, Check, Plus, Trash2 } from "lucide-react";
 import { Field, inputClass, Button } from "./ui";
+import AmountInput from "./AmountInput";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { todayLocalInput } from "@/lib/format";
@@ -135,10 +136,9 @@ export default function RecordShopExpenseModal({
               )}
 
               {/* 3. AMOUNT */}
-              <input
-                type="number"
+              <AmountInput
                 value={line.amount}
-                onChange={(e) => updateLine(i, { amount: e.target.value })}
+                onChange={(v) => updateLine(i, { amount: v })}
                 placeholder="Amount"
                 className={inputClass}
               />

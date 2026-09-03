@@ -5,9 +5,10 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.deps import require_active_user, require_csrf
 from app.utils import next_display_id
 
-router = APIRouter(prefix="/purchases", tags=["purchases"])
+router = APIRouter(prefix="/purchases", tags=["purchases"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
 @router.get("", response_model=list[schemas.PurchaseOut])
@@ -82,8 +83,11 @@ def _reverse_purchase(db: Session, purchase: models.Purchase) -> None:
 
 
 @router.post("", response_model=schemas.PurchaseOut, status_code=201)
-def create_purchase(payload: schemas.PurchaseCreate, db: Session = Depends(get_db)):
-    purchase = _apply_purchase(db, payload, payload.entered_by)
+def create_purchase(
+    payload: schemas.PurchaseCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
+    purchase = _apply_purchase(db, payload, current_user.name)
     db.commit()
     db.refresh(purchase)
     return purchase
@@ -110,7 +114,10 @@ def cancel_purchase(purchase_id: UUID, by: str = Query(...), db: Session = Depen
 
 
 @router.patch("/{purchase_id}/correct", response_model=schemas.PurchaseOut)
-def correct_purchase(purchase_id: UUID, payload: schemas.PurchaseCorrect, db: Session = Depends(get_db)):
+def correct_purchase(
+    purchase_id: UUID, payload: schemas.PurchaseCorrect, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     """Ledger Correction (§1) — see correct_sale in routers/sales.py for
     the full pattern this mirrors."""
     if not payload.correction_reason.strip():
@@ -125,13 +132,13 @@ def correct_purchase(purchase_id: UUID, payload: schemas.PurchaseCorrect, db: Se
     _reverse_purchase(db, original)
 
     original.status = "corrected"
-    original.corrected_by = payload.corrected_by
+    original.corrected_by = current_user.name
     original.corrected_at = datetime.utcnow()
     original.correction_reason = payload.correction_reason
     db.add(original)
     db.flush()
 
-    corrected = _apply_purchase(db, payload, payload.corrected_by)
+    corrected = _apply_purchase(db, payload, current_user.name)
     corrected.corrected_from_id = original.id
     db.add(corrected)
 

@@ -8,11 +8,12 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas, whatsapp
+from app.deps import require_active_user, require_csrf
 from app.reporting.daily import get_daily_report_data
 from app.reporting.pdf import render_daily_report_pdf
 from app.timezone import KARACHI_TZ
 
-router = APIRouter(prefix="/reports", tags=["reports"])
+router = APIRouter(prefix="/reports", tags=["reports"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "generated_reports")
 
@@ -64,22 +65,11 @@ def download_report(report_id: UUID, db: Session = Depends(get_db)):
     return FileResponse(report.file_path, media_type="application/pdf", filename=filename)
 
 
-@router.post("/daily/generate", response_model=schemas.GeneratedReportOut, status_code=201)
-def generate_daily_report(
-    business_date: str = Query(..., description="YYYY-MM-DD"),
-    generated_by: str = Query(...),
-    db: Session = Depends(get_db),
-):
-    """Generates (or re-generates — §6 "Regenerate") the Daily Report PDF
-    for one business date, saves it to disk, and records a NEW
-    GeneratedReport row — regenerating never overwrites or deletes an
-    earlier run, so a report that was already sent over WhatsApp keeps its
-    own history entry untouched."""
-    try:
-        datetime.strptime(business_date, "%Y-%m-%d")
-    except ValueError:
-        raise HTTPException(400, "business_date must be YYYY-MM-DD")
-
+def _generate_daily_report(db: Session, business_date: str, generated_by: str) -> models.GeneratedReport:
+    """Shared by the manual "Generate Report" endpoint below and the 12 PM
+    scheduled job (app/scheduler.py) — same data/PDF/row-insert behavior
+    either way, so a scheduled report is indistinguishable in every respect
+    except its generated_by tag."""
     data = get_daily_report_data(db, business_date)
     generated_at_str = datetime.now(KARACHI_TZ).strftime("%Y-%m-%d %H:%M")
     pdf_bytes = render_daily_report_pdf(data, generated_by, generated_at_str)
@@ -101,6 +91,25 @@ def generate_daily_report(
     db.commit()
     db.refresh(report)
     return report
+
+
+@router.post("/daily/generate", response_model=schemas.GeneratedReportOut, status_code=201)
+def generate_daily_report(
+    business_date: str = Query(..., description="YYYY-MM-DD"),
+    generated_by: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Generates (or re-generates — §6 "Regenerate") the Daily Report PDF
+    for one business date, saves it to disk, and records a NEW
+    GeneratedReport row — regenerating never overwrites or deletes an
+    earlier run, so a report that was already sent over WhatsApp keeps its
+    own history entry untouched."""
+    try:
+        datetime.strptime(business_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "business_date must be YYYY-MM-DD")
+
+    return _generate_daily_report(db, business_date, generated_by)
 
 
 @router.post("/{report_id}/send-whatsapp", response_model=schemas.SendWhatsAppOut)

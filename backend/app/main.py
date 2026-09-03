@@ -5,10 +5,12 @@ from dotenv import load_dotenv
 
 from app.database import Base, engine
 from app.migrations import run_startup_migrations
+from app.scheduler import start_scheduler
 from app.routers import (
     companies, parties, rates, customers, products, payment_accounts,
     expense_categories, sales, payments, payment_receipts, expenses, ledger, purchases, company_payments,
     cylinder_transactions,owner_drawings, unified_sale, owner_capital, reports, board_rates, shops,
+    auth, users, emergency_transfers,
 )
 
 load_dotenv()
@@ -28,6 +30,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router)
+app.include_router(users.router)
 app.include_router(companies.router)
 app.include_router(parties.router)
 app.include_router(rates.router)
@@ -45,6 +49,7 @@ app.include_router(company_payments.router)
 app.include_router(cylinder_transactions.router)
 app.include_router(owner_drawings.router)
 app.include_router(unified_sale.router)
+app.include_router(emergency_transfers.router)
 app.include_router(owner_capital.router)
 app.include_router(reports.router)
 app.include_router(board_rates.router)
@@ -60,6 +65,7 @@ def on_startup():
     # tables that already exist — this adds any new nullable/defaulted
     # columns models.py has picked up since the DB was first created.
     run_startup_migrations(engine)
+    start_scheduler()
 
 
 @app.get("/")

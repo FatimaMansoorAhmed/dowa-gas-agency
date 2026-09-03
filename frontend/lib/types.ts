@@ -118,6 +118,10 @@ export type Sale = {
   gate_pass_no: string | null; vehicle_no: string | null; notes: string | null;
   status: string; entered_by: string; created_at: string;
   unified_sale_id?: string | null;
+  // Emergency Transfer (§ Shop — Emergency Transfer) — set only when this
+  // Sale's cylinders were drawn from a shop's own stock instead of a new
+  // plant Load; null for every ordinary sale.
+  emergency_transfer_shop_id?: string | null;
 } & CorrectionFields;
 
 export type Payment = {
@@ -159,6 +163,12 @@ export type LedgerRow = {
   // True only for "sale"/"payment" rows — the two kinds the Correct action
   // applies to (§1 Scope).
   correctable: boolean;
+  // Rate column (§3) — null for "payment" and other non-Sale kinds.
+  // "unified_sale" carries per-item rates instead (a batch can span
+  // several products/rates) — never a single blended figure.
+  rate_per_cylinder?: string | null;
+  rate_per_kg?: string | null;
+  unified_sale_rates?: string[] | null;
 };
 
 // One superseded (status="corrected") original transaction, kept for the
@@ -245,7 +255,27 @@ export type CylinderTransaction = {
 
 export type CylinderBalance = { customer_id: string; product_id: string; balance: string };
 
-export type User = { name: string; role: "CEO" | "Staff" };
+export type User = {
+  id: string;
+  name: string;
+  email: string;
+  role: "owner" | "staff";
+  status: "pending" | "active" | "suspended" | "rejected";
+  email_verified: boolean;
+  created_at: string;
+  approved_at: string | null;
+  approved_by: string | null;
+  last_login_at: string | null;
+};
+
+export type UserAccessAuditRow = {
+  id: string;
+  user_id: string | null;
+  action: string;
+  performed_by: string | null;
+  reason: string | null;
+  created_at: string;
+};
 
 /* --- Naye Types (Unified Sale & Payment System) --- */
 
@@ -500,26 +530,11 @@ export type ShopSale = {
   created_at: string;
 } & CorrectionFields;
 
-export type ShopStockAdjustment = {
-  id: string;
-  display_id: string;
-  date: string;
-  customer_id: string;
-  product_id: string;
-  adjustment_type: "return" | "adjustment";
-  quantity_delta: string;
-  reason: string | null;
-  status: string;
-  entered_by: string;
-  created_at: string;
-};
-
 export type ShopListRow = {
   customer: Customer;
   current_stock: string;
   today_load: string;
   today_sales: string;
-  today_returns: string;
   current_balance: string;
   shop_cash_balance: string;
   last_activity: string | null;
@@ -531,8 +546,6 @@ export type ShopProductStockSummary = {
   opening_stock: string;
   new_load: string;
   sales: string;
-  returns: string;
-  adjustments: string;
   closing_stock: string;
   board_rate_per_kg: string | null;
   cylinder_weight: string;
@@ -548,14 +561,12 @@ export type ShopStockSummary = {
   total_opening_stock: string;
   total_new_load: string;
   total_sales: string;
-  total_returns: string;
-  total_adjustments: string;
   total_closing_stock: string;
   total_sales_amount: string;
 };
 
 export type ShopTransactionRow = {
-  kind: "load" | "shop_sale" | "return" | "adjustment" | "payment";
+  kind: "load" | "shop_sale" | "payment";
   date: string;
   ref_id: string;
   display_id: string;

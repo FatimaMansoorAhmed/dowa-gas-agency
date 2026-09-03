@@ -5,9 +5,10 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.deps import require_active_user, require_csrf
 from app.timezone import karachi_month_str
 
-router = APIRouter(prefix="/companies", tags=["companies"])
+router = APIRouter(prefix="/companies", tags=["companies"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
 def _current_month() -> str:

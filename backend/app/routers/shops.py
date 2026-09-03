@@ -6,12 +6,13 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.deps import require_active_user, require_csrf
 from app.utils import next_display_id, get_or_create_shop_account
 from app.timezone import karachi_day_bounds, karachi_today_str
 from app.routers.board_rates import resolve_board_rate
 from app.routers.ledger import _customer_corrections
 
-router = APIRouter(prefix="/shops", tags=["shops"])
+router = APIRouter(prefix="/shops", tags=["shops"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 # Fixed physical->saleable conversion for a Shop's board-rate cylinder
 # pricing (§7/§9 of the Shop spec): a physical cylinder always loses a
@@ -53,11 +54,8 @@ def _compute_stock_summary(db: Session, shop_id, business_date: str) -> schemas.
     all_sales = db.query(models.ShopSale).filter(
         models.ShopSale.customer_id == shop_id, models.ShopSale.status == "active"
     ).all()
-    all_adjustments = db.query(models.ShopStockAdjustment).filter(
-        models.ShopStockAdjustment.customer_id == shop_id, models.ShopStockAdjustment.status == "active"
-    ).all()
 
-    product_ids = {b.product_id for b in all_batches} | {s.product_id for s in all_sales} | {a.product_id for a in all_adjustments}
+    product_ids = {b.product_id for b in all_batches} | {s.product_id for s in all_sales}
 
     try:
         board_rate = resolve_board_rate(db, on_date)
@@ -65,7 +63,7 @@ def _compute_stock_summary(db: Session, shop_id, business_date: str) -> schemas.
         board_rate = None
 
     rows: list[schemas.ShopProductStockSummary] = []
-    totals = {"opening": Decimal("0"), "load": Decimal("0"), "sales": Decimal("0"), "returns": Decimal("0"), "adjustments": Decimal("0"), "closing": Decimal("0"), "sales_amount": Decimal("0")}
+    totals = {"opening": Decimal("0"), "load": Decimal("0"), "sales": Decimal("0"), "closing": Decimal("0"), "sales_amount": Decimal("0")}
 
     for pid in product_ids:
         product = products.get(pid)
@@ -73,25 +71,15 @@ def _compute_stock_summary(db: Session, shop_id, business_date: str) -> schemas.
             continue
         batches = [b for b in all_batches if b.product_id == pid]
         sales = [s for s in all_sales if s.product_id == pid]
-        adjustments = [a for a in all_adjustments if a.product_id == pid]
 
         opening = (
             sum((b.quantity_received for b in batches if b.transaction_date < day_start), start=Decimal("0"))
             - sum((s.quantity for s in sales if s.date < day_start), start=Decimal("0"))
-            + sum((a.quantity_delta for a in adjustments if a.date < day_start), start=Decimal("0"))
         )
         day_load = sum((b.quantity_received for b in batches if day_start <= b.transaction_date < day_end), start=Decimal("0"))
         day_sales = sum((s.quantity for s in sales if day_start <= s.date < day_end), start=Decimal("0"))
         day_sales_amount = sum((s.total_amount for s in sales if day_start <= s.date < day_end), start=Decimal("0"))
-        day_returns = sum(
-            (a.quantity_delta for a in adjustments if day_start <= a.date < day_end and a.adjustment_type == "return"),
-            start=Decimal("0"),
-        )
-        day_adj = sum(
-            (a.quantity_delta for a in adjustments if day_start <= a.date < day_end and a.adjustment_type == "adjustment"),
-            start=Decimal("0"),
-        )
-        closing = opening + day_load + day_returns + day_adj - day_sales
+        closing = opening + day_load - day_sales
 
         cylinder_weight = product.weight_kg
         saleable_kg = _saleable_kg(cylinder_weight)
@@ -99,8 +87,7 @@ def _compute_stock_summary(db: Session, shop_id, business_date: str) -> schemas.
 
         rows.append(schemas.ShopProductStockSummary(
             product_id=pid, product_name=product.name,
-            opening_stock=opening, new_load=day_load, sales=day_sales,
-            returns=day_returns, adjustments=day_adj, closing_stock=closing,
+            opening_stock=opening, new_load=day_load, sales=day_sales, closing_stock=closing,
             board_rate_per_kg=board_rate.rate_per_kg if board_rate else None,
             cylinder_weight=cylinder_weight, wastage_kg=FIXED_WASTAGE_KG, saleable_kg=saleable_kg,
             sale_rate_per_cylinder=sale_rate,
@@ -110,8 +97,6 @@ def _compute_stock_summary(db: Session, shop_id, business_date: str) -> schemas.
         totals["opening"] += opening
         totals["load"] += day_load
         totals["sales"] += day_sales
-        totals["returns"] += day_returns
-        totals["adjustments"] += day_adj
         totals["closing"] += closing
         totals["sales_amount"] += day_sales_amount
 
@@ -123,8 +108,6 @@ def _compute_stock_summary(db: Session, shop_id, business_date: str) -> schemas.
         total_opening_stock=totals["opening"],
         total_new_load=totals["load"],
         total_sales=totals["sales"],
-        total_returns=totals["returns"],
-        total_adjustments=totals["adjustments"],
         total_closing_stock=totals["closing"],
         total_sales_amount=totals["sales_amount"],
     )
@@ -436,16 +419,12 @@ def list_shops(db: Session = Depends(get_db)):
         last_shop_sale = db.query(models.ShopSale).filter(models.ShopSale.customer_id == shop.id).order_by(models.ShopSale.created_at.desc()).first()
         if last_shop_sale:
             last_dates.append(last_shop_sale.created_at)
-        last_adj = db.query(models.ShopStockAdjustment).filter(models.ShopStockAdjustment.customer_id == shop.id).order_by(models.ShopStockAdjustment.created_at.desc()).first()
-        if last_adj:
-            last_dates.append(last_adj.created_at)
         last_dates = [d for d in last_dates if d]
         out.append(schemas.ShopListRow(
             customer=shop,
             current_stock=summary.total_closing_stock,
             today_load=summary.total_new_load,
             today_sales=summary.total_sales,
-            today_returns=summary.total_returns,
             current_balance=shop.current_balance,
             shop_cash_balance=shop_account.current_balance,
             last_activity=max(last_dates) if last_dates else None,
@@ -535,17 +514,6 @@ def get_shop_detail(
             sale_rate_per_cylinder=s.sale_rate_per_cylinder, amount=s.total_amount,
             amount_received=received, amount_outstanding=outstanding,
             entered_by=s.entered_by, status=s.status, correctable=True,
-        ))
-
-    adjustments = db.query(models.ShopStockAdjustment).filter(
-        models.ShopStockAdjustment.customer_id == shop_id, models.ShopStockAdjustment.status == "active",
-        models.ShopStockAdjustment.date >= month_start, models.ShopStockAdjustment.date < next_month,
-    ).all()
-    for a in adjustments:
-        transactions.append(schemas.ShopTransactionRow(
-            kind=a.adjustment_type, date=a.date, ref_id=a.id, display_id=a.display_id,
-            description=f"{a.adjustment_type.title()} — {products.get(a.product_id).name if products.get(a.product_id) else 'Product'}" + (f" ({a.reason})" if a.reason else ""),
-            quantity=a.quantity_delta, entered_by=a.entered_by, status=a.status, correctable=False,
         ))
 
     transactions.sort(key=lambda r: r.date, reverse=True)
@@ -645,9 +613,12 @@ def get_shop_sale(sale_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/{shop_id}/sales", response_model=schemas.ShopSaleOut, status_code=201)
-def create_shop_sale(shop_id: UUID, payload: schemas.ShopSaleCreate, db: Session = Depends(get_db)):
+def create_shop_sale(
+    shop_id: UUID, payload: schemas.ShopSaleCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     shop = _get_shop(db, shop_id)
-    sale = _apply_shop_sale(db, shop, payload, payload.entered_by)
+    sale = _apply_shop_sale(db, shop, payload, current_user.name)
     db.commit()
     db.refresh(sale)
     return sale
@@ -671,7 +642,10 @@ def cancel_shop_sale(sale_id: UUID, by: str = Query(...), db: Session = Depends(
 
 
 @router.patch("/sales/{sale_id}/correct", response_model=schemas.ShopSaleOut)
-def correct_shop_sale(sale_id: UUID, payload: schemas.ShopSaleCorrect, db: Session = Depends(get_db)):
+def correct_shop_sale(
+    sale_id: UUID, payload: schemas.ShopSaleCorrect, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     """Ledger Correction, same reverse-then-reapply pattern as
     correct_sale/correct_payment/correct_purchase/correct_company_payment.
     Correcting the date legitimately re-resolves the Board Rate for the
@@ -690,81 +664,19 @@ def correct_shop_sale(sale_id: UUID, payload: schemas.ShopSaleCorrect, db: Sessi
     _reverse_shop_sale(db, original)
 
     original.status = "corrected"
-    original.corrected_by = payload.corrected_by
+    original.corrected_by = current_user.name
     original.corrected_at = datetime.utcnow()
     original.correction_reason = payload.correction_reason
     db.add(original)
     db.flush()
 
-    corrected = _apply_shop_sale(db, shop, payload, payload.corrected_by)
+    corrected = _apply_shop_sale(db, shop, payload, current_user.name)
     corrected.corrected_from_id = original.id
     db.add(corrected)
 
     db.commit()
     db.refresh(corrected)
     return corrected
-
-
-# ---------- Stock Adjustments (Return / Adjustment) ----------
-# Deliberately simple (§ Shop Management, explicit instruction): does NOT
-# create, consume, or otherwise touch any ShopStockBatch/FIFO layer — that
-# interaction is left undefined until the business rule for it exists.
-# Create + cancel only, no correction chain yet.
-
-@router.post("/{shop_id}/adjustments", response_model=schemas.ShopStockAdjustmentOut, status_code=201)
-def create_shop_adjustment(shop_id: UUID, payload: schemas.ShopStockAdjustmentCreate, db: Session = Depends(get_db)):
-    shop = _get_shop(db, shop_id)
-    product = db.query(models.Product).get(payload.product_id)
-    if not product:
-        raise HTTPException(404, "Product not found")
-
-    # Stock must never silently go negative (§27) — a read-only check
-    # against the current live total, never a batch mutation.
-    if payload.quantity_delta < 0:
-        current_total = (
-            db.query(models.ShopStockBatch)
-            .filter(
-                models.ShopStockBatch.customer_id == shop_id,
-                models.ShopStockBatch.product_id == payload.product_id,
-                models.ShopStockBatch.status == "active",
-            )
-            .all()
-        )
-        available = sum((b.quantity_remaining for b in current_total), start=Decimal("0"))
-        if available + payload.quantity_delta < 0:
-            raise HTTPException(400, f"This would make stock negative — only {available} currently available")
-
-    adj = models.ShopStockAdjustment(
-        display_id=next_display_id(db, models.ShopStockAdjustment, "SHADJ", width=6),
-        date=payload.date,
-        customer_id=shop.id,
-        product_id=payload.product_id,
-        adjustment_type=payload.adjustment_type,
-        quantity_delta=payload.quantity_delta,
-        reason=payload.reason,
-        status="active",
-        entered_by=payload.entered_by,
-    )
-    db.add(adj)
-    db.commit()
-    db.refresh(adj)
-    return adj
-
-
-@router.patch("/adjustments/{adjustment_id}/cancel", response_model=schemas.ShopStockAdjustmentOut)
-def cancel_shop_adjustment(adjustment_id: UUID, by: str = Query(...), db: Session = Depends(get_db)):
-    adj = db.query(models.ShopStockAdjustment).get(adjustment_id)
-    if not adj:
-        raise HTTPException(404, "Adjustment not found")
-    if adj.status != "active":
-        raise HTTPException(400, "Adjustment is already cancelled")
-    adj.status = "cancelled"
-    adj.modified_at = datetime.utcnow()
-    adj.modified_by = by
-    db.add(adj)
-    db.commit()
-    db.refresh(adj)
-    return adj
 
 
 # ============================================================
@@ -791,12 +703,15 @@ def list_supply_customers(shop_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/{shop_id}/customers", response_model=schemas.ShopSupplyCustomerOut, status_code=201)
-def create_supply_customer(shop_id: UUID, payload: schemas.ShopSupplyCustomerCreate, db: Session = Depends(get_db)):
+def create_supply_customer(
+    shop_id: UUID, payload: schemas.ShopSupplyCustomerCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     shop = _get_shop(db, shop_id)
     customer = models.ShopSupplyCustomer(
         shop_id=shop.id, name=payload.name, mobile=payload.mobile, address=payload.address,
         opening_balance=payload.opening_balance, current_balance=payload.opening_balance,
-        status="active", entered_by=payload.entered_by,
+        status="active", entered_by=current_user.name,
     )
     db.add(customer)
     db.commit()
@@ -816,7 +731,8 @@ def get_supply_customer(supply_customer_id: UUID, db: Session = Depends(get_db))
 
 @router.post("/{shop_id}/customers/{supply_customer_id}/payments", response_model=schemas.ShopCustomerPaymentOut, status_code=201)
 def create_customer_payment(
-    shop_id: UUID, supply_customer_id: UUID, payload: schemas.ShopCustomerPaymentCreate, db: Session = Depends(get_db)
+    shop_id: UUID, supply_customer_id: UUID, payload: schemas.ShopCustomerPaymentCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
 ):
     shop = _get_shop(db, shop_id)
     customer = db.query(models.ShopSupplyCustomer).get(supply_customer_id)
@@ -843,7 +759,7 @@ def create_customer_payment(
         date=payload.date, shop_id=shop.id, supply_customer_id=customer.id,
         shop_sale_id=payload.shop_sale_id, account_id=account.id,
         amount=payload.amount, method=payload.method, notes=payload.notes,
-        status="active", entered_by=payload.entered_by,
+        status="active", entered_by=current_user.name,
     )
     db.add(payment)
     customer.current_balance = customer.current_balance - payload.amount
@@ -916,7 +832,10 @@ def list_shop_expenses(shop_id: UUID, month: str = Query(None, description="YYYY
 
 
 @router.post("/{shop_id}/expenses", response_model=schemas.ShopExpenseTransactionOut, status_code=201)
-def create_shop_expense(shop_id: UUID, payload: schemas.ShopExpenseTransactionCreate, db: Session = Depends(get_db)):
+def create_shop_expense(
+    shop_id: UUID, payload: schemas.ShopExpenseTransactionCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
     """One atomic cash-out event with 1+ categorized lines (§20-21) — a
     single owner cash withdrawal split into Fuel/Salary/Home is ONE
     transaction, never N separate ones. line_type distinguishes genuine
@@ -951,7 +870,7 @@ def create_shop_expense(shop_id: UUID, payload: schemas.ShopExpenseTransactionCr
         display_id=next_display_id(db, models.ShopExpenseTransaction, "SHEXP", width=6),
         date=payload.date, shop_id=shop.id, total_amount=total, account_id=account.id,
         payment_source=payload.payment_source, notes=payload.notes,
-        status="active", entered_by=payload.entered_by,
+        status="active", entered_by=current_user.name,
     )
     db.add(txn)
     db.flush()

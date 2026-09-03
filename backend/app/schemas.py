@@ -1028,6 +1028,13 @@ class SaleCreate(BaseModel):
     # actually makes it take effect, for both create and the new /correct
     # endpoint below, which reuses this exact field.
     cylinders_returned: Decimal = Decimal("0")
+    # Emergency Transfer (§ Shop — Emergency Transfer) — null for every
+    # ordinary sale; set only via POST /sales/emergency-transfer. Living on
+    # the shared SaleCreate/SaleCorrect shape (rather than a parallel
+    # schema) is what lets a correction change which shop an emergency
+    # transfer draws from through the SAME /sales/{id}/correct endpoint
+    # every other Sale already uses.
+    emergency_transfer_shop_id: Optional[UUID] = None
 
 
 class SaleCorrect(SaleCreate):
@@ -1063,6 +1070,34 @@ class SaleOut(BaseModel):
     corrected_at: Optional[datetime] = None
     correction_reason: Optional[str] = None
     corrected_from_id: Optional[UUID] = None
+    # Real FK, was simply never exposed here — needed so the frontend can
+    # match a Sale back to its Unified-Sale-created sibling Purchase (same
+    # unified_sale_id + product_id) for the Approved Sale Rate column (§3).
+    unified_sale_id: Optional[UUID] = None
+    emergency_transfer_shop_id: Optional[UUID] = None
+
+
+class EmergencyTransferCreate(BaseModel):
+    """A real customer needs cylinders urgently and is directed to a shop
+    instead of a plant — posts a genuine Sale (charge to that customer's
+    real ledger balance) while drawing physical stock from the named
+    shop's own FIFO stock, not a new plant Load. No entered_by field —
+    always server-stamped from the authenticated session
+    (routers/emergency_transfers.py)."""
+    date: UtcDateTime
+    customer_id: UUID  # the real, non-shop customer being charged
+    shop_id: UUID  # whose stock this draws from
+    product_id: UUID
+    quantity: Decimal
+    rate_per_cylinder: Decimal  # manually entered — same trust model as an ordinary Sale's rate
+    notes: Optional[str] = None
+    # Inline Settlement (§ Unified Sale / Shop Sale pattern) — optional;
+    # when omitted or 0 this is a pure credit charge. When set, creates a
+    # linked Payment (Payment.sale_id) crediting destination_account_id
+    # (defaults to the shop's own Shop Cash account).
+    amount_collected_now: Optional[Decimal] = None
+    payment_method: Literal["cash", "bank_transfer", "cheque", "online", "other"] = "cash"
+    destination_account_id: Optional[UUID] = None
 
 
 # ---------- Payment ----------
@@ -1118,6 +1153,10 @@ class PaymentOut(BaseModel):
     corrected_at: Optional[datetime] = None
     correction_reason: Optional[str] = None
     corrected_from_id: Optional[UUID] = None
+    # Real FK, same gap SaleOut/PurchaseOut had (§3) — never exposed here,
+    # so the API always showed None for a Unified-Sale-originated Payment
+    # even though the DB column was populated.
+    unified_sale_id: Optional[UUID] = None
 
 
 # ---------- Payment Receipt (standalone, with settlement routing) ----------
@@ -1234,6 +1273,17 @@ class LedgerRow(BaseModel):
     # action applies to (§1 Scope). Lets the frontend show the action only
     # where it's actually supported, without hardcoding the kind list twice.
     correctable: bool = False
+    # Rate column (§3) — the per-cylinder selling rate already snapshotted
+    # on the row's own Sale (models.Sale.rate_per_cylinder/rate_per_kg),
+    # never recomputed here. None for "payment" and other non-Sale kinds
+    # — a Payment has no rate of its own. For "unified_sale" (one
+    # aggregated row can span several products/rates), rate_per_cylinder/
+    # rate_per_kg stay None and unified_sale_rates carries each child
+    # Sale's own rate instead, since a single blended figure would hide
+    # which product was sold at which rate.
+    rate_per_cylinder: Optional[Decimal] = None
+    rate_per_kg: Optional[Decimal] = None
+    unified_sale_rates: Optional[list[Decimal]] = None
 
 
 class CorrectionHistoryRow(BaseModel):
@@ -1335,6 +1385,8 @@ class PurchaseOut(BaseModel):
     corrected_at: Optional[datetime] = None
     correction_reason: Optional[str] = None
     corrected_from_id: Optional[UUID] = None
+    # Real FK, was simply never exposed here — see SaleOut.unified_sale_id.
+    unified_sale_id: Optional[UUID] = None
 
 
 # ---------- Company Payment ----------
@@ -1848,30 +1900,6 @@ class ShopSaleOut(BaseModel):
     corrected_from_id: Optional[UUID] = None
 
 
-class ShopStockAdjustmentCreate(BaseModel):
-    date: UtcDateTime
-    product_id: UUID
-    adjustment_type: Literal["return", "adjustment"]
-    quantity_delta: Decimal  # signed: positive = stock in, negative = stock out
-    reason: Optional[str] = None
-    entered_by: str
-
-
-class ShopStockAdjustmentOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: UUID
-    display_id: str
-    date: datetime
-    customer_id: UUID
-    product_id: UUID
-    adjustment_type: str
-    quantity_delta: Decimal
-    reason: Optional[str] = None
-    status: str
-    entered_by: str
-    created_at: datetime
-
-
 # ---------- Shop Business Finance (Engine 3, §19-§26) ----------
 
 class ShopSupplyCustomerCreate(BaseModel):
@@ -2028,7 +2056,6 @@ class ShopListRow(BaseModel):
     current_stock: Decimal
     today_load: Decimal
     today_sales: Decimal
-    today_returns: Decimal
     current_balance: Decimal
     shop_cash_balance: Decimal  # the shop's own PaymentAccount.current_balance
     last_activity: Optional[datetime] = None
@@ -2045,8 +2072,6 @@ class ShopProductStockSummary(BaseModel):
     opening_stock: Decimal
     new_load: Decimal
     sales: Decimal
-    returns: Decimal
-    adjustments: Decimal
     closing_stock: Decimal
     board_rate_per_kg: Optional[Decimal] = None
     cylinder_weight: Decimal  # physical weight, from Product.weight_kg
@@ -2060,24 +2085,21 @@ class ShopStockSummary(BaseModel):
     """Powers the Shop detail page's daily dashboard (§28) — every number
     is derived on demand from the immutable transaction logs (Sale/
     ShopStockBatch.quantity_received for Loads, ShopSale.quantity for
-    Sales, ShopStockAdjustment.quantity_delta for Returns/Adjustments),
-    never from a stored running total."""
+    Sales), never from a stored running total."""
     business_date: str
     products: list[ShopProductStockSummary]
     total_opening_stock: Decimal
     total_new_load: Decimal
     total_sales: Decimal
-    total_returns: Decimal
-    total_adjustments: Decimal
     total_closing_stock: Decimal
     total_sales_amount: Decimal
 
 
 class ShopTransactionRow(BaseModel):
     """One row in the Shop detail page's unified transaction history table
-    — covers Load/Sale/Return/Adjustment/Payment, columns populated per
-    type as relevant (§16)."""
-    kind: Literal["load", "shop_sale", "return", "adjustment", "payment"]
+    — covers Load/Sale/Payment, columns populated per type as relevant
+    (§16)."""
+    kind: Literal["load", "shop_sale", "payment"]
     date: datetime
     ref_id: UUID
     display_id: str
@@ -2123,3 +2145,58 @@ class ShopDetailOut(BaseModel):
     transactions: list[ShopTransactionRow]
     corrections: list[CorrectionHistoryRow]
     shop_sale_corrections: list[ShopSaleCorrectionRow]
+
+
+# ---------- Auth (§ Auth Module) ----------
+class RegisterRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class UserOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    name: str
+    email: str
+    role: str
+    status: str
+    email_verified: bool
+    created_at: datetime
+    approved_at: Optional[datetime] = None
+    approved_by: Optional[UUID] = None
+    last_login_at: Optional[datetime] = None
+
+
+class MeOut(BaseModel):
+    authenticated: bool
+    user: Optional[UserOut] = None
+    csrf_token: Optional[str] = None
+
+
+class LoginOut(BaseModel):
+    user: UserOut
+    csrf_token: str
+
+
+class ApproveUserRequest(BaseModel):
+    role: Literal["owner", "staff"] = "staff"
+
+
+class RejectSuspendRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+class UserAccessAuditOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    user_id: Optional[UUID] = None
+    action: str
+    performed_by: Optional[UUID] = None
+    reason: Optional[str] = None
+    created_at: datetime

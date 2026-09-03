@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { X, Check, AlertCircle, Wallet } from "lucide-react";
 import { Field, inputClass, Button } from "@/components/ui";
+import AmountInput from "@/components/AmountInput";
 import { api } from "@/lib/api";
 import { pkr, todayLocalInput } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
@@ -219,10 +220,9 @@ export default function ReceivePaymentModal({
             </Field>
 
             <Field label="Amount Received (PKR)">
-              <input
-                type="number"
+              <AmountInput
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
+                onChange={setAmount}
                 placeholder="0.00"
                 className={inputClass}
               />
