@@ -71,8 +71,8 @@ export default function RecordShopExpenseModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl px-6 py-6 w-[620px] max-h-[85vh] overflow-y-auto">
+    <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl px-6 py-6 w-full max-w-[620px] max-h-[85vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-4">
           <div className="font-display font-bold text-[17px] text-ink">Record Expenses</div>
           <button onClick={onClose} className="bg-transparent border-none cursor-pointer"><X size={16} className="text-steel" /></button>
@@ -95,7 +95,8 @@ export default function RecordShopExpenseModal({
 
           <div className="font-mono text-[10px] uppercase text-steel mt-1">Lines</div>
           {lines.map((line, i) => (
-            <div key={i} className="grid grid-cols-[1.3fr_1.3fr_0.9fr_1.3fr_auto] gap-2 items-center">
+            <div key={i} className="overflow-x-auto">
+            <div className="grid grid-cols-[1.3fr_1.3fr_0.9fr_1.3fr_auto] gap-2 items-center min-w-[560px]">
               {/* 1. TYPE FIRST: Expense vs Owner Withdrawal */}
               <select
                 value={line.line_type}
@@ -160,6 +161,7 @@ export default function RecordShopExpenseModal({
               >
                 <Trash2 size={14} />
               </button>
+            </div>
             </div>
           ))}
 

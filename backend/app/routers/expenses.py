@@ -54,6 +54,27 @@ def list_expenses(
         if shop_ids else {}
     )
 
+    # § Shop Expense/Withdrawal Attribution — a shop-sourced row (shop_id
+    # set) never has source_payment_id/unified_sale_id, so its own
+    # customer/sale context (if any) lives one hop further back, on the
+    # ShopExpenseTransaction this was dual-written from. Batched the same
+    # way as everything above.
+    txn_ids = {r.source_shop_expense_transaction_id for r in rows if r.source_shop_expense_transaction_id}
+    txns = (
+        {t.id: t for t in db.query(models.ShopExpenseTransaction).filter(models.ShopExpenseTransaction.id.in_(txn_ids)).all()}
+        if txn_ids else {}
+    )
+    shop_customer_ids = {t.supply_customer_id for t in txns.values() if t.supply_customer_id}
+    shop_customers = (
+        {c.id: c for c in db.query(models.ShopSupplyCustomer).filter(models.ShopSupplyCustomer.id.in_(shop_customer_ids)).all()}
+        if shop_customer_ids else {}
+    )
+    shop_sale_ids = {t.shop_sale_id for t in txns.values() if t.shop_sale_id}
+    shop_sales = (
+        {s.id: s for s in db.query(models.ShopSale).filter(models.ShopSale.id.in_(shop_sale_ids)).all()}
+        if shop_sale_ids else {}
+    )
+
     out: list[schemas.ExpenseOut] = []
     for r in rows:
         customer = None
@@ -62,13 +83,29 @@ def list_expenses(
         elif r.unified_sale_id and r.unified_sale_id in batches:
             customer = customers.get(batches[r.unified_sale_id].customer_id)
         shop = shops.get(r.shop_id) if r.shop_id else None
+
+        shop_customer_name = None
+        shop_supply_customer_id = None
+        shop_sale_display_id = None
+        txn = txns.get(r.source_shop_expense_transaction_id) if r.source_shop_expense_transaction_id else None
+        if txn:
+            sc = shop_customers.get(txn.supply_customer_id) if txn.supply_customer_id else None
+            if sc:
+                shop_customer_name = sc.name
+                shop_supply_customer_id = sc.id
+            sale = shop_sales.get(txn.shop_sale_id) if txn.shop_sale_id else None
+            if sale:
+                shop_sale_display_id = sale.display_id
+
         out.append(schemas.ExpenseOut(
             id=r.id, display_id=r.display_id, date=r.date, category_id=r.category_id,
             amount=r.amount, account_id=r.account_id, method=r.method,
             description=r.description, vendor=r.vendor, reference_no=r.reference_no,
             unified_sale_id=r.unified_sale_id,
             customer_id=customer.id if customer else None,
-            customer_name=customer.name if customer else None,
+            customer_name=(customer.name if customer else None) or shop_customer_name,
+            shop_supply_customer_id=shop_supply_customer_id,
+            shop_sale_display_id=shop_sale_display_id,
             shop_id=r.shop_id, shop_name=shop.name if shop else None,
             status=r.status, entered_by=r.entered_by, created_at=r.created_at,
         ))

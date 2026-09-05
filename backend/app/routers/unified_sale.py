@@ -194,6 +194,7 @@ def _batch_to_out(batch, sales, purchases, plant_payment, expense, owner_drawing
         id=batch.id, display_id=batch.display_id, date=batch.date,
         customer_id=batch.customer_id, company_id=batch.company_id,
         total_selling_amount=batch.total_selling_amount, total_purchase_amount=batch.total_purchase_amount,
+        delivery_charges=batch.delivery_charges,
         total_credit_received=batch.total_credit_received, net_plant_payment=batch.net_plant_payment,
         home_expense_amount=batch.home_expense_amount, owner_drawings_amount=batch.owner_drawings_amount,
         destination_type=batch.destination_type, target_plant_id=batch.target_plant_id, account_id=batch.account_id,
@@ -285,7 +286,12 @@ def create_unified_sale(
     customer, company, products_by_id, destination_type, target_plant_id, account_id = _validate_and_load(db, payload)
 
     try:
-        total_selling_amount = sum((item.quantity * item.selling_rate for item in payload.items), Decimal("0"))
+        # Delivery charges fold straight into total_selling_amount — the
+        # customer owes it exactly like another item's total would, and it
+        # flows into net_plant_payment through total_credit_received below
+        # the same way the rest of the sale amount does. Never added to
+        # total_purchase_amount — it's pure margin, no plant cost behind it.
+        total_selling_amount = sum((item.quantity * item.selling_rate for item in payload.items), Decimal("0")) + payload.delivery_charges
         total_purchase_amount = sum((item.quantity * item.purchase_rate for item in payload.items), Decimal("0"))
         s = payload.settlement
 
@@ -298,6 +304,7 @@ def create_unified_sale(
             company_id=payload.plant_id,
             total_selling_amount=total_selling_amount,
             total_purchase_amount=total_purchase_amount,
+            delivery_charges=payload.delivery_charges,
             total_credit_received=s.total_credit_received,
             net_plant_payment=net_plant_payment,
             home_expense_amount=s.home_expense_amount,
@@ -350,7 +357,7 @@ def edit_unified_sale(
             db.query(model).filter(model.unified_sale_id == batch.id).delete()
         db.flush()
 
-        total_selling_amount = sum((item.quantity * item.selling_rate for item in payload.items), Decimal("0"))
+        total_selling_amount = sum((item.quantity * item.selling_rate for item in payload.items), Decimal("0")) + payload.delivery_charges
         total_purchase_amount = sum((item.quantity * item.purchase_rate for item in payload.items), Decimal("0"))
         s = payload.settlement
 
@@ -361,6 +368,7 @@ def edit_unified_sale(
         batch.company_id = payload.plant_id
         batch.total_selling_amount = total_selling_amount
         batch.total_purchase_amount = total_purchase_amount
+        batch.delivery_charges = payload.delivery_charges
         batch.total_credit_received = s.total_credit_received
         batch.net_plant_payment = net_plant_payment
         batch.home_expense_amount = s.home_expense_amount

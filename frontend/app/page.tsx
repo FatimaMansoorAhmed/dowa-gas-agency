@@ -28,6 +28,15 @@ function DashboardBody() {
   const [expensesMTD, setExpensesMTD] = useState<Expense[]>([]);
   const [ownerDrawingsMTD, setOwnerDrawingsMTD] = useState<OwnerDrawing[]>([]);
   const [shopSalesMTD, setShopSalesMTD] = useState<ShopSale[]>([]);
+  // Full-history feeds for DashboardPnLChart's Daily/Monthly/Yearly toggle
+  // (§ Dashboard Chart Overhaul) — every list endpoint already returns all
+  // rows when `month` is omitted, so no new backend endpoint is needed.
+  // Kept separate from the *MTD state above, which the P&L card reads and
+  // which this task leaves untouched.
+  const [allSales, setAllSales] = useState<Sale[]>([]);
+  const [allPurchases, setAllPurchases] = useState<Purchase[]>([]);
+  const [allExpenses, setAllExpenses] = useState<Expense[]>([]);
+  const [allDrawings, setAllDrawings] = useState<OwnerDrawing[]>([]);
   const [flags, setFlags] = useState<CustomerFlag[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
@@ -39,7 +48,7 @@ function DashboardBody() {
     inFlight.current = true;
     try {
       const month = currentMonth();
-      const [c, p, r, cu, sales, purchases, expenses, ownerDrawings, shopSales, fl] = await Promise.all([
+      const [c, p, r, cu, sales, purchases, expenses, ownerDrawings, shopSales, fl, allS, allP, allE, allD] = await Promise.all([
         api.companies.list(),
         api.parties.list(),
         api.rates.latest(),
@@ -50,6 +59,10 @@ function DashboardBody() {
         api.ownerDrawings.list(month),
         api.shops.salesList(month),
         api.ledger.customerFlags(month),
+        api.sales.list(),
+        api.purchases.list(),
+        api.expenses.list(),
+        api.ownerDrawings.list(),
       ]);
 
       setCompanies(c);
@@ -62,6 +75,10 @@ function DashboardBody() {
       setOwnerDrawingsMTD(ownerDrawings);
       setShopSalesMTD(shopSales);
       setFlags(fl);
+      setAllSales(allS);
+      setAllPurchases(allP);
+      setAllExpenses(allE);
+      setAllDrawings(allD);
       setLastSynced(new Date());
     } finally {
       inFlight.current = false;
@@ -96,7 +113,8 @@ function DashboardBody() {
   // separate, clearly-labeled second line instead.
   const totalPurchasesMTD = purchasesMTD.reduce((s, x) => s + parseFloat(x.total_amount), 0);
   const totalOwnerDrawingsMTD = ownerDrawingsMTD.reduce((s, x) => s + parseFloat(x.amount), 0);
-  const netProfitLoss = totalSalesMTD - totalPurchasesMTD - totalExpensesMTD;
+  const grossProfit = totalSalesMTD - totalPurchasesMTD;
+  const netProfitLoss = grossProfit - totalExpensesMTD;
   const netProfitAfterDrawings = netProfitLoss - totalOwnerDrawingsMTD;
 
   // Sale / Purc / Total Tonnage cards (§ Dashboard) — total_kg is already
@@ -142,7 +160,7 @@ function DashboardBody() {
         caption="Sale P&L and Purchase Summary populate automatically as sales and expenses are recorded -- everything here refreshes on its own, no reload needed."
       />
 
-      <div className="grid grid-cols-3 gap-3.5 mb-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 mb-4">
         <Panel className="min-h-[96px]">
           <Eyebrow>Customers Flagged</Eyebrow>
           <div className={`font-display font-bold text-2xl ${flaggedAccounts.length ? "text-brand-amber" : "text-ink"}`}>{flaggedAccounts.length}</div>
@@ -210,18 +228,28 @@ function DashboardBody() {
       <Panel className="mb-3.5">
         <Eyebrow>Profit / Loss — {month}</Eyebrow>
         <SectionCaption>
-          Sale Revenue − Purchase Cost (COGS) − Expenses (plant + shop). Owner Drawings are shown
-          separately below — they never reduce reported business profit, only personal cash taken out.
+          Sale Revenue − Purchase Cost (COGS) = Gross Profit, minus Expenses (plant + shop) = Net Profit/Loss.
+          Owner Drawings are shown as a separate final step — they never reduce reported business profit, only
+          personal cash taken out.
         </SectionCaption>
-        <div className="grid grid-cols-2 gap-3.5 mt-1">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 mt-1">
+          <div className="rounded-lg border border-hairline bg-paper px-4 py-3.5">
+            <div className="font-mono text-[10px] uppercase text-steel tracking-wide">Gross Profit</div>
+            <div className={`font-display font-bold text-[26px] mt-0.5 ${grossProfit >= 0 ? "text-brand-green" : "text-brand-red"}`}>
+              {pkr(grossProfit)}
+            </div>
+            <div className="font-mono text-[10.5px] text-steel mt-1.5 flex flex-wrap gap-x-3">
+              <span>Sales {pkr(totalSalesMTD)}</span>
+              <span>− COGS {pkr(totalPurchasesMTD)}</span>
+            </div>
+          </div>
           <div className="rounded-lg border border-hairline bg-paper px-4 py-3.5">
             <div className="font-mono text-[10px] uppercase text-steel tracking-wide">Net Profit / Loss</div>
             <div className={`font-display font-bold text-[26px] mt-0.5 ${netProfitLoss >= 0 ? "text-brand-green" : "text-brand-red"}`}>
               {pkr(netProfitLoss)}
             </div>
             <div className="font-mono text-[10.5px] text-steel mt-1.5 flex flex-wrap gap-x-3">
-              <span>Sales {pkr(totalSalesMTD)}</span>
-              <span>− COGS {pkr(totalPurchasesMTD)}</span>
+              <span>Gross Profit {pkr(grossProfit)}</span>
               <span>− Expenses {pkr(totalExpensesMTD)}</span>
             </div>
           </div>
@@ -236,11 +264,11 @@ function DashboardBody() {
           </div>
         </div>
         <div className="mt-4 pt-4 border-t border-hairline">
-          <DashboardPnLChart sales={salesMTD} purchases={purchasesMTD} expenses={expensesMTD} drawings={ownerDrawingsMTD} />
+          <DashboardPnLChart sales={allSales} purchases={allPurchases} expenses={allExpenses} drawings={allDrawings} />
         </div>
       </Panel>
 
-      <div className="grid grid-cols-2 gap-3.5">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
         <Panel>
           <div className="flex items-center justify-between mb-1.5">
             <Eyebrow>Latest Applied Rates</Eyebrow>

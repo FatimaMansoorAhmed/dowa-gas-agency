@@ -8,47 +8,11 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app import models, schemas
 from app.deps import require_active_user, require_csrf
-from app.utils import next_display_id, resolve_account_or_bucket
+from app.utils import next_display_id, resolve_settlement_destination, apply_settlement_routing, reverse_payment_receipt
 
 router = APIRouter(prefix="/payment-receipts", tags=["payment-receipts"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 EPSILON = Decimal("0.01")
-
-
-def _try_uuid(value):
-    try:
-        return UUID(str(value))
-    except (ValueError, TypeError, AttributeError):
-        return None
-
-
-def _resolve_destination(db: Session, payload: schemas.PaymentReceiptCreate):
-    """Mirrors unified_sale._resolve_destination — validates and normalizes
-    settlement routing. Returns (destination_type, target_plant_id,
-    account_row_or_None, account_category_or_None). A fixed bucket key
-    (office_cash | owner_home | dowa_account) resolves to the SAME real
-    PaymentAccount row Cash Management reads — see resolve_account_or_bucket —
-    so crediting it below keeps both pages in sync."""
-    destination_type = payload.destination_type or "plant"
-    if destination_type == "plant":
-        if not payload.target_plant_id:
-            raise HTTPException(400, "target_plant_id is required when destination_type is 'plant'")
-        if not db.query(models.Company).get(payload.target_plant_id):
-            raise HTTPException(404, "Target plant not found")
-        return destination_type, payload.target_plant_id, None, None
-
-    if not payload.account_id:
-        raise HTTPException(400, "account_id is required when destination_type is 'account'")
-    account_uuid = _try_uuid(payload.account_id)
-    if account_uuid:
-        account_row = db.query(models.PaymentAccount).get(account_uuid)
-        if not account_row:
-            raise HTTPException(404, "Payment account not found")
-        return destination_type, None, account_row, None
-
-    account_row = resolve_account_or_bucket(db, payload.account_id)
-    account_category = str(payload.account_id)
-    return destination_type, None, account_row, account_category
 
 
 @router.get("", response_model=list[schemas.PaymentReceiptOut])
@@ -99,8 +63,10 @@ def create_payment_receipt(
     if payload.home_expense_category_id and not db.query(models.ExpenseCategory).get(payload.home_expense_category_id):
         raise HTTPException(404, "Expense category not found")
 
-    destination_type, target_plant_id, account_row, account_category = _resolve_destination(db, payload)
     net_settlement_amount = payload.amount - payload.home_expense_amount - payload.owner_drawings_amount
+    destination_type, target_plant_id, account_row, account_category = resolve_settlement_destination(
+        db, payload.destination_type, payload.target_plant_id, payload.account_id, net_settlement_amount
+    )
 
     try:
         excess = payload.amount - customer.current_balance
@@ -136,48 +102,11 @@ def create_payment_receipt(
             customer.account_credit = customer.account_credit + excess_amount
         db.add(customer)
 
-        if payload.home_expense_amount > 0:
-            db.add(models.Expense(
-                display_id=next_display_id(db, models.Expense, "EXP", width=6),
-                date=payload.date, category_id=payload.home_expense_category_id,
-                amount=payload.home_expense_amount, account_id=None, method="cash",
-                description=f"Auto-created from Payment Receipt {payment.display_id}",
-                status="active", entered_by=current_user.name, source_payment_id=payment.id,
-            ))
-
-        if payload.owner_drawings_amount > 0:
-            db.add(models.OwnerDrawings(
-                display_id=next_display_id(db, models.OwnerDrawings, "DRAW", width=6),
-                date=payload.date, amount=payload.owner_drawings_amount, account_id=None,
-                notes=f"Auto-created from Payment Receipt {payment.display_id}",
-                status="active", entered_by=current_user.name, source_payment_id=payment.id,
-            ))
-
-        if net_settlement_amount > 0:
-            if destination_type == "plant":
-                company = db.query(models.Company).get(target_plant_id)
-                c_excess = net_settlement_amount - company.current_balance
-                c_excess_amount = c_excess if c_excess > 0 else None
-                db.add(models.CompanyPayment(
-                    display_id=next_display_id(db, models.CompanyPayment, "CPAY", width=6),
-                    date=payload.date, company_id=target_plant_id, amount=net_settlement_amount,
-                    method="direct_settlement", account_id=None,
-                    notes=f"3-way settlement via Payment Receipt {payment.display_id} — customer paid plant directly",
-                    excess_amount=c_excess_amount, status="active",
-                    entered_by=current_user.name, source_payment_id=payment.id,
-                ))
-                company.current_balance = company.current_balance - net_settlement_amount
-                company.last_overpayment_amount = c_excess_amount
-                company.last_overpayment_date = payload.date if c_excess_amount else None
-                if c_excess_amount:
-                    company.account_credit = company.account_credit + c_excess_amount
-                db.add(company)
-            elif account_row:
-                account_row.current_balance = account_row.current_balance + net_settlement_amount
-                db.add(account_row)
-            # else: a category label with no PaymentAccount row (e.g.
-            # "office_cash") — nothing to credit, money is only tracked via
-            # this payment's own destination_type/account_category fields.
+        apply_settlement_routing(
+            db, payload.date, payload.home_expense_amount, payload.home_expense_category_id,
+            payload.owner_drawings_amount, destination_type, target_plant_id, account_row,
+            net_settlement_amount, current_user.name, payment.id, f"Payment Receipt {payment.display_id}",
+        )
 
         db.commit()
     except HTTPException:
@@ -199,41 +128,7 @@ def cancel_payment_receipt(payment_id: UUID, by: str = Query(...), db: Session =
     if payment.status != "active":
         raise HTTPException(400, "Payment receipt is already cancelled")
 
-    customer = db.query(models.Customer).get(payment.customer_id)
-    customer.current_balance = customer.current_balance + payment.amount
-    if payment.excess_amount:
-        customer.account_credit = customer.account_credit - payment.excess_amount
-    db.add(customer)
-
-    company_payment = (
-        db.query(models.CompanyPayment)
-        .filter(models.CompanyPayment.source_payment_id == payment.id, models.CompanyPayment.status == "active")
-        .first()
-    )
-    if company_payment:
-        company = db.query(models.Company).get(company_payment.company_id)
-        company.current_balance = company.current_balance + company_payment.amount
-        if company_payment.excess_amount:
-            company.account_credit = company.account_credit - company_payment.excess_amount
-        db.add(company)
-        company_payment.status = "cancelled"
-        db.add(company_payment)
-    elif payment.account_id and payment.net_settlement_amount:
-        account = db.query(models.PaymentAccount).get(payment.account_id)
-        if account:
-            account.current_balance = account.current_balance - payment.net_settlement_amount
-            db.add(account)
-
-    for exp in db.query(models.Expense).filter(
-        models.Expense.source_payment_id == payment.id, models.Expense.status == "active"
-    ).all():
-        exp.status = "cancelled"
-        db.add(exp)
-    for draw in db.query(models.OwnerDrawings).filter(
-        models.OwnerDrawings.source_payment_id == payment.id, models.OwnerDrawings.status == "active"
-    ).all():
-        draw.status = "cancelled"
-        db.add(draw)
+    reverse_payment_receipt(db, payment)
 
     payment.status = "cancelled"
     payment.modified_at = datetime.utcnow()

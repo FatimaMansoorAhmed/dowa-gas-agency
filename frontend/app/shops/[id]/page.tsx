@@ -39,6 +39,7 @@ import ReceivePaymentModal from "@/components/ReceivePaymentModal";
 import RecordShopSaleModal from "@/components/RecordShopSaleModal";
 import AddSupplyCustomerModal from "@/components/AddSupplyCustomerModal";
 import RecordSupplyCustomerPaymentModal from "@/components/RecordSupplyCustomerPaymentModal";
+import SupplyCustomerLedgerModal from "@/components/SupplyCustomerLedgerModal";
 import RecordShopExpenseModal from "@/components/RecordShopExpenseModal";
 import EmergencyTransferModal from "@/components/EmergencyTransferModal";
 import CorrectTransactionModal, {
@@ -469,6 +470,13 @@ function ShopDetailBody() {
 
   const [payCustomerTarget, setPayCustomerTarget] =
     useState<ShopSupplyCustomer | null>(null);
+
+  // Supply Customer Ledger (§ Shop Customer Ledger) — showCustomerLedger
+  // gates the modal; ledgerInitialCustomerId optionally preselects one
+  // customer (e.g. clicked directly from the card) rather than defaulting
+  // to the first in the list.
+  const [showCustomerLedger, setShowCustomerLedger] = useState(false);
+  const [ledgerInitialCustomerId, setLedgerInitialCustomerId] = useState<string | undefined>(undefined);
 
   const [supplyCustomers, setSupplyCustomers] = useState<
     ShopSupplyCustomer[]
@@ -1483,9 +1491,10 @@ function ShopDetailBody() {
                   <div className="mt-5 space-y-3 border-t border-slate-100 pt-4">
 
 {supplyCustomers.slice(0, 3).map((customer) => (
-  <div
+  <button
     key={customer.id}
-    className="flex items-center justify-between gap-3"
+    onClick={() => { setLedgerInitialCustomerId(customer.id); setShowCustomerLedger(true); }}
+    className="flex w-full items-center justify-between gap-3 rounded-lg text-left transition hover:bg-slate-50 cursor-pointer"
   >
     <div className="min-w-0 flex-1">
       <div className="truncate text-xs font-semibold text-slate-700">
@@ -1503,8 +1512,8 @@ function ShopDetailBody() {
       </div>
 
       {parseFloat(customer.current_balance) > 0 && (
-        <button
-          onClick={() => setPayCustomerTarget(customer)}
+        <span
+          onClick={(e) => { e.stopPropagation(); setPayCustomerTarget(customer); }}
           className="
             mt-1
             inline-flex items-center
@@ -1520,17 +1529,28 @@ function ShopDetailBody() {
           "
         >
           Receive Payment
-        </button>
+        </span>
       )}
     </div>
-  </div>
+  </button>
 ))}
 
+                <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
+                  <span className="text-[11px] font-medium text-slate-500">
+                    {supplyCustomers.length} customer{supplyCustomers.length === 1 ? "" : "s"} total
+                  </span>
+                  <button
+                    onClick={() => { setLedgerInitialCustomerId(undefined); setShowCustomerLedger(true); }}
+                    className="text-[11px] font-semibold text-teal hover:underline cursor-pointer"
+                  >
+                    View Ledger →
+                  </button>
+                </div>
 
                 <button
                   onClick={() => setShowAddCustomer(true)}
                   className="
-                    mt-5
+                    mt-3
                     flex w-full
                     items-center justify-center
                     gap-2
@@ -1738,6 +1758,7 @@ function ShopDetailBody() {
             setShowSale(false);
             load();
           }}
+          onPartialSave={load}
         />
       )}
 
@@ -1787,6 +1808,18 @@ function ShopDetailBody() {
           onSaved={() => {
             setPayCustomerTarget(null);
             load();
+          }}
+        />
+      )}
+
+      {showCustomerLedger && (
+        <SupplyCustomerLedgerModal
+          customers={supplyCustomers}
+          initialCustomerId={ledgerInitialCustomerId}
+          onClose={() => setShowCustomerLedger(false)}
+          onReceivePayment={(customer) => {
+            setShowCustomerLedger(false);
+            setPayCustomerTarget(customer);
           }}
         />
       )}

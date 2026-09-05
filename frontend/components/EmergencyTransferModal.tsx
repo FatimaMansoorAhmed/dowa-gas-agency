@@ -46,6 +46,19 @@ export default function EmergencyTransferModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Live stock — `stockProducts` (the prop) is whatever the shop page last
+  // fetched, which can go stale by the time this modal is actually
+  // submitted (the page never polls, and opening this modal doesn't
+  // re-fetch it either). If stock at this shop changes in that window —
+  // another sale, load, or Emergency Transfer — the prop's closing_stock
+  // no longer matches what the server will actually check at submit time.
+  // Same fix as RecordShopSaleModal's Bug 1: re-fetch on mount so the
+  // preview stays honest; the prop is still the instant-render fallback.
+  const [liveStockProducts, setLiveStockProducts] = useState(stockProducts);
+  useEffect(() => {
+    api.shops.stock(shopId).then((s) => setLiveStockProducts(s.products));
+  }, [shopId]);
+
   useEffect(() => { api.customers.list().then(setCustomers); }, []);
   useEffect(() => { api.paymentAccounts.list().then((a) => setAccounts(a.filter((x) => x.active === "active"))); }, []);
 
@@ -59,7 +72,7 @@ export default function EmergencyTransferModal({
     return c.name.toLowerCase().includes(q) || c.display_id.toLowerCase().includes(q) || (c.mobile || "").includes(q);
   });
 
-  const selectedProduct = stockProducts.find((p) => p.product_id === productId);
+  const selectedProduct = liveStockProducts.find((p) => p.product_id === productId);
   const available = selectedProduct ? parseFloat(selectedProduct.closing_stock) : null;
   const qty = parseFloat(quantity);
   const rateNum = parseFloat(rate);
@@ -102,8 +115,8 @@ export default function EmergencyTransferModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl px-6 py-6 w-[460px] max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-4 sm:p-6">
+      <div className="bg-white rounded-xl px-5 py-6 sm:px-6 w-full max-w-[460px] max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-1">
           <div className="flex items-center gap-2 font-display font-bold text-[17px] text-ink">
             <Zap size={16} className="text-brand-amber" /> Emergency Transfer
@@ -136,11 +149,11 @@ export default function EmergencyTransferModal({
             </div>
           </Field>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Product">
               <select value={productId} onChange={(e) => setProductId(e.target.value)} className={inputClass}>
                 <option value="">Select product</option>
-                {stockProducts.map((p) => (
+                {liveStockProducts.map((p) => (
                   <option key={p.product_id} value={p.product_id}>{p.product_name} ({p.closing_stock} available)</option>
                 ))}
               </select>
@@ -150,7 +163,7 @@ export default function EmergencyTransferModal({
             </Field>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Quantity">
               <input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} className={inputClass} />
             </Field>
@@ -177,7 +190,7 @@ export default function EmergencyTransferModal({
           </label>
 
           {collectNow && (
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Field label="Amount Collected">
                 <AmountInput value={amountCollected} onChange={setAmountCollected} className={inputClass} />
               </Field>

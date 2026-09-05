@@ -6,6 +6,7 @@ import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, 
 import AmountInput from "@/components/AmountInput";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import AddEmptyCylinderModal from "@/components/AddEmptyCylinderModal";
 import type { Customer } from "@/lib/types";
 
 // "legacy" = the untyped, unclassified remainder of a size's balance for
@@ -28,6 +29,7 @@ function EmptyCylindersBody() {
   const [search, setSearch] = useState("");
 
   const [sellModal, setSellModal] = useState<Customer | null>(null);
+  const [addModal, setAddModal] = useState<Customer | null>(null);
   const [cylSize, setCylSize] = useState<"118" | "454">("118");
   const [sellType, setSellType] = useState<SellType>("cross");
   const [quantity, setQuantity] = useState("");
@@ -229,13 +231,18 @@ function EmptyCylindersBody() {
                   {c.empty_cylinders_454 || 0}
                 </Td>
                 <Td right>
-                  <Button
-                    variant="teal"
-                    onClick={() => openSellModal(c)}
-                    disabled={parseFloat(c.empty_cylinders_118 || "0") <= 0 && parseFloat(c.empty_cylinders_454 || "0") <= 0}
-                  >
-                    Sell Empty Cylinders
-                  </Button>
+                  <div className="flex justify-end gap-1.5">
+                    <Button variant="outline" onClick={() => setAddModal(c)}>
+                      Add
+                    </Button>
+                    <Button
+                      variant="teal"
+                      onClick={() => openSellModal(c)}
+                      disabled={parseFloat(c.empty_cylinders_118 || "0") <= 0 && parseFloat(c.empty_cylinders_454 || "0") <= 0}
+                    >
+                      Sell Empty Cylinders
+                    </Button>
+                  </div>
                 </Td>
               </tr>
             ))}
@@ -251,8 +258,8 @@ function EmptyCylindersBody() {
       </Panel>
 
       {sellModal && (
-        <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl px-6 py-6 w-[380px]">
+        <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl px-6 py-6 w-full max-w-[380px]">
             <div className="flex justify-between items-center mb-1">
               <div className="font-display font-bold text-[17px] text-ink">{sellModal.name}</div>
               <button onClick={closeSellModal} className="bg-transparent border-none cursor-pointer">
@@ -326,6 +333,13 @@ function EmptyCylindersBody() {
           </div>
         </div>
       )}
+
+      <AddEmptyCylinderModal
+        isOpen={!!addModal}
+        onClose={() => setAddModal(null)}
+        customer={addModal}
+        onSuccess={() => load(search || undefined)}
+      />
     </div>
   );
 }

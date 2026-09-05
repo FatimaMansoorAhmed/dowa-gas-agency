@@ -28,15 +28,80 @@ def list_owner_drawings(
         {s.id: s for s in db.query(models.Customer).filter(models.Customer.id.in_(shop_ids)).all()}
         if shop_ids else {}
     )
-    return [
-        schemas.OwnerDrawingsOut(
+
+    # § Shop Expense/Withdrawal Attribution — same one-hop-back resolution
+    # as routers/expenses.list_expenses (a shop owner_withdrawal's own
+    # customer/sale context, if any, lives on the ShopExpenseTransaction it
+    # was dual-written from, not on this row itself).
+    txn_ids = {r.source_shop_expense_transaction_id for r in rows if r.source_shop_expense_transaction_id}
+    txns = (
+        {t.id: t for t in db.query(models.ShopExpenseTransaction).filter(models.ShopExpenseTransaction.id.in_(txn_ids)).all()}
+        if txn_ids else {}
+    )
+    shop_customer_ids = {t.supply_customer_id for t in txns.values() if t.supply_customer_id}
+    shop_customers = (
+        {c.id: c for c in db.query(models.ShopSupplyCustomer).filter(models.ShopSupplyCustomer.id.in_(shop_customer_ids)).all()}
+        if shop_customer_ids else {}
+    )
+    shop_sale_ids = {t.shop_sale_id for t in txns.values() if t.shop_sale_id}
+    shop_sales = (
+        {s.id: s for s in db.query(models.ShopSale).filter(models.ShopSale.id.in_(shop_sale_ids)).all()}
+        if shop_sale_ids else {}
+    )
+
+    # Payment Receipt / Cylinder Return "cash" mode (§ Cash Management —
+    # Owner Drawings Audit Ledger visibility) — a row auto-created via
+    # /payment-receipts or /cylinder-returns has source_payment_id set
+    # (never alongside unified_sale_id), so its customer/reference lives one
+    # hop back on that Payment, exactly like the shop-attribution lookup
+    # above resolves through ShopExpenseTransaction. Batched the same way.
+    payment_ids = {r.source_payment_id for r in rows if r.source_payment_id}
+    payments = (
+        {p.id: p for p in db.query(models.Payment).filter(models.Payment.id.in_(payment_ids)).all()}
+        if payment_ids else {}
+    )
+    payment_customer_ids = {p.customer_id for p in payments.values()}
+    payment_customers = (
+        {c.id: c for c in db.query(models.Customer).filter(models.Customer.id.in_(payment_customer_ids)).all()}
+        if payment_customer_ids else {}
+    )
+
+    out: list[schemas.OwnerDrawingsOut] = []
+    for r in rows:
+        shop_customer_name = None
+        shop_supply_customer_id = None
+        shop_sale_display_id = None
+        txn = txns.get(r.source_shop_expense_transaction_id) if r.source_shop_expense_transaction_id else None
+        if txn:
+            sc = shop_customers.get(txn.supply_customer_id) if txn.supply_customer_id else None
+            if sc:
+                shop_customer_name = sc.name
+                shop_supply_customer_id = sc.id
+            sale = shop_sales.get(txn.shop_sale_id) if txn.shop_sale_id else None
+            if sale:
+                shop_sale_display_id = sale.display_id
+
+        payment = payments.get(r.source_payment_id) if r.source_payment_id else None
+        payment_customer_id = None
+        payment_customer_name = None
+        if payment:
+            customer = payment_customers.get(payment.customer_id)
+            if customer:
+                payment_customer_id = customer.id
+                payment_customer_name = customer.name
+
+        out.append(schemas.OwnerDrawingsOut(
             id=r.id, display_id=r.display_id, date=r.date, amount=r.amount,
             account_id=r.account_id, notes=r.notes, unified_sale_id=r.unified_sale_id,
             shop_id=r.shop_id, shop_name=shops[r.shop_id].name if r.shop_id in shops else None,
+            customer_id=payment_customer_id, customer_name=shop_customer_name or payment_customer_name,
+            shop_supply_customer_id=shop_supply_customer_id,
+            shop_sale_display_id=shop_sale_display_id,
+            source_payment_id=r.source_payment_id,
+            source_payment_display_id=payment.display_id if payment else None,
             status=r.status, entered_by=r.entered_by, created_at=r.created_at,
-        )
-        for r in rows
-    ]
+        ))
+    return out
 
 
 @router.post("", response_model=schemas.OwnerDrawingsOut, status_code=201)

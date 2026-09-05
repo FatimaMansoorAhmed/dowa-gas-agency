@@ -152,6 +152,12 @@ export type Expense = {
   // payment (bypassing a Dowa account) — null for ordinary account-funded expenses.
   customer_id?: string | null;
   customer_name?: string | null;
+  // § Shop Expense/Withdrawal Attribution — set only for a shop-sourced
+  // row (shop_id set) that was entered alongside a known supply customer /
+  // sale. customer_name above is shared for display either way; this id
+  // specifically is a ShopSupplyCustomer.id, not a Customer.id.
+  shop_supply_customer_id?: string | null;
+  shop_sale_display_id?: string | null;
   // Dashboard P&L / Shop Expense integration (§ Dashboard) — set only for
   // a row dual-written from a Shop's own Record Expense form.
   shop_id?: string | null;
@@ -159,7 +165,7 @@ export type Expense = {
 };
 
 export type LedgerRow = {
-  date: string; kind: "sale" | "payment" | "unified_sale" | "empty_cylinder_sale" | "cylinder_transaction"; ref_id: string; display_id: string;
+  date: string; kind: "sale" | "payment" | "unified_sale" | "empty_cylinder_sale" | "cylinder_transaction" | "cylinder_return_out" | "cylinder_return_in"; ref_id: string; display_id: string;
   description: string; sale_amount: string; payment_amount: string; running_balance: string;
   qty_118: string; qty_454: string; qty_empty: string;
   cyl_out: string; cyl_in: string;
@@ -295,6 +301,17 @@ export type OwnerDrawing = {
   // convention as Expense.shop_id/shop_name above.
   shop_id?: string | null;
   shop_name?: string | null;
+  // § Shop Expense/Withdrawal Attribution — same convention as
+  // Expense.customer_name/shop_supply_customer_id/shop_sale_display_id above.
+  customer_id?: string | null;
+  customer_name?: string | null;
+  shop_supply_customer_id?: string | null;
+  shop_sale_display_id?: string | null;
+  // Payment Receipt / Cylinder Return "cash" mode (§ Cash Management —
+  // Owner Drawings Audit Ledger visibility) — set only when this row was
+  // auto-created via /payment-receipts or /cylinder-returns.
+  source_payment_id?: string | null;
+  source_payment_display_id?: string | null;
   status: string;
   entered_by: string;
   created_at: string;
@@ -349,6 +366,7 @@ export type UnifiedSaleBatch = {
   company_id: string;
   total_selling_amount: string;
   total_purchase_amount: string;
+  delivery_charges: string;
   total_credit_received: string;
   net_plant_payment: string;
   home_expense_amount: string;
@@ -427,6 +445,28 @@ export type EmptyCylinderSale = {
   cylinder_type: CylinderType | null;
   quantity: string;
   amount: string;
+  notes: string | null;
+  status: string;
+  entered_by: string;
+  created_at: string;
+};
+
+export type CylinderReturnMode = "transfer" | "cash" | "manual_add";
+
+// Return Cylinder / Add Empty Cylinder (§ Part B/C) — one shape covering
+// all 3 modes; to_customer_id only set for "transfer", payment_id only set
+// for "cash" (see backend models.CylinderReturn).
+export type CylinderReturn = {
+  id: string;
+  display_id: string;
+  date: string;
+  customer_id: string;
+  cylinder_size: "118" | "454";
+  cylinder_type: CylinderType | null;
+  quantity: string;
+  mode: CylinderReturnMode;
+  to_customer_id: string | null;
+  payment_id: string | null;
   notes: string | null;
   status: string;
   entered_by: string;
@@ -631,9 +671,39 @@ export type ShopCustomerPayment = {
   amount: string;
   method: string;
   notes: string | null;
+  // Advance/overpayment — same convention as Payment.excess_amount: how
+  // much of this payment exceeded what was owed at the time.
+  excess_amount: string | null;
   status: string;
   entered_by: string;
   created_at: string;
+};
+
+export type ShopSupplyCustomerLedgerRow = {
+  date: string;
+  kind: "sale" | "payment";
+  ref_id: string;
+  display_id: string;
+  description: string;
+  sale_amount: string;
+  payment_amount: string;
+  running_balance: string;
+  rate: string | null;
+  entered_by: string;
+};
+
+export type ShopSupplyCustomerLedgerOut = {
+  customer: ShopSupplyCustomer;
+  opening_balance: string;
+  total_sales: string;
+  total_payments: string;
+  // Cash collected at the moment of sale (full cash sales + credit sales'
+  // inline-settled portion) — separate from total_payments (genuine
+  // ShopCustomerPayment rows); never touched running_balance on its own.
+  total_collected_at_sale: string;
+  total_transactions: number;
+  closing_balance: string;
+  rows: ShopSupplyCustomerLedgerRow[];
 };
 
 export type ShopExpenseLine = {
@@ -656,6 +726,13 @@ export type ShopExpenseTransaction = {
   account_id: string | null;
   payment_source: string | null;
   notes: string | null;
+  // § Shop Expense/Withdrawal Attribution — set only when this was entered
+  // alongside a known supply customer / sale (Record Shop Sale, Record
+  // Supply Customer Payment); null from the standalone Record Expense form.
+  supply_customer_id: string | null;
+  customer_name: string | null;
+  shop_sale_id: string | null;
+  shop_sale_display_id: string | null;
   status: string;
   entered_by: string;
   created_at: string;

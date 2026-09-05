@@ -190,3 +190,159 @@ def adjust_cylinder_balance(db: Session, customer_id, product_id, delta):
     row.balance = row.balance + delta
     db.add(row)
     return row
+
+
+def resolve_settlement_destination(db: Session, destination_type, target_plant_id, account_id, net_settlement_amount=None):
+    """Validates and normalizes settlement routing — shared by
+    routers/payment_receipts.py and routers/cylinder_returns.py (§ Cylinder
+    Return, cash mode). Returns (destination_type, target_plant_id,
+    account_row, account_category). Raises fastapi.HTTPException on bad
+    input, same as the callers did inline before this was extracted.
+
+    net_settlement_amount, when given and <= 0 (Home Expense + Owner
+    Drawings consumed the entire amount), skips the Plant/Account
+    requirement entirely — apply_settlement_routing never touches either
+    when net_settlement_amount isn't > 0, so requiring a pick here would
+    force choosing a destination nothing actually gets routed to."""
+    from uuid import UUID
+    from fastapi import HTTPException
+    from app import models  # local import avoids a circular import with models.py
+
+    destination_type = destination_type or "plant"
+    if net_settlement_amount is not None and net_settlement_amount <= 0:
+        return destination_type, None, None, None
+    if destination_type == "plant":
+        if not target_plant_id:
+            raise HTTPException(400, "target_plant_id is required when destination_type is 'plant'")
+        if not db.query(models.Company).get(target_plant_id):
+            raise HTTPException(404, "Target plant not found")
+        return destination_type, target_plant_id, None, None
+
+    if not account_id:
+        raise HTTPException(400, "account_id is required when destination_type is 'account'")
+    try:
+        account_uuid = UUID(str(account_id))
+    except (ValueError, TypeError, AttributeError):
+        account_uuid = None
+    if account_uuid:
+        account_row = db.query(models.PaymentAccount).get(account_uuid)
+        if not account_row:
+            raise HTTPException(404, "Payment account not found")
+        return destination_type, None, account_row, None
+
+    account_row = resolve_account_or_bucket(db, account_id)
+    return destination_type, None, account_row, str(account_id)
+
+
+def apply_settlement_routing(
+    db: Session, date, home_expense_amount, home_expense_category_id,
+    owner_drawings_amount, destination_type, target_plant_id, account_row,
+    net_settlement_amount, entered_by: str, source_payment_id, source_label: str,
+) -> None:
+    """The money-movement side of a Payment Receipt settlement (§ Settlement
+    Routing) — home_expense_amount/owner_drawings_amount bypass every Dowa
+    account (auto-creates Expense/OwnerDrawings, account_id=None, same
+    field-collected-cash pattern used throughout this app), and whatever's
+    left (net_settlement_amount) is routed to a plant (3-way settlement —
+    a CompanyPayment that reduces what Dowa owes that plant, never touching
+    a Dowa account) or credited to account_row.
+
+    Extracted from routers/payment_receipts.py so a second caller (Cylinder
+    Return's "convert to cash" mode — routers/cylinder_returns.py) reuses
+    the EXACT same routing rather than re-implementing it. Caller must have
+    already validated destination_type/target_plant_id/account_row (see
+    routers/payment_receipts.py._resolve_destination) and created the
+    Payment row `source_payment_id` points at — this function only ever
+    creates the bypass/settlement CHILD rows, never a Payment itself, since
+    what "the payment" means differs by caller (real cash vs. a cylinder's
+    deemed cash value)."""
+    from app import models  # local import avoids a circular import with models.py
+
+    if home_expense_amount and home_expense_amount > 0:
+        db.add(models.Expense(
+            display_id=next_display_id(db, models.Expense, "EXP", width=6),
+            date=date, category_id=home_expense_category_id,
+            amount=home_expense_amount, account_id=None, method="cash",
+            description=f"Auto-created from {source_label}",
+            status="active", entered_by=entered_by, source_payment_id=source_payment_id,
+        ))
+
+    if owner_drawings_amount and owner_drawings_amount > 0:
+        db.add(models.OwnerDrawings(
+            display_id=next_display_id(db, models.OwnerDrawings, "DRAW", width=6),
+            date=date, amount=owner_drawings_amount, account_id=None,
+            notes=f"Auto-created from {source_label}",
+            status="active", entered_by=entered_by, source_payment_id=source_payment_id,
+        ))
+
+    if net_settlement_amount and net_settlement_amount > 0:
+        if destination_type == "plant":
+            company = db.query(models.Company).get(target_plant_id)
+            c_excess = net_settlement_amount - company.current_balance
+            c_excess_amount = c_excess if c_excess > 0 else None
+            db.add(models.CompanyPayment(
+                display_id=next_display_id(db, models.CompanyPayment, "CPAY", width=6),
+                date=date, company_id=target_plant_id, amount=net_settlement_amount,
+                method="direct_settlement", account_id=None,
+                notes=f"3-way settlement via {source_label} — customer paid plant directly",
+                excess_amount=c_excess_amount, status="active",
+                entered_by=entered_by, source_payment_id=source_payment_id,
+            ))
+            company.current_balance = company.current_balance - net_settlement_amount
+            company.last_overpayment_amount = c_excess_amount
+            company.last_overpayment_date = date if c_excess_amount else None
+            if c_excess_amount:
+                company.account_credit = company.account_credit + c_excess_amount
+            db.add(company)
+        elif account_row:
+            account_row.current_balance = account_row.current_balance + net_settlement_amount
+            db.add(account_row)
+        # else: a category label with no PaymentAccount row yet (e.g.
+        # "office_cash") — nothing to credit, tracked only via the caller's
+        # own destination_type/account_category fields.
+
+
+def reverse_payment_receipt(db: Session, payment) -> None:
+    """Undoes exactly what apply_settlement_routing (+ the Payment's own
+    customer-balance effect) posted for one Payment Receipt-style payment —
+    shared by routers/payment_receipts.cancel_payment_receipt and Cylinder
+    Return's cash-mode cancel (routers/cylinder_returns.py). Caller is
+    responsible for the final payment.status/modified_at/modified_by +
+    commit, same as before this was extracted."""
+    from app import models  # local import avoids a circular import with models.py
+
+    customer = db.query(models.Customer).get(payment.customer_id)
+    customer.current_balance = customer.current_balance + payment.amount
+    if payment.excess_amount:
+        customer.account_credit = customer.account_credit - payment.excess_amount
+    db.add(customer)
+
+    company_payment = (
+        db.query(models.CompanyPayment)
+        .filter(models.CompanyPayment.source_payment_id == payment.id, models.CompanyPayment.status == "active")
+        .first()
+    )
+    if company_payment:
+        company = db.query(models.Company).get(company_payment.company_id)
+        company.current_balance = company.current_balance + company_payment.amount
+        if company_payment.excess_amount:
+            company.account_credit = company.account_credit - company_payment.excess_amount
+        db.add(company)
+        company_payment.status = "cancelled"
+        db.add(company_payment)
+    elif payment.account_id and payment.net_settlement_amount:
+        account = db.query(models.PaymentAccount).get(payment.account_id)
+        if account:
+            account.current_balance = account.current_balance - payment.net_settlement_amount
+            db.add(account)
+
+    for exp in db.query(models.Expense).filter(
+        models.Expense.source_payment_id == payment.id, models.Expense.status == "active"
+    ).all():
+        exp.status = "cancelled"
+        db.add(exp)
+    for draw in db.query(models.OwnerDrawings).filter(
+        models.OwnerDrawings.source_payment_id == payment.id, models.OwnerDrawings.status == "active"
+    ).all():
+        draw.status = "cancelled"
+        db.add(draw)

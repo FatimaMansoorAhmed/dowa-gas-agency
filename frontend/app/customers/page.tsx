@@ -79,25 +79,26 @@ function CustomerBody() {
 
   return (
     <div>
-      <div className="flex justify-between items-start mb-4">
-        <PageHeader
-          eyebrow="Customers"
-          title="Add and manage customer accounts"
-          caption="Balances follow the advance convention -- negative means the customer paid ahead, shown as Advance, not Balance Due. Payments recorded here use the same ledger as New Sale."
-        />
-        <Button variant="primary" onClick={() => setIsAddModalOpen(true)}>
-          <Plus size={15} /> Add New Customer
-        </Button>
-      </div>
+      <PageHeader
+        eyebrow="Customers"
+        title="Add and manage customer accounts"
+        caption="Balances follow the advance convention -- negative means the customer paid ahead, shown as Advance, not Balance Due. Payments recorded here use the same ledger as New Sale."
+        action={
+          <Button variant="primary" onClick={() => setIsAddModalOpen(true)}>
+            <Plus size={15} /> Add New Customer
+          </Button>
+        }
+      />
 
       <Panel>
-        <div className="flex justify-between items-center mb-1">
+        <div className="flex justify-between items-center flex-wrap gap-2 mb-1">
           <Eyebrow>Existing Customers ({customers.length})</Eyebrow>
-          <div className="flex items-center gap-1.5 border border-hairline rounded-md px-2.5">
+          <div className="flex items-center gap-1.5 border border-hairline rounded-md px-2.5 w-full sm:w-auto">
             <Search size={13} className="text-steel" />
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Name, mobile, shop, or ID" className="border-none outline-none font-body text-xs py-1.5 w-[190px]" />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Name, mobile, shop, or ID" className="border-none outline-none font-body text-xs py-1.5 w-full sm:w-[190px]" />
           </div>
         </div>
+        <div className="overflow-x-auto">
         <table className="w-full border-collapse mt-2">
           <thead>
             <tr><Th>ID</Th><Th>Name</Th><Th>Mobile</Th><Th right>Balance</Th><Th right>Empty Cylinders</Th><Th>Status</Th><Th right>Action</Th></tr>
@@ -135,12 +136,13 @@ function CustomerBody() {
             {!customers.length && <tr><td className="text-steel font-body text-[13px] py-3">No customers match.</td></tr>}
           </tbody>
         </table>
+        </div>
       </Panel>
 
       {/* Add New Customer Modal */}
       {isAddModalOpen && (
-        <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl px-6 py-6 w-[420px] max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl px-6 py-6 w-full max-w-[420px] max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center mb-3">
               <div className="font-display font-bold text-[17px] text-ink">Add New Customer</div>
               <button onClick={() => setIsAddModalOpen(false)} className="bg-transparent border-none cursor-pointer">
@@ -183,8 +185,8 @@ function CustomerBody() {
 
       {/* Record Payment Modal */}
       {payModal && (
-        <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl px-6 py-6 w-[380px]">
+        <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl px-6 py-6 w-full max-w-[380px]">
             <div className="flex justify-between items-center mb-1">
               <div className="font-display font-bold text-[17px] text-ink">{payModal.name}</div>
               <button onClick={() => setPayModal(null)} className="bg-transparent border-none cursor-pointer"><X size={16} className="text-steel" /></button>
@@ -228,8 +230,8 @@ function CustomerBody() {
 
       {/* Charge Modal */}
       {chargeModal && (
-        <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl px-6 py-6 w-[360px]">
+        <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl px-6 py-6 w-full max-w-[360px]">
             <div className="flex justify-between items-center mb-1">
               <div className="font-display font-bold text-[17px] text-ink">{chargeModal.name}</div>
               <button onClick={() => setChargeModal(null)} className="bg-transparent border-none cursor-pointer"><X size={16} className="text-steel" /></button>

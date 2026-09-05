@@ -76,8 +76,8 @@ function ReportsBody() {
       <Panel className="mb-4">
         <Eyebrow>Generate a Report</Eyebrow>
         <SectionCaption>Manually generate or regenerate the Daily Report PDF for any business date.</SectionCaption>
-        <div className="flex items-center gap-2">
-          <input type="date" value={genDate} onChange={(e) => setGenDate(e.target.value)} className={`${inputClass} w-[160px]`} />
+        <div className="flex items-center flex-wrap gap-2">
+          <input type="date" value={genDate} onChange={(e) => setGenDate(e.target.value)} className={`${inputClass} w-full sm:w-[160px]`} />
           <Button variant="teal" onClick={handleGenerate} disabled={busyId === "__generate__"}>
             <FileDown size={14} /> {busyId === "__generate__" ? "Generating…" : "Generate"}
           </Button>
@@ -89,6 +89,7 @@ function ReportsBody() {
         {loading ? (
           <div className="font-body text-steel py-6">Loading…</div>
         ) : (
+          <div className="overflow-x-auto">
           <table className="w-full border-collapse">
             <thead>
               <tr>
@@ -159,6 +160,7 @@ function ReportsBody() {
               )}
             </tbody>
           </table>
+          </div>
         )}
       </Panel>
     </div>

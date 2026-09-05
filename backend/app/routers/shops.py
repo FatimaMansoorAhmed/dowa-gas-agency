@@ -56,8 +56,21 @@ def _compute_stock_summary(db: Session, shop_id, business_date: str) -> schemas.
     all_sales = db.query(models.ShopSale).filter(
         models.ShopSale.customer_id == shop_id, models.ShopSale.status == "active"
     ).all()
+    # Emergency Transfer (§ Shop — Emergency Transfer) draws physical stock
+    # from this same shop's FIFO batches (see _consume_shop_stock_for_
+    # emergency_transfer in routers/sales.py) but posts as a Sale against
+    # the real customer's ledger, never as a ShopSale — so it must be
+    # subtracted here too, or this summary (opening/closing/hero "Closing
+    # Stock Inventory" card, and the price/stock preview Record Shop Sale
+    # reads its stockProducts from) silently overstates remaining stock by
+    # exactly what Emergency Transfer already took, while the live FIFO
+    # check at actual sale time (which reads ShopStockBatch.quantity_
+    # remaining directly) correctly does not.
+    all_transfers = db.query(models.Sale).filter(
+        models.Sale.emergency_transfer_shop_id == shop_id, models.Sale.status == "active"
+    ).all()
 
-    product_ids = {b.product_id for b in all_batches} | {s.product_id for s in all_sales}
+    product_ids = {b.product_id for b in all_batches} | {s.product_id for s in all_sales} | {t.product_id for t in all_transfers}
 
     try:
         board_rate = resolve_board_rate(db, on_date)
@@ -73,13 +86,24 @@ def _compute_stock_summary(db: Session, shop_id, business_date: str) -> schemas.
             continue
         batches = [b for b in all_batches if b.product_id == pid]
         sales = [s for s in all_sales if s.product_id == pid]
+        transfers = [t for t in all_transfers if t.product_id == pid]
 
         opening = (
             sum((b.quantity_received for b in batches if b.transaction_date < day_start), start=Decimal("0"))
             - sum((s.quantity for s in sales if s.date < day_start), start=Decimal("0"))
+            - sum((t.quantity for t in transfers if t.date < day_start), start=Decimal("0"))
         )
         day_load = sum((b.quantity_received for b in batches if day_start <= b.transaction_date < day_end), start=Decimal("0"))
-        day_sales = sum((s.quantity for s in sales if day_start <= s.date < day_end), start=Decimal("0"))
+        # "sales" (both the returned field and what closing is derived from)
+        # is stock LEAVING the shop, so it includes Emergency Transfer
+        # quantities too — closing must stay exactly opening + load - sales,
+        # with no hidden term, or the two numbers silently stop reconciling.
+        day_sales = sum((s.quantity for s in sales if day_start <= s.date < day_end), start=Decimal("0")) + sum(
+            (t.quantity for t in transfers if day_start <= t.date < day_end), start=Decimal("0")
+        )
+        # Emergency Transfer revenue posts to the real customer's ledger,
+        # never the shop's own sales reporting — todays_sales_amount stays
+        # ShopSale-only on purpose; only the STOCK quantity gap is fixed above.
         day_sales_amount = sum((s.total_amount for s in sales if day_start <= s.date < day_end), start=Decimal("0"))
         closing = opening + day_load - day_sales
 
@@ -776,6 +800,117 @@ def get_supply_customer(supply_customer_id: UUID, db: Session = Depends(get_db))
     return customer
 
 
+@router.get("/customers/{supply_customer_id}/ledger", response_model=schemas.ShopSupplyCustomerLedgerOut)
+def get_supply_customer_ledger(supply_customer_id: UUID, db: Session = Depends(get_db)):
+    """All-time running-balance ledger for one shop's own supply customer —
+    the shop-scoped mirror of GET /ledger/customer/{id}, scaled down to this
+    customer's own two event kinds (ShopSale, ShopCustomerPayment) and with
+    no month scoping (ShopSupplyCustomer carries a single opening_balance,
+    not a month-anchored one like Customer.opening_balance_month). Reads
+    only ShopSale/ShopCustomerPayment rows tied to this supply_customer_id —
+    never touches models.Customer, Sale, Payment, or the real Customer
+    Ledger (see the Shop Business Finance module docstring above)."""
+    customer = db.query(models.ShopSupplyCustomer).get(supply_customer_id)
+    if not customer:
+        raise HTTPException(404, "Supply customer not found")
+
+    sales = (
+        db.query(models.ShopSale)
+        .filter(models.ShopSale.supply_customer_id == supply_customer_id, models.ShopSale.status == "active")
+        .order_by(models.ShopSale.date)
+        .all()
+    )
+    payments = (
+        db.query(models.ShopCustomerPayment)
+        .filter(models.ShopCustomerPayment.supply_customer_id == supply_customer_id, models.ShopCustomerPayment.status == "active")
+        .order_by(models.ShopCustomerPayment.date)
+        .all()
+    )
+    products = {p.id: p for p in db.query(models.Product).all()}
+
+    events = (
+        [{"date": s.date, "kind": "sale", "obj": s} for s in sales]
+        + [{"date": p.date, "kind": "payment", "obj": p} for p in payments]
+    )
+    events.sort(key=lambda e: e["date"])
+
+    rows: list[schemas.ShopSupplyCustomerLedgerRow] = []
+    running = customer.opening_balance
+    total_sales = Decimal("0")
+    total_payments = Decimal("0")
+    # Cash actually collected AT THE MOMENT OF SALE (a full cash sale, or
+    # the inline-settled portion of a credit sale) — tracked separately
+    # from total_payments (genuine ShopCustomerPayment rows) so the two
+    # summary tiles keep their own distinct meaning: total_sales -
+    # total_payments still reconciles exactly to (closing - opening), which
+    # would break if collected-at-sale cash were folded into total_payments
+    # (it never touched running_balance to begin with — seeing it as
+    # "outstanding" already nets it out).
+    total_collected_at_sale = Decimal("0")
+
+    for e in events:
+        if e["kind"] == "sale":
+            s: models.ShopSale = e["obj"]
+            # Same convention as _apply_shop_sale/_reverse_shop_sale above —
+            # only the OUTSTANDING remainder of a credit sale ever posts to
+            # this customer's balance; a cash sale (even one naming a
+            # customer) never does, matching what's actually happening to
+            # current_balance rather than showing the full sale total.
+            collected_now = s.amount_received if s.amount_received is not None else Decimal("0")
+            outstanding = s.total_amount - collected_now
+            contribution = outstanding if s.payment_type == "credit" else Decimal("0")
+            running += contribution
+            total_sales += contribution
+            total_collected_at_sale += collected_now
+            product = products.get(s.product_id)
+            unit_label = "KG" if s.unit == "kg" else "Cylinder"
+            qty = s.quantity_kg if s.unit == "kg" and s.quantity_kg is not None else s.quantity
+            description = f"{product.name if product else 'Product'} × {qty} {unit_label}"
+            # Rate column (Bug 3) — sale_rate_per_cylinder is always the
+            # FULL-CYLINDER price regardless of what unit was actually sold
+            # in; for a unit="kg" row that reads as an incoherent number
+            # next to a "X.XX KG" quantity (e.g. Rs 17,100 next to "1.00
+            # KG"). Show the per-KG rate the sale actually priced off
+            # (board_rate_per_kg_used) for kg rows, matching the unit the
+            # quantity column already shows.
+            rate = s.board_rate_per_kg_used if s.unit == "kg" else s.sale_rate_per_cylinder
+            rows.append(schemas.ShopSupplyCustomerLedgerRow(
+                date=s.date, kind="sale", ref_id=s.id, display_id=s.display_id,
+                # Payment column (Bug 2) — cash actually collected at the
+                # point of sale now shows as its own visible figure instead
+                # of being silently netted into the outstanding/sale_amount
+                # calc with no trace. Never subtracted again from
+                # running_balance here — outstanding above already excludes
+                # it, so this is purely informational, not double-counted.
+                description=description, sale_amount=contribution, payment_amount=collected_now,
+                running_balance=running, rate=rate, entered_by=s.entered_by,
+            ))
+        else:
+            p: models.ShopCustomerPayment = e["obj"]
+            running -= p.amount
+            total_payments += p.amount
+            description = f"Payment · {p.method}"
+            # Advance/overpayment (Bug 4) — same excess_amount convention as
+            # Payment/CompanyPayment; running_balance going negative here IS
+            # the advance (never clamped to zero), this note just makes an
+            # overpaying transaction legible in the ledger the same way it
+            # already is on the Payment record itself.
+            if p.excess_amount:
+                description += f" (Rs {p.excess_amount:,.0f} advance)"
+            rows.append(schemas.ShopSupplyCustomerLedgerRow(
+                date=p.date, kind="payment", ref_id=p.id, display_id=p.display_id,
+                description=description, sale_amount=Decimal("0"), payment_amount=p.amount,
+                running_balance=running, rate=None, entered_by=p.entered_by,
+            ))
+
+    return schemas.ShopSupplyCustomerLedgerOut(
+        customer=customer, opening_balance=customer.opening_balance,
+        total_sales=total_sales, total_payments=total_payments,
+        total_collected_at_sale=total_collected_at_sale,
+        total_transactions=len(rows), closing_balance=running, rows=rows,
+    )
+
+
 # ---------- Supply Customer Payments ----------
 
 @router.post("/{shop_id}/customers/{supply_customer_id}/payments", response_model=schemas.ShopCustomerPaymentOut, status_code=201)
@@ -803,11 +938,24 @@ def create_customer_payment(
     else:
         account = get_or_create_shop_account(db, shop)
 
+    # Advance/overpayment (Bug 4) — same convention as Payment.excess_amount
+    # (routers/payments.py::_apply_payment): computed BEFORE applying this
+    # payment, so it's a snapshot of how much of THIS payment exceeded what
+    # was actually owed at the time. The balance mechanic itself needs no
+    # separate "apply credit" step — current_balance going negative below
+    # already IS the advance (never clamped to zero), and a later credit
+    # sale naturally nets against it via the same running-balance math this
+    # endpoint and get_supply_customer_ledger both already use. excess_amount
+    # is purely the audit-trail record of that, not a second mechanism.
+    excess = payload.amount - customer.current_balance
+    excess_amount = excess if excess > 0 else None
+
     payment = models.ShopCustomerPayment(
         display_id=next_display_id(db, models.ShopCustomerPayment, "SHCPAY", width=6),
         date=payload.date, shop_id=shop.id, supply_customer_id=customer.id,
         shop_sale_id=payload.shop_sale_id, account_id=account.id,
         amount=payload.amount, method=payload.method, notes=payload.notes,
+        excess_amount=excess_amount,
         status="active", entered_by=current_user.name,
     )
     db.add(payment)
@@ -858,10 +1006,17 @@ def _expense_txn_to_out(db: Session, txn: models.ShopExpenseTransaction) -> sche
         )
         for l in lines
     ]
+    # Attribution (§ Shop Expense/Withdrawal Attribution) — null on both
+    # unless the form this was entered from actually had that context; see
+    # ShopExpenseTransactionCreate.supply_customer_id/shop_sale_id.
+    customer = db.query(models.ShopSupplyCustomer).get(txn.supply_customer_id) if txn.supply_customer_id else None
+    sale = db.query(models.ShopSale).get(txn.shop_sale_id) if txn.shop_sale_id else None
     return schemas.ShopExpenseTransactionOut(
         id=txn.id, display_id=txn.display_id, date=txn.date, shop_id=txn.shop_id,
         total_amount=txn.total_amount, account_id=txn.account_id,
         payment_source=txn.payment_source, notes=txn.notes,
+        supply_customer_id=txn.supply_customer_id, customer_name=customer.name if customer else None,
+        shop_sale_id=txn.shop_sale_id, shop_sale_display_id=sale.display_id if sale else None,
         status=txn.status, entered_by=txn.entered_by, created_at=txn.created_at, lines=line_outs,
     )
 
@@ -914,11 +1069,24 @@ def create_shop_expense(
     else:
         account = get_or_create_shop_account(db, shop)
 
+    # Attribution (§ Shop Expense/Withdrawal Attribution) — both optional
+    # and, when sent, must actually belong to THIS shop; a stray/foreign id
+    # here would attribute the withdrawal to the wrong customer or sale.
+    if payload.supply_customer_id:
+        sc = db.query(models.ShopSupplyCustomer).get(payload.supply_customer_id)
+        if not sc or sc.shop_id != shop.id:
+            raise HTTPException(404, "Supply customer not found for this shop")
+    if payload.shop_sale_id:
+        sale = db.query(models.ShopSale).get(payload.shop_sale_id)
+        if not sale or sale.customer_id != shop.id:
+            raise HTTPException(404, "Shop sale not found for this shop")
+
     total = sum((l.amount for l in payload.lines), Decimal("0"))
     txn = models.ShopExpenseTransaction(
         display_id=next_display_id(db, models.ShopExpenseTransaction, "SHEXP", width=6),
         date=payload.date, shop_id=shop.id, total_amount=total, account_id=account.id,
         payment_source=payload.payment_source, notes=payload.notes,
+        supply_customer_id=payload.supply_customer_id, shop_sale_id=payload.shop_sale_id,
         status="active", entered_by=current_user.name,
     )
     db.add(txn)
@@ -1080,6 +1248,16 @@ def get_shop_business_ledger(
         lines_by_txn: dict = {}
         for l in all_lines:
             lines_by_txn.setdefault(l.expense_transaction_id, []).append(l)
+        # Attribution (§ Shop Expense/Withdrawal Attribution) — supply_customers
+        # is already this-shop-scoped (built above); shop_sale_id can point
+        # outside this month's own shop_sales query above (a sale entered in
+        # month N, an expense against it corrected/re-entered in month N+1),
+        # so this is its own small batched lookup rather than reusing that list.
+        sale_ids = {t.shop_sale_id for t in expense_txns if t.shop_sale_id}
+        sales_by_id = (
+            {s.id: s for s in db.query(models.ShopSale).filter(models.ShopSale.id.in_(sale_ids)).all()}
+            if sale_ids else {}
+        )
         for t in expense_txns:
             lines = lines_by_txn.get(t.id, [])
             # Owner Withdrawal lines never carry a category_id (see
@@ -1099,9 +1277,20 @@ def get_shop_business_ledger(
             # to report Fuel/Salary/... and Owner Withdrawal separately)
             # come from the lines themselves, not from this row's kind.
             kind = "owner_withdrawal" if has_withdrawal and not has_expense else "expense"
+            # Attribution (§ Shop Expense/Withdrawal Attribution) — same
+            # "baked into description" convention credit_sale/customer_payment
+            # rows above already use in this same table, rather than a
+            # special-cased extra column for just this one row kind.
+            attribution_bits = []
+            if t.supply_customer_id:
+                sc = supply_customers.get(t.supply_customer_id)
+                attribution_bits.append(f"for {sc.name}" if sc else "for unknown customer")
+            if t.shop_sale_id and t.shop_sale_id in sales_by_id:
+                attribution_bits.append(f"(Sale #{sales_by_id[t.shop_sale_id].display_id})")
+            attribution = f" {' '.join(attribution_bits)}" if attribution_bits else ""
             rows.append(schemas.ShopBusinessLedgerRow(
                 kind=kind, date=t.date, ref_id=t.id, display_id=t.display_id,
-                description=(cat_names or "Expense") + (f" — {t.notes}" if t.notes else ""),
+                description=(cat_names or "Expense") + attribution + (f" — {t.notes}" if t.notes else ""),
                 amount=t.total_amount, cash_impact=-t.total_amount,
                 entered_by=t.entered_by, status=t.status,
             ))

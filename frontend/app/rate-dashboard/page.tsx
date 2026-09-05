@@ -662,7 +662,7 @@ function RateDashboardBody() {
             Rate History Log
           </Eyebrow>
 
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <select
               value={filterCompany}
               onChange={(e) =>
@@ -670,7 +670,7 @@ function RateDashboardBody() {
                   e.target.value
                 )
               }
-              className={`${inputClass} w-[180px] py-1.5 text-xs`}
+              className={`${inputClass} w-full sm:w-[180px] py-1.5 text-xs`}
             >
               <option value="All">
                 All companies
@@ -686,7 +686,7 @@ function RateDashboardBody() {
               ))}
             </select>
 
-            <div className="flex items-center gap-1.5 border border-hairline rounded-md px-2.5">
+            <div className="flex items-center gap-1.5 border border-hairline rounded-md px-2.5 w-full sm:w-auto">
               <Search
                 size={13}
                 className="text-steel"
@@ -700,7 +700,7 @@ function RateDashboardBody() {
                   )
                 }
                 placeholder="Search company or party"
-                className="border-none outline-none font-body text-xs py-1.5 w-[180px]"
+                className="border-none outline-none font-body text-xs py-1.5 w-full sm:w-[180px]"
               />
             </div>
           </div>

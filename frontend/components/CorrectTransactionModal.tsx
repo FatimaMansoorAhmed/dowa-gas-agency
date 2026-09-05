@@ -244,8 +244,8 @@ export default function CorrectTransactionModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-6">
-      <div className="bg-white rounded-xl px-6 py-6 w-[440px] max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-4 sm:p-6">
+      <div className="bg-white rounded-xl px-5 py-6 sm:px-6 w-full max-w-[440px] max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-4">
           <div className="font-display font-bold text-[17px] text-ink">
             Correct {kindLabel} · {transaction.display_id}
@@ -262,7 +262,7 @@ export default function CorrectTransactionModal({
 
           {(kind === "sale" || kind === "purchase") && (
             <>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <Field label="Quantity">
                   <input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} className={inputClass} />
                 </Field>
@@ -296,7 +296,7 @@ export default function CorrectTransactionModal({
                 </Field>
               )}
               {kind === "purchase" && (
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <Field label="Additional">
                     <input type="number" value={additionalCharges} onChange={(e) => setAdditionalCharges(e.target.value)} className={inputClass} />
                   </Field>
@@ -308,7 +308,7 @@ export default function CorrectTransactionModal({
                   </Field>
                 </div>
               )}
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <Field label="Gate Pass No.">
                   <input value={gatePassNo} onChange={(e) => setGatePassNo(e.target.value)} className={inputClass} />
                 </Field>
@@ -317,7 +317,7 @@ export default function CorrectTransactionModal({
                 </Field>
               </div>
               {kind === "purchase" && (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <Field label="Driver Name">
                     <input value={driverName} onChange={(e) => setDriverName(e.target.value)} className={inputClass} />
                   </Field>
@@ -331,7 +331,7 @@ export default function CorrectTransactionModal({
 
           {kind === "shopSale" && (
             <>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <Field label="Unit">
                   <select value={unit} onChange={(e) => setUnit(e.target.value as "cylinder" | "kg")} className={inputClass}>
                     <option value="cylinder">Full Cylinder(s)</option>
@@ -342,7 +342,7 @@ export default function CorrectTransactionModal({
                   <input type="number" autoFocus value={quantity} onChange={(e) => setQuantity(e.target.value)} className={inputClass} />
                 </Field>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <Field label="Payment Type">
                   <select value={paymentType} onChange={(e) => setPaymentType(e.target.value as "cash" | "credit")} className={inputClass}>
                     <option value="cash">Cash</option>
@@ -357,7 +357,7 @@ export default function CorrectTransactionModal({
                 </Field>
               </div>
               {paymentType === "credit" && (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <Field label="Amount Received">
                     <input type="number" value={amountReceived} onChange={(e) => setAmountReceived(e.target.value)} className={inputClass} />
                   </Field>
@@ -381,7 +381,7 @@ export default function CorrectTransactionModal({
               <Field label="Amount">
                 <input type="number" autoFocus value={amount} onChange={(e) => setAmount(e.target.value)} className={inputClass} />
               </Field>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <Field label="Method">
                   <select value={method} onChange={(e) => setMethod(e.target.value)} className={inputClass}>
                     <option value="cash">Cash</option>

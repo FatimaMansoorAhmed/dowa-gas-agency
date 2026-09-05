@@ -33,8 +33,8 @@ export default function NewPlantModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl px-6 py-6 w-[360px]">
+    <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl px-6 py-6 w-full max-w-[360px]">
         <div className="flex justify-between items-center mb-4">
           <div className="font-display font-bold text-[17px] text-ink">New Plant Form</div>
           <button onClick={onClose} className="bg-transparent border-none cursor-pointer"><X size={16} className="text-steel" /></button>

@@ -1,19 +1,19 @@
 "use client";
-import { ReactNode } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
-import { 
-  LayoutGrid, 
-  PlusCircle, 
-  Radio, 
-  Users, 
-  ReceiptText, 
-  BookOpenText, 
-  Truck, 
-  Wallet, 
-  CircleGauge, 
-  LogOut, 
+import {
+  LayoutGrid,
+  PlusCircle,
+  Radio,
+  Users,
+  ReceiptText,
+  BookOpenText,
+  Truck,
+  Wallet,
+  CircleGauge,
+  LogOut,
   ChevronRight,
   ShoppingBag, // Unified Sale ke liye naya icon
   CreditCard,
@@ -23,6 +23,8 @@ import {
   FileStack,
   Store,
   UserCog,
+  Menu,
+  X,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { CylinderStripe } from "./ui";
@@ -59,10 +61,47 @@ export default function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout } = useAuth();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  // Close the mobile drawer whenever the route changes, so navigating to a
+  // link doesn't leave the drawer sitting open over the new page.
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [pathname]);
+
+  const navLinks = user?.role === "owner" ? [...NAV, OWNER_NAV] : NAV;
 
   return (
     <div className="flex">
-      <div className="w-[220px] bg-ink min-h-screen flex-shrink-0 sticky top-0 h-screen flex flex-col">
+      {/* Mobile top bar — hamburger trigger, hidden at lg+ where the sidebar is always visible */}
+      <div className="lg:hidden fixed top-0 inset-x-0 z-40 flex items-center gap-3 bg-ink px-4 py-3 shadow-sm">
+        <button
+          onClick={() => setMobileNavOpen(true)}
+          aria-label="Open menu"
+          className="bg-transparent border-none cursor-pointer shrink-0 p-1 -ml-1"
+        >
+          <Menu size={22} color="#FFFFFF" />
+        </button>
+        <div className="w-8 h-8 rounded-full bg-white p-1 flex items-center justify-center shrink-0 overflow-hidden shadow-sm">
+          <Image src="/logo.png" alt="Dowa Gas Logo" width={32} height={32} className="w-full h-full object-contain scale-110" priority />
+        </div>
+        <div className="font-display font-bold text-[13.5px] text-white leading-tight">DOWA GAS</div>
+      </div>
+
+      {/* Backdrop for the mobile drawer */}
+      {mobileNavOpen && (
+        <div
+          className="lg:hidden fixed inset-0 z-40 bg-black/50"
+          onClick={() => setMobileNavOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      <div
+        className={`w-[220px] bg-ink min-h-screen h-screen flex-shrink-0 flex flex-col fixed lg:sticky top-0 left-0 z-50 transition-transform duration-200 ${
+          mobileNavOpen ? "translate-x-0" : "-translate-x-full"
+        } lg:translate-x-0`}
+      >
         {/* Sidebar Header with White Badge Container */}
         <div className="flex items-center gap-3 px-4 pt-[20px] pb-[18px] shrink-0">
           {/* White Circular Background Wrapper for Logo */}
@@ -76,14 +115,21 @@ export default function Shell({ children }: { children: ReactNode }) {
               priority
             />
           </div>
-          <div>
+          <div className="flex-1">
             <div className="font-display font-bold text-[15px] text-white leading-tight">DOWA GAS</div>
             <div className="font-mono text-[9.5px] text-[#7FA9AA] tracking-wider mt-0.5">AGENCY · KHI</div>
           </div>
+          <button
+            onClick={() => setMobileNavOpen(false)}
+            aria-label="Close menu"
+            className="lg:hidden bg-transparent border-none cursor-pointer p-1"
+          >
+            <X size={18} color="#8A98A3" />
+          </button>
         </div>
 
         <div className="px-3 flex-1 min-h-0 overflow-y-auto">
-          {(user?.role === "owner" ? [...NAV, OWNER_NAV] : NAV).map((n) => {
+          {navLinks.map((n) => {
             const Icon = n.icon;
             const active = pathname === n.href;
             return (
@@ -130,9 +176,9 @@ export default function Shell({ children }: { children: ReactNode }) {
         </div>
       </div>
 
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 pt-14 lg:pt-0">
         <div className="bg-panel border-b border-hairline">
-          <div className="flex items-center justify-between px-8 py-3.5">
+          <div className="flex items-center justify-between px-4 sm:px-6 lg:px-8 py-3.5 flex-wrap gap-2">
             <div className="font-body text-[13.5px] font-medium text-slate-800">
               Dowa gas Agency — <span className="text-slate-900 font-bold">Rates &amp; Customers</span>, Purchases , Sales.
             </div>
@@ -142,7 +188,7 @@ export default function Shell({ children }: { children: ReactNode }) {
           </div>
           <CylinderStripe />
         </div>
-        <div className="px-8 pt-7 pb-16 max-w-[1280px]">{children}</div>
+        <div className="px-4 sm:px-6 lg:px-8 pt-7 pb-16 max-w-[1280px]">{children}</div>
       </div>
     </div>
   );

@@ -52,12 +52,13 @@ CUSTOMERS = [
 
 PRODUCTS = [("11.8 KG Cylinder", 11.8), ("45.4 KG Cylinder", 45.4)]
 
+# The 3 real Liquidity Hub buckets (see app/utils.BUCKET_ACCOUNT_LABELS) —
+# every other page/router resolves these by account_type, so the seed data
+# must tag them the same way rather than inventing standalone accounts.
 PAYMENT_ACCOUNTS = [
-    ("Main Cash", "cash", 0),
-    ("Meezan Bank", "bank", 0),
-    ("HBL", "bank", 0),
-    ("UBL", "bank", 0),
-    
+    ("Office Cash", "cash", "office_cash", 0),
+    ("Home Cash", "cash", "owner_home", 0),
+    ("Dowa Account", "bank", "dowa_account", 0),
 ]
 
 EXPENSE_CATEGORIES = [
@@ -147,8 +148,11 @@ def run():
             product_map[weight] = p
 
         account_map = {}
-        for name, kind, opening in PAYMENT_ACCOUNTS:
-            a = models.PaymentAccount(name=name, kind=kind, opening_balance=opening, current_balance=opening, active="active")
+        for name, kind, account_type, opening in PAYMENT_ACCOUNTS:
+            a = models.PaymentAccount(
+                name=name, kind=kind, account_type=account_type,
+                opening_balance=opening, current_balance=opening, active="active",
+            )
             db.add(a)
             db.flush()
             account_map[name] = a
@@ -170,7 +174,7 @@ def run():
 
         bouch = company_map["Bouch Plant Pvt Ltd"]
         product_454 = product_map[45.4]
-        main_cash = account_map["Main Cash"]
+        office_cash = account_map["Office Cash"]
         running = float(mukarram.current_balance)
 
         for day, domestic_rate, qty, payment_amount in MUKARRAM_ROWS:
@@ -193,17 +197,17 @@ def run():
             payment = models.Payment(
                 display_id=next_display_id(db, models.Payment, "PAY", width=6),
                 date=sale_date, customer_id=mukarram.id, sale_id=sale.id,
-                amount=payment_amount, method="cash", account_id=main_cash.id,
+                amount=payment_amount, method="cash", account_id=office_cash.id,
                 status="active", entered_by="Staff",
             )
             db.add(payment)
             running -= payment_amount
-            main_cash.current_balance = main_cash.current_balance + payment_amount
+            office_cash.current_balance = office_cash.current_balance + payment_amount
 
         mukarram.current_balance = running
         mukarram.last_transaction_at = datetime(2026, 8, 11, 10, 0)
         db.add(mukarram)
-        db.add(main_cash)
+        db.add(office_cash)
 
         # A couple of sample Purchase + CompanyPayment rows so the Plant
         # Ledger drill-down isn't empty on first load — layered on top of
@@ -235,14 +239,14 @@ def run():
             cpayment = models.CompanyPayment(
                 display_id=next_display_id(db, models.CompanyPayment, "CPAY", width=6),
                 date=pdate, company_id=company.id, purchase_id=purchase.id,
-                amount=payment_amount, method="cash", account_id=main_cash.id,
+                amount=payment_amount, method="cash", account_id=office_cash.id,
                 status="active", entered_by="Staff",
             )
             db.add(cpayment)
             company.current_balance = company.current_balance - payment_amount
-            main_cash.current_balance = main_cash.current_balance - payment_amount
+            office_cash.current_balance = office_cash.current_balance - payment_amount
             db.add(company)
-            db.add(main_cash)
+            db.add(office_cash)
 
         db.commit()
         print("Seed complete.")

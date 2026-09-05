@@ -1,14 +1,15 @@
 "use client";
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Search, PlusCircle, Pencil } from "lucide-react";
+import { Search, PlusCircle, Pencil, Printer } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Th, Td, inputClass, BalanceTag, Button } from "@/components/ui";
 import { api } from "@/lib/api";
 import { pkr, fmtTime, todayLocalInput, fmtNumber } from "@/lib/format";
 import ReceivePaymentModal from "@/components/ReceivePaymentModal";
 import CorrectTransactionModal, { CorrectableKind } from "@/components/CorrectTransactionModal";
-import PrintButton from "@/components/PrintButton";
+import ReturnCylinderModal from "@/components/ReturnCylinderModal";
+import AddEmptyCylinderModal from "@/components/AddEmptyCylinderModal";
 import type { Customer, CustomerLedgerSummary, CustomerFlag, LedgerRow, Sale, Payment } from "@/lib/types";
 
 // Derived from the Asia/Karachi-aware todayLocalInput() ("YYYY-MM-DD"), so
@@ -34,6 +35,8 @@ function CustomerLedgerBody() {
   const [summary, setSummary] = useState<CustomerLedgerSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
+  const [showReturnCylinder, setShowReturnCylinder] = useState(false);
+  const [showAddCylinder, setShowAddCylinder] = useState(false);
   const [flags, setFlags] = useState<CustomerFlag[]>([]);
   const [correctTarget, setCorrectTarget] = useState<{ kind: CorrectableKind; transaction: Sale | Payment } | null>(null);
   const [correctLoading, setCorrectLoading] = useState<string | null>(null);
@@ -109,7 +112,7 @@ function CustomerLedgerBody() {
         caption="Opening balance is derived from the ledger — select a customer to view cash & cylinder balances."
       />
 
-      <div className="grid grid-cols-[0.65fr_1.5fr] gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-[0.65fr_1.5fr] gap-4">
         {/* Customer Sidebar */}
         <Panel>
           <Eyebrow>Customers</Eyebrow>
@@ -189,11 +192,25 @@ function CustomerLedgerBody() {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 print:hidden">
+                  <div className="flex items-center gap-2 flex-wrap print:hidden">
                     <Button variant="teal" onClick={() => setIsPayModalOpen(true)}>
                       <PlusCircle size={15} /> Receive Payment
                     </Button>
-                    <PrintButton label="Print Statement" />
+                    <Button variant="outline" onClick={() => setShowReturnCylinder(true)}>
+                      Return Cylinder
+                    </Button>
+                    <Button variant="outline" onClick={() => setShowAddCylinder(true)}>
+                      Add Empty Cylinder
+                    </Button>
+                    <a
+                      href={api.ledger.customerStatementUrl(customerId, month)}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="Download statement PDF"
+                      className="inline-flex items-center gap-2 font-body text-[13px] font-medium px-4 py-2.5 rounded-md bg-transparent text-ink border border-hairline cursor-pointer"
+                    >
+                      <Printer size={14} /> Download Statement
+                    </a>
 
                     <div className="flex gap-1.5 ml-1">
                       <select
@@ -232,7 +249,7 @@ function CustomerLedgerBody() {
               {!loading && summary && (
                 <>
                   {/* Financial Stats */}
-                  <div className="grid grid-cols-4 gap-3 mb-4">
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
                     <Panel>
                       <Eyebrow>Opening Balance</Eyebrow>
                       <div className="font-display font-bold text-lg text-ink">{pkr(summary.opening_balance)}</div>
@@ -254,7 +271,7 @@ function CustomerLedgerBody() {
                   </div>
 
                   {/* Cylinder Inventory Stats */}
-                  <div className="grid grid-cols-5 gap-3 mb-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
                     <Panel>
                       <Eyebrow>11.8 KG Sold</Eyebrow>
                       <div className="font-mono font-semibold text-base text-amber-600">
@@ -291,6 +308,7 @@ function CustomerLedgerBody() {
                     <SectionCaption>
                       Tracks cash flow along with cylinder movements for this month.
                     </SectionCaption>
+                    <div className="overflow-x-auto">
                     <table className="w-full border-collapse">
                       <thead>
                         <tr>
@@ -362,6 +380,7 @@ function CustomerLedgerBody() {
                         )}
                       </tbody>
                     </table>
+                    </div>
                   </Panel>
 
                   {/* Correction History (§1) — superseded transactions, kept for
@@ -376,6 +395,7 @@ function CustomerLedgerBody() {
                         <Eyebrow>Correction History ({summary.corrections.length})</Eyebrow>
                       </button>
                       {
+                        <div className="overflow-x-auto">
                         <table className={`w-full border-collapse mt-2 ${showCorrections ? "" : "hidden print:table"}`}>
                           <thead>
                             <tr>
@@ -404,6 +424,7 @@ function CustomerLedgerBody() {
                             ))}
                           </tbody>
                         </table>
+                        </div>
                       }
                     </Panel>
                   )}
@@ -419,6 +440,26 @@ function CustomerLedgerBody() {
         isOpen={isPayModalOpen}
         onClose={() => setIsPayModalOpen(false)}
         defaultCustomerId={customerId}
+        onSuccess={() => {
+          loadLedger();
+          loadCustomers();
+        }}
+      />
+
+      <ReturnCylinderModal
+        isOpen={showReturnCylinder}
+        onClose={() => setShowReturnCylinder(false)}
+        customer={summary?.customer ?? null}
+        onSuccess={() => {
+          loadLedger();
+          loadCustomers();
+        }}
+      />
+
+      <AddEmptyCylinderModal
+        isOpen={showAddCylinder}
+        onClose={() => setShowAddCylinder(false)}
+        customer={summary?.customer ?? null}
         onSuccess={() => {
           loadLedger();
           loadCustomers();

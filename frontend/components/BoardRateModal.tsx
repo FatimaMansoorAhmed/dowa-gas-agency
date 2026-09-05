@@ -1,3 +1,5 @@
+
+
 "use client";
 import { useEffect, useState } from "react";
 import { X, Check } from "lucide-react";
@@ -44,8 +46,8 @@ export default function BoardRateModal({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl px-6 py-6 w-[720px] max-h-[85vh] overflow-y-auto">
+    <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl px-6 py-6 w-full max-w-[720px] max-h-[85vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-4">
           <div className="font-display font-bold text-[17px] text-ink">Board Rate</div>
           <button onClick={onClose} className="bg-transparent border-none cursor-pointer"><X size={16} className="text-steel" /></button>
@@ -55,7 +57,7 @@ export default function BoardRateModal({ onClose }: { onClose: () => void }) {
           Every Shop Sale is priced from the Board Rate in effect on its own sale date — changing today's rate never touches a past sale's amount.
         </div>
 
-        <div className="grid grid-cols-[1fr_1.3fr] gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_1.3fr] gap-4">
           <div className="flex flex-col gap-3.5">
             <Field label="Effective Date">
               <input type="date" value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} className={inputClass} />
@@ -75,7 +77,7 @@ export default function BoardRateModal({ onClose }: { onClose: () => void }) {
           <div>
             <Eyebrow>Rate History</Eyebrow>
             <SectionCaption>Every rate ever set — immutable, newest first.</SectionCaption>
-            <div className="max-h-[360px] overflow-y-auto">
+            <div className="max-h-[360px] overflow-auto">
               <table className="w-full border-collapse">
                 <thead>
                   <tr><Th>Effective Date</Th><Th right>Rate / kg</Th><Th>Entered By</Th><Th>Set At</Th></tr>

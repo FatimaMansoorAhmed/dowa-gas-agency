@@ -53,7 +53,7 @@ function ShopsBody() {
           </div>
         </Panel>
       ) : (
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {rows.map((r) => (
             <Panel key={r.customer.id} className="cursor-pointer" >
               <div onClick={() => router.push(`/shops/${r.customer.id}`)}>

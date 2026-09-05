@@ -191,17 +191,17 @@ class PaymentAccount(Base):
     __tablename__ = "payment_accounts"
 
     id = Column(GUID(), primary_key=True, default=gen_uuid)
-    name = Column(String, unique=True, nullable=False)  # Main Cash, Meezan Bank, HBL...
+    name = Column(String, unique=True, nullable=False)  # Office Cash, Home Cash, Dowa Account...
     kind = Column(String, nullable=False, default="cash")  # cash | bank
     # Tags a real PaymentAccount row as one of the fixed Liquidity Hub
     # buckets (office_cash | owner_home | dowa_account) so Cash Management
     # can find/transfer/pay against it. Null for ordinary bank/cash rows
-    # (Main Cash, Meezan Bank, ...) that aren't one of those buckets.
+    # that aren't one of those buckets.
     account_type = Column(String, nullable=True)
     # Shop Cash Money Routing — scopes this row to ONE shop's own account
     # ("shop_cash" account_type + this shop_id) rather than a global bucket.
-    # Null for every existing account (Office Cash, Home Cash, Dowa Account,
-    # Main Cash, Meezan Bank, ...) — those stay global, unowned by any shop.
+    # Null for every global account (Office Cash, Home Cash, Dowa Account,
+    # ...) — those stay unowned by any shop.
     # See app/utils.get_or_create_shop_account.
     shop_id = Column(GUID(), ForeignKey("customers.id"), nullable=True)
     opening_balance = Column(Numeric(14, 2), nullable=False, default=0)
@@ -495,6 +495,13 @@ class UnifiedSaleBatch(Base):
 
     total_selling_amount = Column(Numeric(14, 2), nullable=False, default=0)
     total_purchase_amount = Column(Numeric(14, 2), nullable=False, default=0)
+    # Optional, defaults to 0 — folded straight into total_selling_amount at
+    # create/edit time (routers/unified_sale.py), so it raises what the
+    # customer owes exactly like another item would, and flows into
+    # net_plant_payment through total_credit_received the same way the rest
+    # of the sale amount does. Never affects total_purchase_amount/COGS —
+    # it is pure margin, not a cost passed through to the plant.
+    delivery_charges = Column(Numeric(14, 2), nullable=False, default=0)
     total_credit_received = Column(Numeric(14, 2), nullable=False, default=0)
     # Settled money is split exactly three ways, all computed/validated
     # server-side except the two explicit ones below:
@@ -761,6 +768,53 @@ class EmptyCylinderSale(Base):
     customer = relationship("Customer")
 
 
+class CylinderReturn(Base):
+    """One 'Return Cylinder' action against a customer's typed empty-cylinder
+    balance (Customer.empty_cylinders_{size}_{type} — same categorized
+    balance EmptyCylinderSale draws down, but this covers the 3 movements
+    that aren't a sale: moving cylinders to another customer's balance with
+    no money involved, converting them to cash exactly like a Payment
+    Receipt (see payment_id/utils.apply_settlement_routing), or a manual
+    count correction/addition. mode determines which of the mode-specific
+    columns below are populated:
+      - "transfer": to_customer_id set, payment_id null. quantity moves
+        customer_id -> to_customer_id, decrementing/incrementing the same
+        empty_cylinders_{size}_{type} column on each side.
+      - "cash": payment_id set (the Payment this created — same
+        destination_type/target_plant_id/account routing as a Payment
+        Receipt, see routers/payment_receipts.py), to_customer_id null.
+        Only customer_id's balance is decremented.
+      - "manual_add": neither set. Pure count increase on customer_id,
+        e.g. correcting a missed entry — the counterpart to a return."""
+    __tablename__ = "cylinder_returns"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    display_id = Column(String, unique=True, nullable=False)  # e.g. CRET-000123
+    date = Column(DateTime, nullable=False, default=datetime.utcnow)
+    customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
+
+    # Same categorization as EmptyCylinderSale — "118"/"454" size, optional
+    # "cross"/"pso" type (nullable = legacy/unclassified balance).
+    cylinder_size = Column(String(10), nullable=False, default="118")
+    cylinder_type = Column(String(10), nullable=True)
+    quantity = Column(Numeric(10, 0), nullable=False)
+
+    mode = Column(String(20), nullable=False)  # transfer | cash | manual_add
+    to_customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=True)  # transfer only
+    payment_id = Column(GUID(), ForeignKey("payments.id"), nullable=True)  # cash only
+
+    notes = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="active")  # active | cancelled
+    entered_by = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    modified_at = Column(DateTime, nullable=True)
+    modified_by = Column(String, nullable=True)
+
+    customer = relationship("Customer", foreign_keys=[customer_id])
+    to_customer = relationship("Customer", foreign_keys=[to_customer_id])
+    payment = relationship("Payment")
+
+
 class GeneratedReport(Base):
     """One generated report file (currently only report_type == "daily") —
     metadata + where it lives on disk, so it can be listed/viewed/
@@ -813,11 +867,18 @@ class ShopStockBatch(Base):
     "enter a shop load" endpoint; a Load is always just a Sale.
 
     quantity_remaining is a LIVE, FIFO-mutated counter used only to decide
-    which batch a ShopSale draws from next — it is never the source for
-    period/historical stock reporting (see ShopSale/reporting, which always
-    sums the immutable quantity_received/ShopSale.quantity logs instead,
-    mirroring how routers/ledger.py derives opening balances from summed
-    history rather than a stored running field)."""
+    which batch a ShopSale (or Emergency Transfer — see routers/sales.py's
+    _consume_shop_stock_for_emergency_transfer, which draws from these same
+    batches) draws from next — it is never the source for period/historical
+    stock reporting (see ShopSale/reporting, which always sums the
+    immutable quantity_received/ShopSale.quantity logs instead, mirroring
+    how routers/ledger.py derives opening balances from summed history
+    rather than a stored running field). That reporting sum MUST also
+    include Emergency Transfer quantities (Sale rows with
+    emergency_transfer_shop_id == this shop) alongside ShopSale.quantity —
+    both draw from the same batches, so omitting either one understates
+    what's actually been consumed (see _compute_stock_summary in
+    routers/shops.py)."""
     __tablename__ = "shop_stock_batches"
 
     id = Column(GUID(), primary_key=True, default=gen_uuid)
@@ -1019,6 +1080,13 @@ class ShopCustomerPayment(Base):
     account_id = Column(GUID(), ForeignKey("payment_accounts.id"), nullable=True)
     notes = Column(String, nullable=True)
 
+    # Advance/overpayment — same convention as Payment.excess_amount /
+    # CompanyPayment.excess_amount: how much of THIS payment exceeded what
+    # the supply customer actually owed at the time, snapshotted at create.
+    # The balance itself going negative (never clamped to zero) is what
+    # actually represents the advance; this is just the audit-trail record.
+    excess_amount = Column(Numeric(14, 2), nullable=True)
+
     status = Column(String, nullable=False, default="active")  # active | cancelled
     entered_by = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -1055,6 +1123,16 @@ class ShopExpenseTransaction(Base):
     payment_source = Column(String, nullable=True)
     notes = Column(String, nullable=True)
 
+    # Attribution (§ Shop Expense/Withdrawal Attribution) — set only when
+    # this transaction was submitted from a form that actually had this
+    # context: Record Shop Sale (both), Record Supply Customer Payment
+    # (supply_customer_id only). Null from the standalone Record Expense
+    # form, which has neither. Header-level, not per-line — one atomic
+    # transaction is entered alongside at most one sale/customer, same as
+    # shop_id above.
+    supply_customer_id = Column(GUID(), ForeignKey("shop_supply_customers.id"), nullable=True)
+    shop_sale_id = Column(GUID(), ForeignKey("shop_sales.id"), nullable=True)
+
     status = Column(String, nullable=False, default="active")  # active | cancelled
     entered_by = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -1063,6 +1141,8 @@ class ShopExpenseTransaction(Base):
 
     shop = relationship("Customer")
     account = relationship("PaymentAccount")
+    supply_customer = relationship("ShopSupplyCustomer")
+    shop_sale = relationship("ShopSale")
     lines = relationship("ShopExpenseLine", back_populates="transaction", cascade="all, delete-orphan")
 
 

@@ -84,7 +84,7 @@ export default function RecordPlantPaymentModal({
 
   return (
     <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-6">
-      <div className="bg-white rounded-xl px-6 py-6 w-[420px] max-h-[90vh] overflow-y-auto">
+      <div className="bg-white rounded-xl px-6 py-6 w-full max-w-[420px] max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-4">
           <div className="font-display font-bold text-[17px] text-ink">
             Record Plant Payment

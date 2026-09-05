@@ -86,10 +86,10 @@ import type {
   Company, Party, RateEntry, Customer, Product, PaymentAccount, ExpenseCategory,
   Sale, Payment, Expense, CustomerLedgerSummary, CustomerFlag, Purchase, CompanyPayment,
   CompanyLedgerSummary, PlantLedgerSummaryRow, CylinderTransaction, CylinderBalance, OwnerDrawing, UnifiedSaleBatch, UnifiedSaleResult, DestinationType,
-  AccountType, AccountTransferResult, CylinderTransactionCreate, CustomerCombinedLedger, EmptyCylinderSale,
+  AccountType, AccountTransferResult, CylinderTransactionCreate, CustomerCombinedLedger, EmptyCylinderSale, CylinderReturn,
   OwnerCapital, OwnerCapitalDestination, DailyReportData, GeneratedReport, SendWhatsAppResult,
   BoardRate, ShopListRow, ShopDetailOut, ShopSale, ShopStockBatch,
-  ShopSupplyCustomer, ShopCustomerPayment, ShopExpenseTransaction, ShopBusinessLedgerOut,
+  ShopSupplyCustomer, ShopSupplyCustomerLedgerOut, ShopCustomerPayment, ShopExpenseTransaction, ShopBusinessLedgerOut,
   AccountTransferRecord, User, UserAccessAuditRow,
 } from "./types";
 
@@ -254,6 +254,38 @@ export const api = {
     cancel: (id: string, by: string) => request<Payment>(`/payment-receipts/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
   },
 
+  // Return Cylinder (Customer Ledger) / Add Empty Cylinder — one endpoint
+  // for all 3 modes; "cash" mode routes exactly like paymentReceipts.create
+  // above (same destination_type/home_expense/owner_drawings fields).
+  cylinderReturns: {
+    list: (params?: { customer_id?: string; month?: string }) => {
+      const q = new URLSearchParams(params as Record<string, string>).toString();
+      return request<CylinderReturn[]>(`/cylinder-returns${q ? `?${q}` : ""}`);
+    },
+    create: (payload: {
+      date?: string;
+      customer_id: string;
+      cylinder_size: "118" | "454";
+      cylinder_type?: "cross" | "pso";
+      quantity: number;
+      mode: "transfer" | "cash" | "manual_add";
+      to_customer_id?: string;
+      amount?: number;
+      method?: "cash" | "bank_transfer" | "cheque" | "online" | "other";
+      home_expense_amount?: number;
+      home_expense_category_id?: string;
+      owner_drawings_amount?: number;
+      destination_type?: DestinationType;
+      target_plant_id?: string;
+      account_id?: string;
+      reference_no?: string;
+      notes?: string;
+      entered_by: string;
+    }) => request<CylinderReturn>("/cylinder-returns", { method: "POST", body: JSON.stringify(payload) }),
+    cancel: (id: string, by: string) =>
+      request<CylinderReturn>(`/cylinder-returns/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
+  },
+
   expenses: {
     list: (params?: { category_id?: string; account_id?: string; month?: string }) => {
       const q = new URLSearchParams(params as Record<string, string>).toString();
@@ -267,6 +299,8 @@ export const api = {
   ledger: {
     customerMonth: (customerId: string, month: string) =>
       request<CustomerLedgerSummary>(`/ledger/customer/${customerId}?month=${month}`),
+    customerStatementUrl: (customerId: string, month: string) =>
+      `${BASE}/ledger/customer/${customerId}/statement?month=${month}`,
     companyMonth: (companyId: string, month: string) =>
       request<CompanyLedgerSummary>(`/ledger/company/${companyId}?month=${month}`),
     plantSummary: (month: string) =>
@@ -372,16 +406,18 @@ export const api = {
       items: { 
         product_id: string; 
         quantity: number; 
-        purchase_rate: number; 
+        purchase_rate: number;
         selling_rate: number;
-      }[]; 
-      settlement: { 
-        total_credit_received: number; 
-        cash_received?: number; 
-        cash_account_id?: string; 
-        home_expense_amount: number; 
-        home_expense_category_id?: string; 
-        owner_drawings_amount: number; 
+      }[];
+      // Optional, defaults to 0 server-side — folded into total_selling_amount.
+      delivery_charges?: number;
+      settlement: {
+        total_credit_received: number;
+        cash_received?: number;
+        cash_account_id?: string;
+        home_expense_amount: number;
+        home_expense_category_id?: string;
+        owner_drawings_amount: number;
         destination_type?: DestinationType;
         target_plant_id?: string;
         account_id?: string;
@@ -405,10 +441,11 @@ export const api = {
         items: { 
           product_id: string; 
           quantity: number; 
-          purchase_rate: number; 
+          purchase_rate: number;
           selling_rate: number;
-        }[]; 
-        settlement: { 
+        }[];
+        delivery_charges?: number;
+        settlement: {
           total_credit_received: number; 
           cash_received?: number; 
           cash_account_id?: string; 
@@ -530,6 +567,7 @@ export const api = {
         name: string; mobile?: string; address?: string; opening_balance?: number; entered_by: string;
       }) => request<ShopSupplyCustomer>(`/shops/${shopId}/customers`, { method: "POST", body: JSON.stringify(payload) }),
       get: (supplyCustomerId: string) => request<ShopSupplyCustomer>(`/shops/customers/${supplyCustomerId}`),
+      ledger: (supplyCustomerId: string) => request<ShopSupplyCustomerLedgerOut>(`/shops/customers/${supplyCustomerId}/ledger`),
     },
     customerPayments: {
       create: (shopId: string, supplyCustomerId: string, payload: {
@@ -546,6 +584,10 @@ export const api = {
         date: string;
         lines: { category_id?: string; line_type: "expense" | "owner_withdrawal"; amount: number; description?: string }[];
         account_id?: string; payment_source?: string; notes?: string; entered_by: string;
+        // § Shop Expense/Withdrawal Attribution — pass whichever context
+        // the calling form actually has (a known supply customer and/or
+        // the sale it was entered alongside); both optional.
+        supply_customer_id?: string; shop_sale_id?: string;
       }) => request<ShopExpenseTransaction>(`/shops/${shopId}/expenses`, { method: "POST", body: JSON.stringify(payload) }),
       cancel: (expenseId: string, by: string) =>
         request<ShopExpenseTransaction>(`/shops/expenses/${expenseId}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),

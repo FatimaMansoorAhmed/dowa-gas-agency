@@ -53,8 +53,8 @@ function DailyActivityBody() {
         title="One business date, every transaction"
         caption="Sales, purchases, payments, investments, expenses, and cylinder activity for the selected business date, drawn from the same ledger data used everywhere else."
         action={
-          <div className="flex items-center gap-2 no-print">
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={`${inputClass} w-[160px]`} />
+          <div className="flex items-center flex-wrap gap-2 no-print">
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={`${inputClass} w-full sm:w-[160px]`} />
             <PrintButton label="Print" />
             <Button variant="teal" onClick={handleGenerate} disabled={generating}>
               <FileDown size={14} /> {generating ? "Generating…" : "Generate PDF"}
@@ -84,7 +84,7 @@ function DailyActivityBody() {
           {/* Daily Summary */}
           <Panel className="mb-4">
             <Eyebrow>Daily Summary</Eyebrow>
-            <div className="grid grid-cols-5 gap-3 mt-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mt-2">
               <SummaryTile label="Sales" value={data.summary.total_sales} />
               <SummaryTile label="Purchases" value={data.summary.total_purchases} />
               <SummaryTile label="Customer Payments" value={data.summary.total_customer_payments} />
@@ -113,6 +113,7 @@ function DailyActivityBody() {
               {section.rows.length === 0 ? (
                 <div className="font-body text-[13px] text-steel py-3">No activity for this date.</div>
               ) : (
+                <div className="overflow-x-auto">
                 <table className="w-full border-collapse mt-2">
                   <thead>
                     <tr>
@@ -141,6 +142,7 @@ function DailyActivityBody() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               )}
             </Panel>
           ))}

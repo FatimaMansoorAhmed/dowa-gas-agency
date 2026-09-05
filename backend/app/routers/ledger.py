@@ -1,13 +1,15 @@
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
 from app.deps import require_active_user, require_csrf
+from app.reporting.invoice_pdf import render_customer_statement_pdf
+from app.timezone import KARACHI_TZ
 
 router = APIRouter(prefix="/ledger", tags=["ledger"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
@@ -194,6 +196,40 @@ def customer_monthly_ledger(
         .order_by(models.CylinderTransaction.date)
         .all()
     )
+    # Return Cylinder / Add Empty Cylinder (§ Part B/C) — "cash" mode is
+    # excluded here: its money effect already surfaces via the "payment"
+    # event above (same Payment row, same balance math), so including it
+    # again here would show the exact same real-world event twice.
+    all_cylinder_returns_out = (
+        db.query(models.CylinderReturn)
+        .filter(
+            models.CylinderReturn.customer_id == customer_id,
+            models.CylinderReturn.status == "active",
+            models.CylinderReturn.mode == "transfer",
+        )
+        .order_by(models.CylinderReturn.date)
+        .all()
+    )
+    all_cylinder_returns_in = (
+        db.query(models.CylinderReturn)
+        .filter(
+            models.CylinderReturn.to_customer_id == customer_id,
+            models.CylinderReturn.status == "active",
+            models.CylinderReturn.mode == "transfer",
+        )
+        .order_by(models.CylinderReturn.date)
+        .all()
+    )
+    all_cylinder_manual_adds = (
+        db.query(models.CylinderReturn)
+        .filter(
+            models.CylinderReturn.customer_id == customer_id,
+            models.CylinderReturn.status == "active",
+            models.CylinderReturn.mode == "manual_add",
+        )
+        .order_by(models.CylinderReturn.date)
+        .all()
+    )
 
     products = {p.id: p for p in db.query(models.Product).all()}
 
@@ -219,6 +255,9 @@ def customer_monthly_ledger(
     month_batches = [b for b in all_batches if month_start <= b.date < next_month]
     month_empty_cylinder_sales = [e for e in all_empty_cylinder_sales if month_start <= e.date < next_month]
     month_cylinder_txns = [t for t in all_cylinder_txns if month_start <= t.date < next_month]
+    month_cyl_returns_out = [r for r in all_cylinder_returns_out if month_start <= r.date < next_month]
+    month_cyl_returns_in = [r for r in all_cylinder_returns_in if month_start <= r.date < next_month]
+    month_cyl_manual_adds = [r for r in all_cylinder_manual_adds if month_start <= r.date < next_month]
 
     events = (
         [{"date": s.date, "kind": "sale", "obj": s} for s in month_sales]
@@ -226,6 +265,9 @@ def customer_monthly_ledger(
         + [{"date": b.date, "kind": "unified_sale", "obj": b} for b in month_batches]
         + [{"date": e.date, "kind": "empty_cylinder_sale", "obj": e} for e in month_empty_cylinder_sales]
         + [{"date": t.date, "kind": "cylinder_transaction", "obj": t} for t in month_cylinder_txns]
+        + [{"date": r.date, "kind": "cylinder_return_out", "obj": r} for r in month_cyl_returns_out]
+        + [{"date": r.date, "kind": "cylinder_return_in", "obj": r} for r in month_cyl_returns_in]
+        + [{"date": r.date, "kind": "cylinder_return_in", "obj": r} for r in month_cyl_manual_adds]
     )
     events.sort(key=lambda e: e["date"])
 
@@ -321,6 +363,30 @@ def customer_monthly_ledger(
                 qty_empty=ecs.quantity, cyl_in=ecs.quantity,
                 entered_by=ecs.entered_by,
             ))
+        elif e["kind"] in ("cylinder_return_out", "cylinder_return_in"):
+            # Return Cylinder / Add Empty Cylinder (§ Part B/C) — pure
+            # count movement, no cash amount, so `running` is untouched
+            # (a "cash"-mode return's money effect is the separate
+            # "payment" row above, not this one — see the query comment).
+            r: models.CylinderReturn = e["obj"]
+            size_label = "45.4" if r.cylinder_size == "454" else "11.8"
+            type_label = f" {r.cylinder_type.upper()}" if r.cylinder_type else ""
+            if r.mode == "manual_add":
+                description = f"Empty Cylinder Added ({size_label} KG{type_label}) × {r.quantity}"
+            elif e["kind"] == "cylinder_return_out":
+                to_customer = db.query(models.Customer).get(r.to_customer_id)
+                description = f"Cylinders Transferred to {to_customer.name if to_customer else 'customer'} ({size_label} KG{type_label}) × {r.quantity}"
+            else:
+                description = f"Cylinders Received via Transfer ({size_label} KG{type_label}) × {r.quantity}"
+            rows.append(schemas.LedgerRow(
+                date=r.date, kind=e["kind"], ref_id=r.id, display_id=r.display_id,
+                description=description,
+                sale_amount=0, payment_amount=0, running_balance=running,
+                qty_empty=r.quantity,
+                cyl_out=r.quantity if e["kind"] == "cylinder_return_in" else Decimal("0"),
+                cyl_in=r.quantity if e["kind"] == "cylinder_return_out" else Decimal("0"),
+                entered_by=r.entered_by,
+            ))
         else:
             # Standalone cylinder movement (e.g. "Cyl Return/Entry") — no
             # cash amount, so `running` is untouched; shown purely for its
@@ -353,6 +419,29 @@ def customer_monthly_ledger(
         # is latest-first (§ Global Sorting Standard).
         rows=list(reversed(rows)),
         corrections=_customer_corrections(db, customer_id, month_start, next_month),
+    )
+
+
+@router.get("/customer/{customer_id}/statement")
+def customer_statement_pdf(
+    customer_id: UUID,
+    month: str = Query(..., description="YYYY-MM, e.g. 2026-08"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
+    """Read-only, on-demand invoice-style PDF of the same statement the
+    Customer Ledger screen shows (Part B convention — see
+    app.reporting.invoice_pdf's module docstring). Calls
+    customer_monthly_ledger directly (a plain function call — the @router.get
+    decorator above returns it unchanged) rather than re-deriving the ledger
+    math a second time, so the PDF is built from the exact same
+    CustomerLedgerSummary the screen renders and can never disagree with it."""
+    summary = customer_monthly_ledger(customer_id, month, db)
+    generated_at = datetime.now(KARACHI_TZ).strftime("%Y-%m-%d %H:%M")
+    pdf_bytes = render_customer_statement_pdf(summary, current_user.name, generated_at)
+    return Response(
+        content=pdf_bytes, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="Statement-{summary.customer.display_id}-{month}.pdf"'},
     )
 
 

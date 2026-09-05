@@ -792,7 +792,7 @@ from decimal import Decimal
 from typing import Annotated, Optional, Literal
 from uuid import UUID
 
-from pydantic import AfterValidator, BaseModel, ConfigDict
+from pydantic import AfterValidator, BeforeValidator, BaseModel, ConfigDict
 
 from app.timezone import to_naive_utc
 
@@ -804,6 +804,21 @@ from app.timezone import to_naive_utc
 # (§ Double Timezone Offset Fix). Every *Create/*Update schema's date /
 # timestamp field below uses this instead of plain `datetime`.
 UtcDateTime = Annotated[datetime, AfterValidator(to_naive_utc)]
+
+
+def _blank_to_none(v):
+    """An empty string ("" — an unselected <select>, or a line-type switch
+    that clears a field client-side) means "none", exactly like omitting
+    the field. Without this, Pydantic's bare UUID validator rejects "" with
+    a raw uuid_parsing 422 instead of a clean, endpoint-specific 400 (e.g.
+    routers/shops.create_shop_expense's own check for a missing
+    category_id on an expense line)."""
+    return None if v == "" else v
+
+
+# Use for any optional UUID field a plain HTML <select> could plausibly
+# submit as "" instead of omitting — see _blank_to_none above.
+OptionalUUID = Annotated[Optional[UUID], BeforeValidator(_blank_to_none)]
 
 
 # ---------- Company ----------
@@ -1230,12 +1245,29 @@ class ExpenseOut(BaseModel):
     vendor: Optional[str]
     reference_no: Optional[str]
     unified_sale_id: Optional[UUID] = None
-    # Set only when this expense bypassed a Dowa account and was funded
-    # straight out of a customer's payment (source_payment_id from a Payment
-    # Receipt's home-expense deduction, or unified_sale_id from a Unified
-    # Sale's) — never set for an expense paid from a real PaymentAccount.
+    # customer_id/customer_name: WHICH customer this money is tied to,
+    # resolved from either of two unrelated paths that never both apply to
+    # the same row —
+    #   1. Plant-level: this expense bypassed a Dowa account and was funded
+    #      straight out of a customer's payment (source_payment_id from a
+    #      Payment Receipt's home-expense deduction, or unified_sale_id
+    #      from a Unified Sale's). customer_id is a real models.Customer.id
+    #      here.
+    #   2. Shop-level (§ Shop Expense/Withdrawal Attribution): dual-written
+    #      from a Shop's Record Shop Sale / Record Supply Customer Payment
+    #      form, which had a ShopSupplyCustomer in context — resolved via
+    #      source_shop_expense_transaction_id -> ShopExpenseTransaction.
+    #      customer_id here is a ShopSupplyCustomer.id, NOT a Customer.id —
+    #      shop_supply_customer_id carries the same value under its own
+    #      name for any caller that needs to tell the two apart.
+    # Never set for an expense paid from a real PaymentAccount with no
+    # shop/customer context.
     customer_id: Optional[UUID] = None
     customer_name: Optional[str] = None
+    shop_supply_customer_id: Optional[UUID] = None
+    # The ShopSale (if any) this expense/withdrawal was entered alongside —
+    # same dual-write path as shop_supply_customer_id above.
+    shop_sale_display_id: Optional[str] = None
     # Dashboard P&L / Shop Expense integration (§ Dashboard) — set only for
     # a row dual-written from a Shop's own Record Expense form
     # (routers/shops.py's create_shop_expense); null for a plant-level
@@ -1255,7 +1287,17 @@ class LedgerRow(BaseModel):
     # "empty_cylinder_sale" = one Sell Empty Cylinders transaction.
     # "cylinder_transaction" = one standalone cylinder movement (e.g. the
     # Customer Ledger's Cyl Return/Entry action) not tied to a Sale.
-    kind: Literal["sale", "payment", "unified_sale", "empty_cylinder_sale", "cylinder_transaction"]
+    # "cylinder_return_out"/"cylinder_return_in" = one Return Cylinder /
+    # Add Empty Cylinder action (§ Part B/C) — "out" on the customer whose
+    # balance decreased (transfer sent away), "in" on the one it increased
+    # (transfer received, or a manual_add). A "cash"-mode return's money
+    # effect surfaces via its own linked "payment" row instead (never both —
+    # see routers/ledger.py), since that Payment already carries the full
+    # destination-routing/balance effect.
+    kind: Literal[
+        "sale", "payment", "unified_sale", "empty_cylinder_sale", "cylinder_transaction",
+        "cylinder_return_out", "cylinder_return_in",
+    ]
     ref_id: UUID
     display_id: str
     description: str
@@ -1545,6 +1587,23 @@ class OwnerDrawingsOut(BaseModel):
     # convention as ExpenseOut.shop_id/shop_name above.
     shop_id: Optional[UUID] = None
     shop_name: Optional[str] = None
+    # § Shop Expense/Withdrawal Attribution — same convention as
+    # ExpenseOut.customer_id/customer_name/shop_supply_customer_id/
+    # shop_sale_display_id above (a shop owner withdrawal never has the
+    # plant-level source_payment_id/unified_sale_id path, only this one).
+    customer_id: Optional[UUID] = None
+    customer_name: Optional[str] = None
+    shop_supply_customer_id: Optional[UUID] = None
+    shop_sale_display_id: Optional[str] = None
+    # Payment Receipt / Cylinder Return "cash" mode (§ Cash Management —
+    # Owner Drawings Audit Ledger visibility) — set only when this row was
+    # auto-created via /payment-receipts or /cylinder-returns (never both
+    # this and unified_sale_id). customer_id/customer_name above are
+    # populated from the linked Payment's customer in that case too, so
+    # the ledger table can resolve "Customer Name" the same way it already
+    # does for a unified_sale-sourced row.
+    source_payment_id: Optional[UUID] = None
+    source_payment_display_id: Optional[str] = None
     status: str
     entered_by: str
     created_at: datetime
@@ -1590,6 +1649,9 @@ class UnifiedSaleCreate(BaseModel):
     customer_id: UUID
     plant_id: UUID  # maps to Company.id
     items: list[UnifiedSaleItem] = []
+    # Optional, defaults to 0 — folded into total_selling_amount server-side
+    # (see routers/unified_sale.py), never trusted as a pre-computed total.
+    delivery_charges: Decimal = Decimal("0")
     settlement: UnifiedSaleSettlement
     gate_pass_no: Optional[str] = None
     vehicle_no: Optional[str] = None
@@ -1614,6 +1676,7 @@ class UnifiedSaleBatchOut(BaseModel):
     company_id: UUID
     total_selling_amount: Decimal
     total_purchase_amount: Decimal
+    delivery_charges: Decimal = Decimal("0")
     total_credit_received: Decimal
     net_plant_payment: Decimal
     home_expense_amount: Decimal
@@ -1654,6 +1717,7 @@ class UnifiedSaleOut(BaseModel):
     company_id: UUID
     total_selling_amount: Decimal
     total_purchase_amount: Decimal
+    delivery_charges: Decimal = Decimal("0")
     total_credit_received: Decimal
     net_plant_payment: Decimal
     home_expense_amount: Decimal
@@ -1751,6 +1815,61 @@ class EmptyCylinderSaleOut(BaseModel):
     quantity: Decimal
     amount: Decimal
     notes: Optional[str]
+    status: str
+    entered_by: str
+    created_at: datetime
+
+
+# ---------- Cylinder Return (Return Cylinder / Add Empty Cylinder) ----------
+class CylinderReturnCreate(BaseModel):
+    """One request body shape covering all 3 modes (§ models.CylinderReturn)
+    — the router validates which fields are required per mode:
+      - "transfer": to_customer_id required; amount/destination fields unused.
+      - "cash": amount required, routed exactly like PaymentReceiptCreate
+        (home_expense_amount/owner_drawings_amount bypass, destination_type
+        routes the remainder to a plant or account) — see
+        routers/payment_receipts.py._resolve_destination /
+        utils.apply_settlement_routing, reused unchanged for this mode.
+      - "manual_add": only customer_id/cylinder_size/cylinder_type/quantity
+        used; a pure count increase, nothing else."""
+    date: Optional[UtcDateTime] = None  # defaults to now if omitted
+    customer_id: UUID
+    cylinder_size: Literal["118", "454"]
+    cylinder_type: Optional[Literal["cross", "pso"]] = None
+    quantity: Decimal
+    mode: Literal["transfer", "cash", "manual_add"]
+
+    # mode == "transfer"
+    to_customer_id: Optional[UUID] = None
+
+    # mode == "cash" — same shape/meaning as PaymentReceiptCreate
+    amount: Optional[Decimal] = None
+    method: Literal["cash", "bank_transfer", "cheque", "online", "other"] = "cash"
+    home_expense_amount: Decimal = Decimal("0")
+    home_expense_category_id: Optional[UUID] = None
+    owner_drawings_amount: Decimal = Decimal("0")
+    destination_type: Literal["plant", "account"] = "plant"
+    target_plant_id: Optional[UUID] = None
+    account_id: Optional[str] = None
+    reference_no: Optional[str] = None
+
+    notes: Optional[str] = None
+    entered_by: str
+
+
+class CylinderReturnOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    display_id: str
+    date: datetime
+    customer_id: UUID
+    cylinder_size: str
+    cylinder_type: Optional[str] = None
+    quantity: Decimal
+    mode: str
+    to_customer_id: Optional[UUID] = None
+    payment_id: Optional[UUID] = None
+    notes: Optional[str] = None
     status: str
     entered_by: str
     created_at: datetime
@@ -1961,17 +2080,53 @@ class ShopCustomerPaymentOut(BaseModel):
     amount: Decimal
     method: str
     notes: Optional[str] = None
+    excess_amount: Optional[Decimal] = None
     status: str
     entered_by: str
     created_at: datetime
+
+
+class ShopSupplyCustomerLedgerRow(BaseModel):
+    """One row of a Supply Customer's ledger — the shop-scoped mirror of
+    LedgerRow, deliberately its own (simpler) shape: only two event kinds
+    ever apply here (a shop's ShopSale/ShopCustomerPayment), never the
+    Dowa-side kinds (unified_sale, empty_cylinder_sale, ...)."""
+    date: datetime
+    kind: Literal["sale", "payment"]
+    ref_id: UUID
+    display_id: str
+    description: str
+    sale_amount: Decimal
+    payment_amount: Decimal
+    running_balance: Decimal
+    rate: Optional[Decimal] = None
+    entered_by: str
+
+
+class ShopSupplyCustomerLedgerOut(BaseModel):
+    """All-time (not month-scoped — ShopSupplyCustomer has a single
+    opening_balance, not a month-anchored one like Customer's) running
+    ledger for one shop's own supply customer."""
+    customer: ShopSupplyCustomerOut
+    opening_balance: Decimal
+    total_sales: Decimal
+    total_payments: Decimal
+    # Cash collected at the moment of sale (a full cash sale, or a credit
+    # sale's inline-settled portion) — kept separate from total_payments
+    # (genuine ShopCustomerPayment rows) so opening + total_sales -
+    # total_payments still reconciles exactly to closing_balance.
+    total_collected_at_sale: Decimal = Decimal("0")
+    total_transactions: int
+    closing_balance: Decimal
+    rows: list[ShopSupplyCustomerLedgerRow]
 
 
 class ShopExpenseLineCreate(BaseModel):
     # Required only for line_type == "expense" — an owner_withdrawal isn't
     # a category of expense at all, so it's left unset for that line type
     # (enforced server-side in create_shop_expense, not just by the client
-    # omitting it).
-    category_id: Optional[UUID] = None
+    # omitting it). OptionalUUID also tolerates "" as "no category".
+    category_id: OptionalUUID = None
     line_type: Literal["expense", "owner_withdrawal"] = "expense"
     amount: Decimal
     description: Optional[str] = None
@@ -1996,6 +2151,14 @@ class ShopExpenseTransactionCreate(BaseModel):
     account_id: Optional[UUID] = None
     payment_source: Optional[str] = None
     notes: Optional[str] = None
+    # Attribution (§ Shop Expense/Withdrawal Attribution) — set by Record
+    # Shop Sale (both, once its own Sale exists) and Record Supply Customer
+    # Payment (supply_customer_id only); left unset by the standalone
+    # Record Expense form, which has neither. Never validated against the
+    # line contents — this is "what was on screen when this was entered",
+    # not a computed allocation.
+    supply_customer_id: OptionalUUID = None
+    shop_sale_id: OptionalUUID = None
     entered_by: str
 
 
@@ -2008,6 +2171,10 @@ class ShopExpenseTransactionOut(BaseModel):
     total_amount: Decimal
     account_id: Optional[UUID] = None
     payment_source: Optional[str] = None
+    supply_customer_id: Optional[UUID] = None
+    customer_name: Optional[str] = None
+    shop_sale_id: Optional[UUID] = None
+    shop_sale_display_id: Optional[str] = None
     notes: Optional[str] = None
     status: str
     entered_by: str

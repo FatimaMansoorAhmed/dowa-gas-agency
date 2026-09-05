@@ -121,7 +121,7 @@ function PurchasesBody() {
         }
       />
 
-      <div className="grid grid-cols-5 gap-3.5 mb-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5 mb-4">
         <Panel><Eyebrow>Opening Payable</Eyebrow><div className="font-display font-bold text-2xl text-ink">{pkr(totals.opening)}</div></Panel>
         <Panel><Eyebrow>Total Purchases</Eyebrow><div className="font-display font-bold text-2xl text-ink">{pkr(totals.purchases)}</div></Panel>
         <Panel><Eyebrow>Total Payments</Eyebrow><div className="font-display font-bold text-2xl text-brand-green">{pkr(totals.payments)}</div></Panel>
@@ -132,7 +132,7 @@ function PurchasesBody() {
       <Panel className="mb-4">
         <div className="flex items-center justify-between mb-1 flex-wrap gap-2.5">
           <Eyebrow>Plant Summary</Eyebrow>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <div className="flex items-center gap-1.5 border border-hairline rounded-md px-2.5">
               <Search size={13} className="text-steel" />
               <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search plant" className="border-none outline-none font-body text-xs py-1.5 w-[160px]" />
@@ -230,7 +230,7 @@ function PurchasesBody() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-4 gap-3 mb-4">
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
                 <Panel><Eyebrow>Opening</Eyebrow><div className="font-display font-bold text-base text-ink">{pkr(detail.opening_balance)}</div></Panel>
                 <Panel><Eyebrow>Purchases</Eyebrow><div className="font-display font-bold text-base text-ink">{pkr(detail.total_purchases)}</div></Panel>
                 <Panel><Eyebrow>Paid</Eyebrow><div className="font-display font-bold text-base text-brand-green">{pkr(detail.total_payments)}</div></Panel>

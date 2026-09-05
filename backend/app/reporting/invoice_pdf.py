@@ -1,5 +1,6 @@
 """Renders per-record Invoice PDFs (Part B) for Sale, Payment, Purchase,
-CompanyPayment and ShopSale — read-only, presentation-only, generated
+CompanyPayment and ShopSale, plus the Customer Statement (full ledger
+history for one customer/month) — read-only, presentation-only, generated
 on-demand and never written to disk (unlike the stored Daily Report in
 pdf.py). Reuses reportlab (already a dependency). Layout follows a standard
 commercial invoice: logo/company block + address block header, a details
@@ -10,16 +11,25 @@ Each render_*_invoice_pdf takes the live SQLAlchemy row straight from the
 router (never a cached/pydantic copy), so a corrected record — which is
 already the only "active" row a user can reach an invoice action from —
 always renders its own current field values, never a superseded original.
+render_customer_statement_pdf is the one exception — it takes the already-
+built CustomerLedgerSummary (a Pydantic schema, not a live row) straight
+from app.routers.ledger.customer_monthly_ledger, so the PDF can never show
+numbers that disagree with what the Customer Ledger screen has on screen
+(same guarantee as the Daily Report PDF in pdf.py).
 """
+import base64
 import io
 from decimal import Decimal
+from pathlib import Path
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_RIGHT, TA_CENTER
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+from app import schemas
 
 # ============================================================================
 # PLACEHOLDER — replace with real business details before this goes live.
@@ -46,6 +56,45 @@ BUSINESS = {
 }
 
 PAGE_WIDTH = A4[0] - 28 * mm  # usable width after 14mm left/right margins
+
+# ============================================================================
+# LOGO — embedded, not read from disk at request time. backend (Railway) and
+# frontend (Vercel) are separately-deployed services (see app/deps.py's
+# require_csrf docstring), so the backend process cannot rely on
+# frontend/public/logo.png existing on its filesystem in production. Instead
+# this is a one-time-generated base64 PNG (cropped to the logo's own bounding
+# box, alpha-thresholded to drop the faint outer glow, downscaled to 320px
+# tall — plenty for a ~19mm header image) checked into this same directory,
+# so the backend deploy is self-contained with no second raw copy of the
+# image floating around to drift out of sync by hand. frontend/public/logo.png
+# remains the one source-of-truth artwork file; _logo_b64.txt is a generated
+# derivative of it, regenerated with:
+#
+#   python -c "from PIL import Image; import base64, io; \
+#     im = Image.open('frontend/public/logo.png').convert('RGBA'); \
+#     a = im.split()[-1]; m = a.point(lambda p: 255 if p > 40 else 0); \
+#     im = im.crop(m.getbbox()); h = 320; w = round(im.size[0] * h / im.size[1]); \
+#     im = im.resize((w, h), Image.LANCZOS); buf = io.BytesIO(); \
+#     im.save(buf, 'PNG', optimize=True); \
+#     open('backend/app/reporting/_logo_b64.txt', 'w').write(base64.b64encode(buf.getvalue()).decode())"
+#
+# (run from the repo root, with Pillow installed — it already is, as a hard
+# dependency of reportlab).
+# ============================================================================
+_LOGO_B64_PATH = Path(__file__).with_name("_logo_b64.txt")
+_logo_png_bytes: bytes | None = None
+
+
+def _logo_png() -> bytes:
+    """Cached decoded PNG bytes. Returns raw bytes rather than a shared
+    file-like object — reportlab's Image flowable reads its source stream
+    to completion on construction, so a single shared BytesIO would come up
+    empty on every render after the first; callers wrap this in a fresh
+    io.BytesIO() each time instead."""
+    global _logo_png_bytes
+    if _logo_png_bytes is None:
+        _logo_png_bytes = base64.b64decode(_LOGO_B64_PATH.read_text().strip())
+    return _logo_png_bytes
 
 
 def _fmt_amount(value) -> str:
@@ -123,25 +172,23 @@ def _styles():
 
 
 def _header_block(s):
-    """Logo top-left / company name+tagline, address+contact block
-    top-right. No backend-accessible logo image exists (frontend/public/
-    logo.png lives in a separately-deployed frontend service — Railway
-    backend / Vercel frontend, per app/deps.py's cross-origin cookie
-    comment — so it isn't guaranteed to exist on disk here), so this falls
-    back to the same text-based branding Shell.tsx uses ("DOWA GAS" /
-    "AGENCY · KHI") per the approved plan's fallback."""
-    left = [
+    """Logo + company name/tagline top-left, address+contact block
+    top-right. See the LOGO comment above _logo_png for why the image is
+    embedded rather than read from frontend/public/ at request time."""
+    logo = Image(io.BytesIO(_logo_png()), width=18.5 * mm, height=20 * mm)
+    name_block = [
         Paragraph(BUSINESS["name"].upper(), s["company_name"]),
         Paragraph(BUSINESS["tagline"], s["company_tagline"]),
     ]
     right_lines = BUSINESS["address_lines"] + [BUSINESS["phone"], BUSINESS["email"], BUSINESS["gst_regn_no"], BUSINESS["ntn"]]
     right = [Paragraph(line, s["address_right"]) for line in right_lines]
 
-    t = Table([[left, right]], colWidths=[100 * mm, 82 * mm])
+    t = Table([[logo, name_block, right]], colWidths=[22 * mm, 78 * mm, 82 * mm])
     t.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("LEFTPADDING", (1, 0), (1, -1), 4),
     ]))
     return [t, Spacer(1, 3 * mm), HRFlowable(width="100%", thickness=1.2, color=colors.HexColor("#0F8B8D")), Spacer(1, 3 * mm)]
 
@@ -188,8 +235,8 @@ def _items_table(s, headers: list, row: list):
     return t
 
 
-def _totals_block(s, total_amount):
-    t = Table([["Total Amount", _fmt_amount(total_amount)]], colWidths=[40 * mm, 35 * mm])
+def _totals_block(s, total_amount, label="Total Amount"):
+    t = Table([[label, _fmt_amount(total_amount)]], colWidths=[40 * mm, 35 * mm])
     t.hAlign = "RIGHT"
     t.setStyle(TableStyle([
         ("FONTSIZE", (0, 0), (-1, -1), 10.5),
@@ -397,3 +444,115 @@ def render_shop_sale_invoice_pdf(sale, generated_by: str, generated_at: str) -> 
         ["Description", "Qty", "Rate", "Amount"], items_row, sale.total_amount, sale.entered_by, notes,
         generated_by, generated_at,
     )
+
+
+def _statement_period_label(month: str) -> str:
+    from datetime import datetime as _dt
+    try:
+        return _dt.strptime(month, "%Y-%m").strftime("%B %Y")
+    except ValueError:
+        return month
+
+
+def _statement_rate_cell(r: "schemas.LedgerRow") -> str:
+    """Mirrors the Customer Ledger screen's own Rate-column logic exactly
+    (frontend/app/customer-ledger/page.tsx) — a unified_sale row shows every
+    child Sale's own rate (never one blended figure), everything else falls
+    back to rate_per_cylinder or a dash. Deliberately does NOT also check
+    rate_per_kg — the on-screen table doesn't either, so a kg-priced row
+    reads as a dash here too, matching what the statement is a PDF copy of."""
+    if r.kind == "unified_sale" and r.unified_sale_rates:
+        return ", ".join(_fmt_amount(x) for x in r.unified_sale_rates)
+    if r.rate_per_cylinder:
+        return _fmt_amount(r.rate_per_cylinder)
+    return "-"
+
+
+def _statement_table(s, summary: "schemas.CustomerLedgerSummary"):
+    headers = ["Date", "ID", "Description", "Rate", "Sale", "Payment", "Balance"]
+    header_row = [Paragraph(f"<b>{h}</b>", s["value_cell"]) for h in headers]
+    data = [header_row]
+
+    opening_row_style = ParagraphStyle("OpeningRow", parent=s["value_cell"], fontName="Helvetica-Bold")
+    data.append([
+        Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
+        Paragraph("Opening Balance", opening_row_style),
+        Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
+        Paragraph(_fmt_amount(summary.opening_balance), opening_row_style),
+    ])
+
+    # summary.rows is latest-first for on-screen display (Global Sorting
+    # Standard); a running-balance statement reads top-to-bottom
+    # oldest-first, so this puts it back in the order it was actually built in.
+    for r in reversed(summary.rows):
+        data.append([
+            Paragraph(r.date.strftime("%Y-%m-%d"), s["value_cell"]),
+            Paragraph(r.display_id, s["value_cell"]),
+            Paragraph(r.description, s["value_cell"]),
+            Paragraph(_statement_rate_cell(r), s["value_cell"]),
+            Paragraph(_fmt_amount(r.sale_amount) if r.sale_amount else "-", s["value_cell"]),
+            Paragraph(_fmt_amount(r.payment_amount) if r.payment_amount else "-", s["value_cell"]),
+            Paragraph(_fmt_amount(r.running_balance), ParagraphStyle("BalCell", parent=s["value_cell"], fontName="Helvetica-Bold")),
+        ])
+
+    t = Table(data, colWidths=[23 * mm, 25 * mm, 47 * mm, 20 * mm, 22 * mm, 22 * mm, 23 * mm], repeatRows=1)
+    t.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F8B8D")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#F8FAFC")),
+        ("ALIGN", (3, 0), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    return t
+
+
+def render_customer_statement_pdf(summary: "schemas.CustomerLedgerSummary", generated_by: str, generated_at: str) -> bytes:
+    """Full-statement PDF for one customer/month — reuses the exact
+    CustomerLedgerSummary the Customer Ledger screen renders on screen
+    (app.routers.ledger.customer_monthly_ledger), so this can never disagree
+    with what's on screen (same convention as the Daily Report PDF)."""
+    customer = summary.customer
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        topMargin=14 * mm, bottomMargin=14 * mm, leftMargin=14 * mm, rightMargin=14 * mm,
+    )
+    s = _styles()
+    story = []
+    story.extend(_header_block(s))
+    story.append(Paragraph("Customer Statement", s["doctype"]))
+
+    party_lines = []
+    if customer.mobile:
+        party_lines.append(customer.mobile)
+    addr_bits = [b for b in [customer.address, customer.city_area] if b]
+    if addr_bits:
+        party_lines.append(", ".join(addr_bits))
+
+    details_rows = [
+        ("Statement Period", _statement_period_label(summary.month)),
+        ("Customer ID", customer.display_id),
+        ("Opening Balance", _fmt_amount(summary.opening_balance)),
+        ("Total Sales", _fmt_amount(summary.total_sales)),
+        ("Total Payments", _fmt_amount(summary.total_payments)),
+    ]
+    story.append(_party_and_details(s, "Statement For", [customer.name] + party_lines, details_rows))
+    story.append(Spacer(1, 5 * mm))
+
+    story.append(_statement_table(s, summary))
+    story.append(Spacer(1, 4 * mm))
+    story.append(_totals_block(s, summary.closing_balance, label="Closing Balance"))
+
+    story.append(Spacer(1, 6 * mm))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#CBD5E1")))
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph(f"System-generated document — printed by {generated_by} on {generated_at}.", s["footer"]))
+    doc.build(story)
+    return buf.getvalue()

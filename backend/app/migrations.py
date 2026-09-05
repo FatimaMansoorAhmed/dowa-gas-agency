@@ -26,6 +26,8 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     ("unified_sale_batches", "vehicle_no", "VARCHAR(255)"),
     ("unified_sale_batches", "gate_pass_no", "VARCHAR(255)"),
     ("unified_sale_batches", "notes", "VARCHAR(255)"),
+    # Delivery Charges (optional, default 0) — see models.UnifiedSaleBatch.
+    ("unified_sale_batches", "delivery_charges", "NUMERIC(14, 2) NOT NULL DEFAULT 0"),
     ("payments", "destination_type", "VARCHAR(50)"),
     ("payments", "target_plant_id", "GUID"),
     ("payments", "account_category", "VARCHAR(255)"),
@@ -139,10 +141,23 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     # account and were never linked to a specific originating sale.
     ("shop_customer_payments", "account_id", "GUID"),
     ("shop_customer_payments", "shop_sale_id", "GUID"),
+    # shop_customer_payments.excess_amount: null for every existing
+    # collection — pre-migration collections never recorded whether they
+    # overpaid what was owed at the time (§ Shop Customer Ledger Bug 4).
+    ("shop_customer_payments", "excess_amount", "NUMERIC(14, 2)"),
     # shop_expense_transactions.account_id: null for every existing
     # expense — pre-migration expenses only ever had the free-text
     # payment_source note, no real account was debited.
     ("shop_expense_transactions", "account_id", "GUID"),
+    # Shop Expense/Withdrawal Attribution (§ Dashboard P&L / Shop Expense
+    # integration) — captures which supply customer and/or which sale an
+    # expense/withdrawal transaction was entered alongside, when the form
+    # it came from actually had that context (Record Shop Sale, Record
+    # Supply Customer Payment). Null for every existing row and for the
+    # standalone Record Expense form, which has neither — there is
+    # genuinely no customer/sale to attribute those to.
+    ("shop_expense_transactions", "supply_customer_id", "GUID"),
+    ("shop_expense_transactions", "shop_sale_id", "GUID"),
 ]
 
 

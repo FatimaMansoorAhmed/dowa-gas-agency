@@ -43,17 +43,40 @@ export default function RecordShopSaleModal({
   stockProducts,
   onClose,
   onSaved,
+  onPartialSave,
 }: {
   shopId: string;
   stockProducts: ShopProductStockSummary[];
   onClose: () => void;
   onSaved: () => void;
+  // Called instead of onSaved when the Sale itself saved but the trailing
+  // Expense/Withdrawal call (a separate request — see ExpenseWithdrawLines'
+  // docstring) failed. Refreshes the underlying list (the Sale is real)
+  // without closing this modal, so the accurate error stays visible rather
+  // than vanishing along with a modal that just told the user nothing saved.
+  onPartialSave?: () => void;
 }) {
   const { user } = useAuth();
 
   const [products, setProducts] = useState<Product[]>([]);
   const [customers, setCustomers] = useState<ShopSupplyCustomer[]>([]);
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
+
+  // Live pricing/stock — `stockProducts` (the prop) is whatever the parent
+  // shop page fetched whenever it last loaded, which can be arbitrarily
+  // stale by the time this modal is actually submitted (the page never
+  // polls, and opening this modal doesn't re-fetch it either). If the
+  // Board Rate changes in that window, the prop's sale_rate_per_cylinder/
+  // board_rate_per_kg no longer match what the server will actually charge
+  // at submit time, so the preview shown here (and the amount_received the
+  // user picks based on it) can look valid while the server — which always
+  // resolves the rate fresh — correctly rejects it. Re-fetching on mount
+  // keeps the preview honest; the prop is still used as the instant-render
+  // fallback so the form isn't blank while this call is in flight.
+  const [liveStockProducts, setLiveStockProducts] = useState(stockProducts);
+  useEffect(() => {
+    api.shops.stock(shopId).then((s) => setLiveStockProducts(s.products));
+  }, [shopId]);
 
   const [productId, setProductId] = useState("");
   const [date, setDate] = useState(todayLocalInput());
@@ -116,7 +139,7 @@ export default function RecordShopSaleModal({
      PRICE CALCULATION
   ------------------------------------------------------------- */
 
-  const priceRow = stockProducts.find(
+  const priceRow = liveStockProducts.find(
     (p) => p.product_id === productId
   );
 
@@ -169,6 +192,7 @@ export default function RecordShopSaleModal({
 
     setSaving(true);
     setError(null);
+    let saleSaved = false;
 
     try {
       const now = new Date();
@@ -189,7 +213,7 @@ export default function RecordShopSaleModal({
         `${date}T${hh}:${mm}:${ss}`
       ).toISOString();
 
-      await api.shops.createSale(shopId, {
+      const createdSale = await api.shops.createSale(shopId, {
         date: isoDate,
         product_id: productId,
         quantity: parseFloat(quantity),
@@ -213,24 +237,42 @@ export default function RecordShopSaleModal({
         notes: notes || undefined,
         entered_by: user.name,
       });
+      saleSaved = true;
 
       if (hasFilledExpenseLines(expenseLines)) {
         await api.shops.expenses.create(shopId, {
           date: isoDate,
           lines: toExpenseLinesPayload(expenseLines),
           entered_by: user.name,
+          // § Shop Expense/Withdrawal Attribution — this sale (and its
+          // customer, if any) is exactly the context this expense/
+          // withdrawal was entered alongside.
+          supply_customer_id: supplyCustomerId || undefined,
+          shop_sale_id: createdSale.id,
         });
       }
 
       onSaved();
     } catch (e: any) {
-      setError(
-        e?.message?.includes("Insufficient")
-          ? "Not enough stock for this quantity."
-          : e?.message?.includes("amount_received")
-          ? "Amount received can't exceed the sale total."
-          : "Could not save the sale — check the fields and try again."
-      );
+      if (saleSaved) {
+        // The Sale row already exists — this was the separate trailing
+        // Expense/Withdrawal call failing, not the sale. Saying "could not
+        // save the sale" here would be false and risks a duplicate SALE if
+        // the user retries the whole form, so this stays a distinct
+        // message and doesn't close the modal (onSaved would).
+        setError(
+          `Sale saved, but the Expense/Withdrawal line could not be saved (${e?.message || "unknown error"}). Add it separately from the shop's Expenses tab.`
+        );
+        onPartialSave?.();
+      } else {
+        setError(
+          e?.message?.includes("Insufficient")
+            ? "Not enough stock for this quantity."
+            : e?.message?.includes("amount_received")
+            ? "Amount received can't exceed the sale total."
+            : "Could not save the sale — check the fields and try again."
+        );
+      }
     } finally {
       setSaving(false);
     }

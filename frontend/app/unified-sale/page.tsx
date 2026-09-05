@@ -6,6 +6,7 @@ import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, 
 import NewPlantModal from "@/components/NewPlantModal";
 import AmountInput from "@/components/AmountInput";
 import CorrectTransactionModal, { CorrectableKind } from "@/components/CorrectTransactionModal";
+import PaymentReceiptModal from "@/components/PaymentReceiptModal";
 import { api } from "@/lib/api";
 import { pkr, fmtTime, todayLocalInput, toKarachiDateString, ACCOUNT_TYPE_LABELS, resolveAccountLabel, fmtNumber } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
@@ -89,6 +90,14 @@ function UnifiedSaleBody() {
 
   const [showNewPlant, setShowNewPlant] = useState(false);
   const [showSaleForm, setShowSaleForm] = useState(false);
+  // Payment-Only mode (§ Part A) — a customer who's only paying, no sale
+  // happening. Deliberately a separate action opening PaymentReceiptModal
+  // rather than making every New Sale field optional: Unified Sale requires
+  // a purchase plant + runs a two-stage pending->approve workflow built for
+  // actual loads, neither of which a bare payment needs. Reuses the exact
+  // same instant, single-step /payment-receipts flow the Payments Register
+  // page uses — see components/PaymentReceiptModal.tsx.
+  const [showPaymentOnly, setShowPaymentOnly] = useState(false);
   // Approved Sale / Approved Payments (§3/§4) — plain, individual Sale/
   // Payment records (system-wide, not scoped to Unified Sale batches),
   // with Edit wired to the existing, already-proven reverse-then-repost
@@ -126,6 +135,7 @@ function UnifiedSaleBody() {
   const [notes, setNotes] = useState("");
 
   const [items, setItems] = useState<Record<string, ItemRow>>({});
+  const [deliveryCharges, setDeliveryCharges] = useState("");
 
   // Payment Format & Settlement Amounts
   const [totalCreditReceived, setTotalCreditReceived] = useState("");
@@ -235,7 +245,13 @@ function UnifiedSaleBody() {
     [products, items]
   );
 
-  const totalSelling = activeItems.reduce((s, x) => s + (parseFloat(x.row!.qty) || 0) * (parseFloat(x.row!.sellingRate) || 0), 0);
+  const deliveryChargesNum = parseFloat(deliveryCharges) || 0;
+  // Delivery charges are folded straight into the selling total — raises
+  // what the customer owes exactly like another item would, and flows into
+  // net_plant_payment through totalCreditReceived below the same way the
+  // rest of the sale amount does. Never added to totalPurchase — it's pure
+  // margin, no plant cost behind it (matches routers/unified_sale.py).
+  const totalSelling = activeItems.reduce((s, x) => s + (parseFloat(x.row!.qty) || 0) * (parseFloat(x.row!.sellingRate) || 0), 0) + deliveryChargesNum;
   const totalPurchase = activeItems.reduce((s, x) => s + (parseFloat(x.row!.qty) || 0) * (parseFloat(x.row!.purchaseRate) || 0), 0);
   const margin = totalSelling - totalPurchase;
 
@@ -287,12 +303,13 @@ function UnifiedSaleBody() {
   const canSubmit =
     !!customerId && !!companyId && !!date &&
     (!vehicleRequired || !!vehicleNo.trim()) &&
-    (activeItems.length > 0 || totalCreditNum > 0) &&
+    (activeItems.length > 0 || totalCreditNum > 0 || deliveryChargesNum > 0) &&
     settlementValid &&
     (homeExpenseNum <= 0 || !!homeExpenseCategoryId);
 
   const resetForm = () => {
     setItems({});
+    setDeliveryCharges("");
     setTotalCreditReceived(""); setPaymentMethod("cash");
     setHomeExpenseAmount(""); setHomeExpenseCategoryId(""); setOwnerDrawingsAmount("");
     setGatePassNo(""); setVehicleNo(""); setNotes("");
@@ -348,6 +365,7 @@ function UnifiedSaleBody() {
         };
       });
       setItems(nextItems);
+      setDeliveryCharges(full.delivery_charges && Number(full.delivery_charges) > 0 ? String(full.delivery_charges) : "");
       setTotalCreditReceived(String(full.total_credit_received));
       setHomeExpenseAmount(String(full.home_expense_amount || ""));
       setHomeExpenseCategoryId(full.expense?.category_id || "");
@@ -433,6 +451,7 @@ function UnifiedSaleBody() {
           product_id: x.product.id, quantity: parseFloat(x.row!.qty),
           purchase_rate: parseFloat(x.row!.purchaseRate) || 0, selling_rate: parseFloat(x.row!.sellingRate) || 0,
         })),
+        delivery_charges: deliveryChargesNum,
         settlement: {
           total_credit_received: totalCreditNum,
           cash_received: 0,
@@ -530,6 +549,21 @@ function UnifiedSaleBody() {
           <div className="mt-1 font-body text-xs text-steel">Create a sale and settlement in one entry.</div>
         </button>
 
+        <button
+          type="button"
+          onClick={() => setShowPaymentOnly(true)}
+          className="group rounded-xl border border-teal/30 bg-teal/5 hover:bg-teal/10 transition-colors p-5 text-left"
+        >
+          <div className="flex items-center justify-between">
+            <div className="h-10 w-10 rounded-lg bg-teal text-white flex items-center justify-center">
+              <Wallet size={19} />
+            </div>
+            <span className="font-mono text-[10px] uppercase tracking-wide text-teal font-semibold">Create</span>
+          </div>
+          <div className="mt-4 font-display text-lg font-bold text-ink">Record Payment</div>
+          <div className="mt-1 font-body text-xs text-steel">Just a payment, no sale — routes to an account, plant, or owner drawing.</div>
+        </button>
+
         <Panel className="!p-5">
           <div className="font-mono text-[10px] uppercase text-steel">Sale / Load</div>
           <div className="mt-2 font-display text-2xl font-bold text-[#8A6D00]">{salePendingOrders.length}</div>
@@ -572,6 +606,12 @@ function UnifiedSaleBody() {
           </div>
         </button>
       </div>
+
+      <PaymentReceiptModal
+        isOpen={showPaymentOnly}
+        onClose={() => setShowPaymentOnly(false)}
+        onSuccess={load}
+      />
 
       <div className="space-y-6">
 
@@ -695,7 +735,7 @@ function UnifiedSaleBody() {
                   })}
                 </div>
 
-                {activeItems.length > 0 && (
+                {(activeItems.length > 0 || deliveryChargesNum > 0) && (
                   <div className="grid grid-cols-3 gap-2 mt-3">
                     <div className="px-3 py-2 bg-ink rounded-md">
                       <div className="font-mono text-[9.5px] text-[#9FD8D8]">SELLING TOTAL</div>
@@ -725,6 +765,9 @@ function UnifiedSaleBody() {
                   </Field>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+                  <Field label="Delivery Charges (Rs)">
+                    <AmountInput value={deliveryCharges} onChange={setDeliveryCharges} placeholder="0" className={inputClass} />
+                  </Field>
                   <Field label="Notes">
                     <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Remarks" className={inputClass} />
                   </Field>
@@ -916,6 +959,12 @@ function UnifiedSaleBody() {
                         </div>
                       );
                     })}
+                  </div>
+                )}
+                {Number(lastResult.delivery_charges) > 0 && (
+                  <div className="flex justify-between text-xs">
+                    <span>Delivery Charges</span>
+                    <span>{pkr(lastResult.delivery_charges)}</span>
                   </div>
                 )}
                 {Number(lastResult.net_plant_payment) > 0 && (
@@ -1410,6 +1459,12 @@ function UnifiedSaleBody() {
                         <span className="font-body text-xs text-steel">Total Credit Received</span>
                         <span className="font-mono text-xs font-semibold">{pkr(selectedTransaction.total_credit_received)}</span>
                       </div>
+                      {Number(selectedTransaction.delivery_charges) > 0 && (
+                        <div className="flex justify-between px-3 py-2.5">
+                          <span className="font-body text-xs text-steel">Delivery Charges (incl. in Sale)</span>
+                          <span className="font-mono text-xs">{pkr(selectedTransaction.delivery_charges)}</span>
+                        </div>
+                      )}
                       {Number(selectedTransaction.net_plant_payment) > 0 && (
                         <div className="flex justify-between px-3 py-2.5">
                           <span className="font-body text-xs text-steel">Routed Settlement ({getDestinationLabel(selectedTransaction)})</span>

@@ -47,7 +47,7 @@ def start_scheduler() -> BackgroundScheduler:
     _scheduler = BackgroundScheduler(timezone=KARACHI_TZ)
     _scheduler.add_job(
         _run_scheduled_daily_report,
-        trigger=CronTrigger(hour=3, minute=46, timezone=KARACHI_TZ),  # TEMP: live scheduler test, will revert to 12,0
+        trigger=CronTrigger(hour=12, minute=0, timezone=KARACHI_TZ),
         id="daily_report_12pm",
         replace_existing=True,
     )

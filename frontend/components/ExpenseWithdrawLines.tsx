@@ -75,7 +75,8 @@ export default function ExpenseWithdrawLines({
       <div className="font-mono text-[10px] uppercase text-steel">Expense / Withdrawal (optional)</div>
 
       {lines.map((line, i) => (
-        <div key={i} className="grid grid-cols-[1.1fr_1.1fr_0.8fr_1.1fr_auto] gap-2 items-center">
+        <div key={i} className="overflow-x-auto">
+        <div className="grid grid-cols-[1.1fr_1.1fr_0.8fr_1.1fr_auto] gap-2 items-center min-w-[520px]">
           <select
             value={line.line_type}
             onChange={(e) => {
@@ -114,6 +115,7 @@ export default function ExpenseWithdrawLines({
           >
             <Trash2 size={14} />
           </button>
+        </div>
         </div>
       ))}
 

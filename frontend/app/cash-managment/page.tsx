@@ -228,14 +228,20 @@ function CashManagementBody() {
 
   const drawingRows = useMemo(() => {
     return filteredOwnerDrawings
-      .filter((d) => d.unified_sale_id)
+      // Any traceable-origin drawing — a Unified Sale batch OR a Payment
+      // Receipt/Cylinder Return "cash" mode (source_payment_id, § Cash
+      // Management — Owner Drawings Audit Ledger visibility). Previously
+      // scoped to unified_sale_id only, which silently hid every Payment
+      // Receipt/Cylinder Return-sourced row from this table even though
+      // the Total Drawings KPI card above already counted it.
+      .filter((d) => d.unified_sale_id || d.source_payment_id)
       .map((d) => {
-        const batch = unifiedSales.find((b) => b.id === d.unified_sale_id);
+        const batch = d.unified_sale_id ? unifiedSales.find((b) => b.id === d.unified_sale_id) : undefined;
         const customer = batch ? customers.find((c) => c.id === batch.customer_id) : undefined;
         return {
           id: d.id,
-          customerName: customer?.name || "—",
-          saleId: batch?.display_id || d.display_id,
+          customerName: customer?.name || d.customer_name || "—",
+          saleId: batch?.display_id || d.source_payment_display_id || d.display_id,
           date: d.date,
           sourceAccount: d.account_id
             ? accounts.find((a) => a.id === d.account_id)?.name || "—"
@@ -258,6 +264,11 @@ function CashManagementBody() {
         id: d.id,
         displayId: d.display_id,
         shopName: d.shop_name || "—",
+        // § Shop Expense/Withdrawal Attribution — the supply customer /
+        // sale this was entered alongside, when the source form had that
+        // context; both blank for a standalone Record Expense withdrawal.
+        customerName: d.customer_name,
+        saleRef: d.shop_sale_display_id,
         date: d.date,
         sourceAccount: d.account_id ? accounts.find((a) => a.id === d.account_id)?.name || "—" : "—",
         amount: parseFloat(d.amount || "0"),
@@ -485,6 +496,7 @@ function CashManagementBody() {
               <tr>
                 <Th>ID</Th>
                 <Th>Shop</Th>
+                <Th>Customer / Sale</Th>
                 <Th>Date</Th>
                 <Th>Account</Th>
                 <Th right>Amount</Th>
@@ -493,7 +505,7 @@ function CashManagementBody() {
             <tbody>
               {shopDrawingRows.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="text-steel font-body text-[13px] py-6 text-center">
+                  <td colSpan={6} className="text-steel font-body text-[13px] py-6 text-center">
                     {loading ? "Loading…" : "No shop owner withdrawals for the selected filter."}
                   </td>
                 </tr>
@@ -502,6 +514,18 @@ function CashManagementBody() {
                   <tr key={row.id}>
                     <Td mono color="#2D3748">{row.displayId}</Td>
                     <Td bold>{row.shopName}</Td>
+                    <Td>
+                      {row.customerName || row.saleRef ? (
+                        <span className="font-body text-[12px] text-ink">
+                          {row.customerName || "—"}
+                          {row.saleRef && (
+                            <span className="ml-1 font-mono text-[10px] text-steel">· Sale {row.saleRef}</span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="font-body text-[12px] text-steel">—</span>
+                      )}
+                    </Td>
                     <Td mono color="#2D3748">{fmtTime(row.date)}</Td>
                     <Td>
                       <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-[#F4F1EA] text-ink border border-hairline">
