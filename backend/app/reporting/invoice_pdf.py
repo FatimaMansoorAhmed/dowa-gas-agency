@@ -218,8 +218,13 @@ def _party_and_details(s, party_title: str, party_lines: list, details_rows: lis
     return t
 
 
-def _items_table(s, headers: list, row: list):
-    data = [headers, row]
+def _items_table(s, headers: list, rows: list):
+    """rows: one or more line-item rows — a plain per-Sale/Payment/Purchase
+    invoice passes a single row (via _build's auto-wrap below); the
+    Unified Sale combined invoice (§ One Invoice for Multi-Item Sales)
+    passes one row per child Sale, all on the same document instead of a
+    separate invoice each."""
+    data = [headers] + rows
     t = Table(data, colWidths=[82 * mm, 30 * mm, 35 * mm, 35 * mm])
     t.setStyle(TableStyle([
         ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -235,8 +240,14 @@ def _items_table(s, headers: list, row: list):
     return t
 
 
-def _totals_block(s, total_amount, label="Total Amount"):
-    t = Table([[label, _fmt_amount(total_amount)]], colWidths=[40 * mm, 35 * mm])
+def _totals_block(s, rows: list[tuple[str, object]]):
+    """rows: one or more (label, amount) pairs, rendered top-to-bottom —
+    a plain invoice gets a single "Total Amount" row; a GST-enabled Sale
+    (§ GST on Sale) gets Value Excl. Tax / GST / Grand Total stacked in
+    the same table instead of a second block, so the layout stays
+    identical to today's single-row invoice when GST is off."""
+    data = [[row_label, _fmt_amount(amount)] for row_label, amount in rows]
+    t = Table(data, colWidths=[40 * mm, 35 * mm])
     t.hAlign = "RIGHT"
     t.setStyle(TableStyle([
         ("FONTSIZE", (0, 0), (-1, -1), 10.5),
@@ -271,6 +282,22 @@ def _signature_block(s, prepared_by: str):
 def _build(doc_type: str, party_title: str, party_lines: list, details_rows: list,
            items_headers: list, items_row: list, total_amount, entered_by: str, notes: str | None,
            generated_by: str, generated_at: str) -> bytes:
+    # total_amount is normally a single Decimal ("Total Amount" row); a
+    # GST-enabled Sale instead passes a list of (label, amount) rows (§ GST
+    # on Sale) — every other document type is untouched by this and keeps
+    # rendering its plain single-row total exactly as before.
+    if isinstance(total_amount, list):
+        total_rows = total_amount
+        final_amount = total_rows[-1][1]
+    else:
+        total_rows = [("Total Amount", total_amount)]
+        final_amount = total_amount
+
+    # items_row is normally a single flat row; the Unified Sale combined
+    # invoice (§ One Invoice for Multi-Item Sales) passes a list of rows
+    # instead — one per line item, all on this one document.
+    items_rows = items_row if (items_row and isinstance(items_row[0], list)) else [items_row]
+
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
@@ -282,11 +309,11 @@ def _build(doc_type: str, party_title: str, party_lines: list, details_rows: lis
     story.append(Paragraph(doc_type.upper(), s["doctype"]))
     story.append(_party_and_details(s, party_title, party_lines, details_rows))
     story.append(Spacer(1, 6 * mm))
-    story.append(_items_table(s, items_headers, items_row))
+    story.append(_items_table(s, items_headers, items_rows))
     story.append(Spacer(1, 4 * mm))
-    story.append(_totals_block(s, total_amount))
+    story.append(_totals_block(s, total_rows))
     story.append(Spacer(1, 3 * mm))
-    story.append(Paragraph(f"Amount in Words: {_amount_in_words(total_amount)}", s["words"]))
+    story.append(Paragraph(f"Amount in Words: {_amount_in_words(final_amount)}", s["words"]))
     if notes:
         story.append(Spacer(1, 3 * mm))
         story.append(Paragraph(f"Notes: {notes}", s["meta"]))
@@ -325,9 +352,85 @@ def render_sale_invoice_pdf(sale, generated_by: str, generated_at: str) -> bytes
     rate = sale.rate_per_cylinder if sale.rate_per_cylinder is not None else sale.rate_per_kg
     items_row = [product.name if product else "-", _fmt_amount(sale.quantity), _fmt_amount(rate), _fmt_amount(sale.total_amount)]
 
+    # GST on Sale (§ GST on Sale) — Value Excl. Tax / GST / Grand Total
+    # stacked in the totals block; a GST-off sale keeps today's single
+    # "Total Amount" row (see _build's isinstance check) with no empty tax rows.
+    if sale.gst_enabled and sale.gst_rate is not None:
+        totals = [
+            ("Value Excl. Tax", sale.total_amount),
+            (f"GST @ {_fmt_amount(sale.gst_rate)}%", sale.gst_amount),
+            ("Grand Total", sale.grand_total),
+        ]
+    else:
+        totals = sale.total_amount
+
     return _build(
         "Sales Invoice", "Bill To", [customer.name if customer else "-"] + party_lines, details_rows,
-        ["Description", "Qty", "Rate", "Amount"], items_row, sale.total_amount, sale.entered_by, sale.notes,
+        ["Description", "Qty", "Rate", "Amount"], items_row, totals, sale.entered_by, sale.notes,
+        generated_by, generated_at,
+    )
+
+
+def render_unified_sale_invoice_pdf(batch, sales: list, generated_by: str, generated_at: str) -> bytes:
+    """One combined invoice for an entire Unified Sale batch (§ One Invoice
+    for Multi-Item Sales) — every active child Sale (one per product/
+    cylinder size) renders as its own line item on THIS SAME document,
+    under the batch's own display_id and one unified total, instead of
+    each child Sale producing its own separate invoice via
+    render_sale_invoice_pdf. The underlying per-product Sale rows still
+    exist (FIFO stock, cylinder balances, and tonnage all key off them
+    individually) — only the invoice/presentation layer is unified here."""
+    customer = batch.customer
+    plant = batch.company
+
+    party_lines = []
+    if customer:
+        if customer.mobile:
+            party_lines.append(customer.mobile)
+        addr_bits = [b for b in [customer.address, customer.city_area] if b]
+        if addr_bits:
+            party_lines.append(", ".join(addr_bits))
+    if plant:
+        party_lines.append(f"Plant: {plant.name}")
+
+    details_rows = [
+        ("Invoice No", batch.display_id),
+        ("Date", batch.date.strftime("%Y-%m-%d")),
+        ("Gate Pass No", batch.gate_pass_no),
+        ("Vehicle No", batch.vehicle_no),
+    ]
+
+    active_sales = [s for s in sales if s.status == "active"]
+    items_rows = []
+    for s in active_sales:
+        product = s.product
+        rate = s.rate_per_cylinder if s.rate_per_cylinder is not None else s.rate_per_kg
+        items_rows.append([product.name if product else "-", _fmt_amount(s.quantity), _fmt_amount(rate), _fmt_amount(s.total_amount)])
+    if batch.delivery_charges:
+        items_rows.append(["Delivery Charges", "-", "-", _fmt_amount(batch.delivery_charges)])
+    if not items_rows:
+        # A pure-settlement batch (no items, credit-only) has nothing to
+        # list — still render a valid (if empty-looking) table rather than
+        # letting _build's single-row auto-wrap misinterpret an empty list.
+        items_rows.append(["-", "-", "-", "-"])
+
+    # GST on Sale, extended to Unified Sale (§ GST on Sale) — same Value
+    # Excl. Tax / GST / Grand Total breakdown as the plain Sale invoice,
+    # keyed off the BATCH's own total_selling_amount/gst_amount/grand_total
+    # (never a sum of the child Sales' own totals, which carry no GST
+    # individually).
+    if batch.gst_enabled and batch.gst_rate is not None:
+        totals = [
+            ("Value Excl. Tax", batch.total_selling_amount),
+            (f"GST @ {_fmt_amount(batch.gst_rate)}%", batch.gst_amount),
+            ("Grand Total", batch.grand_total),
+        ]
+    else:
+        totals = batch.total_selling_amount
+
+    return _build(
+        "Sales Invoice", "Bill To", [customer.name if customer else "-"] + party_lines, details_rows,
+        ["Description", "Qty", "Rate", "Amount"], items_rows, totals, batch.entered_by, batch.notes,
         generated_by, generated_at,
     )
 
@@ -468,8 +571,18 @@ def _statement_rate_cell(r: "schemas.LedgerRow") -> str:
     return "-"
 
 
+def _statement_gst_cell(r: "schemas.LedgerRow") -> str:
+    """Mirrors the Customer Ledger screen's own GST column (§ GST on
+    Sale) — rate% and amount together, or a dash when no GST was applied.
+    sale_amount is already grand_total-inclusive; this just breaks out how
+    much of it was tax."""
+    if r.gst_rate and r.gst_amount:
+        return f"{_fmt_amount(r.gst_rate)}% / {_fmt_amount(r.gst_amount)}"
+    return "-"
+
+
 def _statement_table(s, summary: "schemas.CustomerLedgerSummary"):
-    headers = ["Date", "ID", "Description", "Rate", "Sale", "Payment", "Balance"]
+    headers = ["Date", "ID", "Description", "Rate", "GST", "Sale", "Payment", "Balance"]
     header_row = [Paragraph(f"<b>{h}</b>", s["value_cell"]) for h in headers]
     data = [header_row]
 
@@ -477,7 +590,8 @@ def _statement_table(s, summary: "schemas.CustomerLedgerSummary"):
     data.append([
         Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
         Paragraph("Opening Balance", opening_row_style),
-        Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
+        Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
+        Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
         Paragraph(_fmt_amount(summary.opening_balance), opening_row_style),
     ])
 
@@ -490,12 +604,13 @@ def _statement_table(s, summary: "schemas.CustomerLedgerSummary"):
             Paragraph(r.display_id, s["value_cell"]),
             Paragraph(r.description, s["value_cell"]),
             Paragraph(_statement_rate_cell(r), s["value_cell"]),
+            Paragraph(_statement_gst_cell(r), s["value_cell"]),
             Paragraph(_fmt_amount(r.sale_amount) if r.sale_amount else "-", s["value_cell"]),
             Paragraph(_fmt_amount(r.payment_amount) if r.payment_amount else "-", s["value_cell"]),
             Paragraph(_fmt_amount(r.running_balance), ParagraphStyle("BalCell", parent=s["value_cell"], fontName="Helvetica-Bold")),
         ])
 
-    t = Table(data, colWidths=[23 * mm, 25 * mm, 47 * mm, 20 * mm, 22 * mm, 22 * mm, 23 * mm], repeatRows=1)
+    t = Table(data, colWidths=[20 * mm, 22 * mm, 38 * mm, 18 * mm, 18 * mm, 20 * mm, 20 * mm, 26 * mm], repeatRows=1)
     t.setStyle(TableStyle([
         ("FONTSIZE", (0, 0), (-1, -1), 8.5),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
@@ -548,7 +663,7 @@ def render_customer_statement_pdf(summary: "schemas.CustomerLedgerSummary", gene
 
     story.append(_statement_table(s, summary))
     story.append(Spacer(1, 4 * mm))
-    story.append(_totals_block(s, summary.closing_balance, label="Closing Balance"))
+    story.append(_totals_block(s, [("Closing Balance", summary.closing_balance)]))
 
     story.append(Spacer(1, 6 * mm))
     story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#CBD5E1")))

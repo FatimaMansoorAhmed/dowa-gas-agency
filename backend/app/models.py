@@ -74,6 +74,13 @@ class RateEntry(Base):
     """Every rate update is its own immutable row — nothing is overwritten.
     45.4kg (commercial) is always derived from 11.8kg (domestic) at write time
     using the fixed ratio 45.4 / 11.8, never entered directly.
+
+    party_id is nullable — some real plants have no party at all. NULL means
+    "no party", not "unknown/legacy" (unlike cylinder_type's NULL
+    convention elsewhere) — every reader that groups/dedups by party_id
+    (routers/rates.latest_rates, the Rate Dashboard's own latestByPartyId)
+    must key on (company_id, party_id) together, never party_id alone, or
+    multiple no-party companies collapse into one row/slot.
     """
     __tablename__ = "rate_entries"
 
@@ -81,7 +88,7 @@ class RateEntry(Base):
 
     id = Column(GUID(), primary_key=True, default=gen_uuid)
     company_id = Column(GUID(), ForeignKey("companies.id"), nullable=False)
-    party_id = Column(GUID(), ForeignKey("parties.id"), nullable=False)
+    party_id = Column(GUID(), ForeignKey("parties.id"), nullable=True)
     rate_118 = Column(Numeric(10, 2), nullable=False)
     rate_454 = Column(Numeric(10, 2), nullable=False)
     entered_by = Column(String, nullable=False)
@@ -260,7 +267,22 @@ class Sale(Base):
     total_kg = Column(Numeric(12, 2), nullable=False)
     rate_per_kg = Column(Numeric(10, 2), nullable=True)
     rate_per_cylinder = Column(Numeric(10, 2), nullable=True)
-    total_amount = Column(Numeric(14, 2), nullable=False)  # stored, immutable
+    total_amount = Column(Numeric(14, 2), nullable=False)  # stored, immutable — EXCLUDING GST; this is what Dashboard/P&L/Tonnage read, never grand_total
+
+    # GST on Sale (optional, locked at entry) — gst_amount/grand_total are
+    # computed once at creation from total_amount and the rate in effect AT
+    # THAT MOMENT, then frozen forever: a later change to gst_rate here
+    # (e.g. government rate change) never recomputes an existing gst_amount,
+    # matching the immutable-snapshot convention already used for
+    # rate_per_cylinder/total_amount. grand_total (= total_amount +
+    # gst_amount, or just total_amount when GST is off) is what actually
+    # posts to customer.current_balance/the ledger — GST is money owed by
+    # the customer, not business revenue, so it must never be added into
+    # total_amount itself.
+    gst_enabled = Column(Boolean, nullable=False, default=False)
+    gst_rate = Column(Numeric(5, 2), nullable=True)
+    gst_amount = Column(Numeric(14, 2), nullable=False, default=0)
+    grand_total = Column(Numeric(14, 2), nullable=False)  # = total_amount + gst_amount; equals total_amount when GST is off
 
     gate_pass_no = Column(String, nullable=True)
     vehicle_no = Column(String, nullable=True)
@@ -560,6 +582,19 @@ class UnifiedSaleBatch(Base):
     # before payment approval.
     payment_reference = Column(String, nullable=True)
 
+    # GST on Sale, extended to Unified Sale (optional, locked at entry) —
+    # same convention as models.Sale.gst_enabled: gst_amount/grand_total
+    # computed from total_selling_amount and the rate at creation/edit
+    # time, and again by utils.resync_unified_sale_batch_totals whenever a
+    # child Sale correction changes total_selling_amount (using this same
+    # already-frozen gst_rate — never a new rate). grand_total is what
+    # approve_unified_sale_sale posts to the customer's balance/ledger;
+    # total_selling_amount stays excl.-GST for anything reading it directly.
+    gst_enabled = Column(Boolean, nullable=False, default=False)
+    gst_rate = Column(Numeric(5, 2), nullable=True)
+    gst_amount = Column(Numeric(14, 2), nullable=False, default=0)
+    grand_total = Column(Numeric(14, 2), nullable=False)  # = total_selling_amount + gst_amount
+
     entered_by = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -785,7 +820,16 @@ class CylinderReturn(Base):
         Receipt, see routers/payment_receipts.py), to_customer_id null.
         Only customer_id's balance is decremented.
       - "manual_add": neither set. Pure count increase on customer_id,
-        e.g. correcting a missed entry — the counterpart to a return."""
+        e.g. correcting a missed entry — the counterpart to a return.
+
+    origin distinguishes WHY a row (any mode, but only meaningful for
+    "cash") was created, purely for reporting — "return_cylinder" is the
+    default, ordinary Customer Ledger flow; "sell_cylinder" marks a row
+    created from the standalone Empty Cylinders page's "Sell Cylinder"
+    button (the retired EmptyCylinderSale flow, now just this endpoint
+    with mode="cash"), so app.reporting.adapters._fetch_empty_cylinder_sales
+    can keep reporting sells as their own section instead of lumping them
+    into ordinary cash-mode returns."""
     __tablename__ = "cylinder_returns"
 
     id = Column(GUID(), primary_key=True, default=gen_uuid)
@@ -800,6 +844,7 @@ class CylinderReturn(Base):
     quantity = Column(Numeric(10, 0), nullable=False)
 
     mode = Column(String(20), nullable=False)  # transfer | cash | manual_add
+    origin = Column(String(20), nullable=False, default="return_cylinder")  # return_cylinder | sell_cylinder — see docstring
     to_customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=True)  # transfer only
     payment_id = Column(GUID(), ForeignKey("payments.id"), nullable=True)  # cash only
 
@@ -830,6 +875,14 @@ class GeneratedReport(Base):
     file_path = Column(String, nullable=False)
     generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     generated_by = Column(String, nullable=False)
+
+    # "en" or "ur" — every generation produces one row of each (§ Daily
+    # Report Urdu translation), so business_date/generated_at/generated_by
+    # are duplicated across a same-batch pair, distinguished only by this
+    # column. WhatsApp may only ever send the "ur" row (enforced in
+    # routers/reports.send_report_whatsapp) — "en" exists purely for
+    # on-screen reference/download.
+    language = Column(String, nullable=False, default="en")
 
     # WhatsApp delivery — see app/whatsapp.py. "not_sent" until a send is
     # attempted; "unavailable" means no provider credentials are configured

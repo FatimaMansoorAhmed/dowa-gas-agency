@@ -187,7 +187,7 @@ def run():
                 date=sale_date, customer_id=mukarram.id, product_id=product_454.id,
                 company_id=bouch.id, quantity=qty, weight_per_cylinder=45.4,
                 total_kg=qty * 45.4, rate_per_kg=round(rate_per_cyl / 45.4, 2),
-                rate_per_cylinder=rate_per_cyl, total_amount=total_amount,
+                rate_per_cylinder=rate_per_cyl, total_amount=total_amount, grand_total=total_amount,
                 vehicle_no="KW-4729", status="active", entered_by="Staff",
             )
             db.add(sale)

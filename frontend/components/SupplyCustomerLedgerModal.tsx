@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { X, Search, Banknote } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Th, Td, Eyebrow, BalanceTag } from "./ui";
 import { api } from "@/lib/api";
 import { pkr, fmtTime } from "@/lib/format";
@@ -25,6 +26,7 @@ export default function SupplyCustomerLedgerModal({
   onClose: () => void;
   onReceivePayment: (customer: ShopSupplyCustomer) => void;
 }) {
+  const { t } = useTranslation();
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState(initialCustomerId || customers[0]?.id || "");
   const [ledger, setLedger] = useState<ShopSupplyCustomerLedgerOut | null>(null);
@@ -54,12 +56,12 @@ export default function SupplyCustomerLedgerModal({
       <div className="w-full max-w-5xl max-h-[90vh] overflow-hidden bg-white rounded-xl shadow-2xl flex flex-col">
         <div className="flex items-center justify-between px-5 py-4 border-b border-hairline shrink-0">
           <div>
-            <Eyebrow>Supply Customer Ledger</Eyebrow>
+            <Eyebrow>{t("modals.supplyCustomerLedger")}</Eyebrow>
             <div className="font-body text-xs text-steel mt-1">
-              This shop's own retail customers — cylinders bought, rate, and running balance with the shop. Separate from the Dowa Customer Ledger.
+              {t("modals.supplyCustomerLedgerCaption")}
             </div>
           </div>
-          <button type="button" onClick={onClose} className="p-2 rounded-md hover:bg-paper text-steel hover:text-ink" title="Close">
+          <button type="button" onClick={onClose} className="p-2 rounded-md hover:bg-paper text-steel hover:text-ink" title={t("unifiedSale.close")}>
             <X size={18} />
           </button>
         </div>
@@ -73,7 +75,7 @@ export default function SupplyCustomerLedgerModal({
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search customers…"
+                  placeholder={t("modals.searchCustomersPlaceholder")}
                   className="w-full pl-7 pr-2.5 py-1.5 bg-paper border border-hairline rounded-md text-xs font-body text-ink focus:outline-none focus:border-teal"
                 />
               </div>
@@ -88,13 +90,13 @@ export default function SupplyCustomerLedgerModal({
                 >
                   <div className="font-body text-[12.5px] font-semibold text-ink truncate">{c.name}</div>
                   <div className="mt-0.5 flex items-center justify-between gap-2">
-                    <span className="font-mono text-[10px] text-steel">{c.mobile || "No mobile"}</span>
+                    <span className="font-mono text-[10px] text-steel">{c.mobile || t("shopDetail.noMobile")}</span>
                     <span className="font-mono text-[11px] font-semibold text-ink">{pkr(c.current_balance)}</span>
                   </div>
                 </button>
               ))}
               {!filtered.length && (
-                <div className="p-4 text-center text-steel font-body text-[12px]">No customers found.</div>
+                <div className="p-4 text-center text-steel font-body text-[12px]">{t("modals.noCustomersFound")}</div>
               )}
             </div>
           </div>
@@ -102,7 +104,7 @@ export default function SupplyCustomerLedgerModal({
           {/* Ledger detail */}
           <div className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-5">
             {!selected && (
-              <div className="text-center text-steel font-body text-sm py-12">Select a customer to view their ledger.</div>
+              <div className="text-center text-steel font-body text-sm py-12">{t("modals.selectCustomerToViewLedger")}</div>
             )}
             {selected && (
               <>
@@ -110,7 +112,7 @@ export default function SupplyCustomerLedgerModal({
                   <div>
                     <div className="font-display text-lg font-bold text-ink">{selected.name}</div>
                     <div className="mt-1 font-body text-xs text-steel">
-                      {[selected.mobile, selected.address].filter(Boolean).join(" · ") || "No contact details"}
+                      {[selected.mobile, selected.address].filter(Boolean).join(" · ") || t("modals.noContactDetails")}
                     </div>
                   </div>
                   {parseFloat(selected.current_balance) > 0 && (
@@ -119,34 +121,34 @@ export default function SupplyCustomerLedgerModal({
                       onClick={() => onReceivePayment(selected)}
                       className="inline-flex items-center gap-1.5 rounded-md bg-emerald-50 hover:bg-emerald-100 px-3 py-2 text-xs font-semibold text-emerald-700"
                     >
-                      <Banknote size={13} /> Receive Payment
+                      <Banknote size={13} /> {t("customerLedger.receivePayment")}
                     </button>
                   )}
                 </div>
 
-                {loading && <div className="mt-6 text-center text-steel font-body text-sm">Loading ledger…</div>}
+                {loading && <div className="mt-6 text-center text-steel font-body text-sm">{t("modals.loadingLedger")}</div>}
 
                 {!loading && ledger && (
                   <>
                     <div className="mt-4 grid grid-cols-2 sm:grid-cols-5 gap-3">
                       <div className="rounded-lg border border-hairline bg-panel p-3">
-                        <div className="font-mono text-[9.5px] uppercase text-steel">Opening Balance</div>
+                        <div className="font-mono text-[9.5px] uppercase text-steel">{t("customerLedger.openingBalance")}</div>
                         <div className="mt-1 font-mono text-sm font-semibold text-ink">{pkr(ledger.opening_balance)}</div>
                       </div>
                       <div className="rounded-lg border border-hairline bg-panel p-3">
-                        <div className="font-mono text-[9.5px] uppercase text-steel">Total Sales (Credit)</div>
+                        <div className="font-mono text-[9.5px] uppercase text-steel">{t("modals.totalSalesCredit")}</div>
                         <div className="mt-1 font-mono text-sm font-semibold text-ink">{pkr(ledger.total_sales)}</div>
                       </div>
                       <div className="rounded-lg border border-hairline bg-panel p-3">
-                        <div className="font-mono text-[9.5px] uppercase text-steel">Collected at Sale</div>
+                        <div className="font-mono text-[9.5px] uppercase text-steel">{t("modals.collectedAtSale")}</div>
                         <div className="mt-1 font-mono text-sm font-semibold text-slate-600">{pkr(ledger.total_collected_at_sale)}</div>
                       </div>
                       <div className="rounded-lg border border-hairline bg-panel p-3">
-                        <div className="font-mono text-[9.5px] uppercase text-steel">Total Payments</div>
+                        <div className="font-mono text-[9.5px] uppercase text-steel">{t("customerLedger.totalPayments")}</div>
                         <div className="mt-1 font-mono text-sm font-semibold text-[#1E8A5F]">{pkr(ledger.total_payments)}</div>
                       </div>
                       <div className="rounded-lg border border-teal/30 bg-teal/5 p-3">
-                        <div className="font-mono text-[9.5px] uppercase text-teal">Closing Balance</div>
+                        <div className="font-mono text-[9.5px] uppercase text-teal">{t("modals.closingBalance")}</div>
                         <div className="mt-1"><BalanceTag amount={ledger.closing_balance} /></div>
                       </div>
                     </div>
@@ -155,13 +157,13 @@ export default function SupplyCustomerLedgerModal({
                       <table className="w-full min-w-[700px] border-collapse">
                         <thead>
                           <tr className="border-b border-hairline text-left">
-                            <Th>Date</Th>
-                            <Th>ID</Th>
-                            <Th>Description</Th>
-                            <Th right>Rate</Th>
-                            <Th right>Remaianing Amount</Th>
-                            <Th right>Payment</Th>
-                            <Th right>Balance</Th>
+                            <Th>{t("customerLedger.colDate")}</Th>
+                            <Th>{t("customerLedger.colId")}</Th>
+                            <Th>{t("customerLedger.colDescription")}</Th>
+                            <Th right>{t("customerLedger.colRate")}</Th>
+                            <Th right>{t("modals.colRemainingAmount")}</Th>
+                            <Th right>{t("customerLedger.colPayment")}</Th>
+                            <Th right>{t("customerLedger.colBalance")}</Th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-hairline">
@@ -177,7 +179,7 @@ export default function SupplyCustomerLedgerModal({
                             </tr>
                           ))}
                           {!ledger.rows.length && (
-                            <tr><td colSpan={7} className="text-steel font-body text-[13px] py-6 text-center">No transactions yet for this customer.</td></tr>
+                            <tr><td colSpan={7} className="text-steel font-body text-[13px] py-6 text-center">{t("modals.noTransactionsYetForCustomer")}</td></tr>
                           )}
                         </tbody>
                       </table>

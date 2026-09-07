@@ -8,7 +8,7 @@ def fix_balances():
     try:
         customers = db.query(models.Customer).all()
         for customer in customers:
-            sales_sum = db.query(func.coalesce(func.sum(models.Sale.total_amount), 0)).filter(
+            sales_sum = db.query(func.coalesce(func.sum(models.Sale.grand_total), 0)).filter(
                 models.Sale.customer_id == customer.id, models.Sale.status == "active"
             ).scalar()
 

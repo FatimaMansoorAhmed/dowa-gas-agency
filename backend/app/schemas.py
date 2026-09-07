@@ -859,7 +859,10 @@ class PartyOut(BaseModel):
 # ---------- Rate ----------
 class RateCreate(BaseModel):
     company_id: UUID
-    party_id: UUID
+    # Optional — some real plants have no party at all (§ Party optional).
+    # None means "no party", not "omitted/legacy" — routers/rates.create_rate
+    # only looks up/validates a Party when this is given.
+    party_id: Optional[UUID] = None
     rate_118: Decimal
     entered_by: str
     timestamp: Optional[UtcDateTime] = None  # defaults to now if omitted; editable for backdating
@@ -869,7 +872,7 @@ class RateOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
     company_id: UUID
-    party_id: UUID
+    party_id: Optional[UUID] = None
     rate_118: Decimal
     rate_454: Decimal
     entered_by: str
@@ -1050,6 +1053,14 @@ class SaleCreate(BaseModel):
     # transfer draws from through the SAME /sales/{id}/correct endpoint
     # every other Sale already uses.
     emergency_transfer_shop_id: Optional[UUID] = None
+    # GST on Sale (optional, locked at entry) — free-text percentage,
+    # matching rate_per_cylinder's manually-entered/trusted convention
+    # rather than a fixed preset list, so it never goes stale if the
+    # government rate changes. gst_rate is required when gst_enabled is
+    # true (validated in routers/sales.py._apply_sale); both are ignored
+    # (treated as off) otherwise.
+    gst_enabled: bool = False
+    gst_rate: Optional[Decimal] = None
 
 
 class SaleCorrect(SaleCreate):
@@ -1090,6 +1101,14 @@ class SaleOut(BaseModel):
     # unified_sale_id + product_id) for the Approved Sale Rate column (§3).
     unified_sale_id: Optional[UUID] = None
     emergency_transfer_shop_id: Optional[UUID] = None
+    # GST on Sale (optional, locked at entry) — see models.Sale.gst_enabled.
+    # grand_total (= total_amount + gst_amount) is what actually posted to
+    # the customer's balance/ledger; total_amount above stays excl.-GST for
+    # Dashboard/P&L/Tonnage, unaffected.
+    gst_enabled: bool = False
+    gst_rate: Optional[Decimal] = None
+    gst_amount: Decimal = Decimal("0")
+    grand_total: Decimal
 
 
 class EmergencyTransferCreate(BaseModel):
@@ -1332,6 +1351,13 @@ class LedgerRow(BaseModel):
     rate_per_cylinder: Optional[Decimal] = None
     rate_per_kg: Optional[Decimal] = None
     unified_sale_rates: Optional[list[Decimal]] = None
+    # GST on Sale (§ GST on Sale) — None/0 for every kind except "sale" and
+    # "unified_sale". sale_amount above is already GST-inclusive
+    # (grand_total); gst_amount is broken out here purely so the ledger
+    # can show it as its own column without the viewer having to open the
+    # underlying Sale/invoice to see how much of sale_amount was tax.
+    gst_rate: Optional[Decimal] = None
+    gst_amount: Decimal = Decimal("0")
 
 
 class CorrectionHistoryRow(BaseModel):
@@ -1657,6 +1683,13 @@ class UnifiedSaleCreate(BaseModel):
     vehicle_no: Optional[str] = None
     notes: Optional[str] = None
     entered_by: str
+    # GST on Sale, extended to Unified Sale (optional, locked at entry) —
+    # free-text percentage, same manually-entered/trusted convention as
+    # Sale's gst_rate. Applies to the whole batch's total_selling_amount
+    # (items are never individually taxed here), computed and frozen
+    # server-side — see routers/unified_sale.py.
+    gst_enabled: bool = False
+    gst_rate: Optional[Decimal] = None
 
 
 # Editing a pending batch takes the same shape as creating one — the whole
@@ -1688,6 +1721,13 @@ class UnifiedSaleBatchOut(BaseModel):
     gate_pass_no: Optional[str] = None
     notes: Optional[str] = None
     payment_reference: Optional[str] = None
+    # GST on Sale, extended to Unified Sale — see models.UnifiedSaleBatch.
+    # grand_total is what's actually posted to the customer's balance/
+    # ledger; total_selling_amount above stays excl.-GST.
+    gst_enabled: bool = False
+    gst_rate: Optional[Decimal] = None
+    gst_amount: Decimal = Decimal("0")
+    grand_total: Decimal
     # --- ADD THESE NEW FIELDS ---
     qty_11_8kg: Decimal = Decimal("0")
     qty_45_4kg: Decimal = Decimal("0")
@@ -1729,6 +1769,11 @@ class UnifiedSaleOut(BaseModel):
     gate_pass_no: Optional[str] = None
     notes: Optional[str] = None
     payment_reference: Optional[str] = None
+    # GST on Sale, extended to Unified Sale — see models.UnifiedSaleBatch.
+    gst_enabled: bool = False
+    gst_rate: Optional[Decimal] = None
+    gst_amount: Decimal = Decimal("0")
+    grand_total: Decimal
     # Legacy aggregate — "approved" only once both sale_status and
     # payment_status are approved. Prefer the two fields below.
     status: str
@@ -1787,37 +1832,11 @@ class CylinderBalanceOut(BaseModel):
     balance: Decimal
 
 
-# ---------- Empty Cylinder Sale (Sell Empty Cylinders action) ----------
-class EmptyCylinderSaleCreate(BaseModel):
-    # customer_id is NOT here — it comes from the URL path
-    # (/customers/{customer_id}/empty-cylinders/sell), not the request body.
-    date: Optional[UtcDateTime] = None  # defaults to now if omitted
-    cylinder_size: Literal["118", "454"]
-    # Optional for backward compatibility: omitted means the untyped
-    # legacy sell path (deducts only the size total, same as before this
-    # feature existed). Provided means the exact size+type combination is
-    # checked and deducted (§ Empty Cylinder Sale).
-    cylinder_type: Optional[Literal["cross", "pso"]] = None
-    quantity: Decimal
-    amount: Decimal
-    notes: Optional[str] = None
-    entered_by: str
-
-
-class EmptyCylinderSaleOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: UUID
-    display_id: str
-    date: datetime
-    customer_id: UUID
-    cylinder_size: str
-    cylinder_type: Optional[str] = None
-    quantity: Decimal
-    amount: Decimal
-    notes: Optional[str]
-    status: str
-    entered_by: str
-    created_at: datetime
+# EmptyCylinderSaleCreate/Out (Sell Empty Cylinders' old request/response
+# shapes) are retired along with routers/customers.py's POST
+# .../empty-cylinders/sell — "Sell Cylinder" now reuses CylinderReturnCreate/
+# Out below (mode="cash", origin="sell_cylinder"). models.EmptyCylinderSale
+# itself is untouched, for historical rows only.
 
 
 # ---------- Cylinder Return (Return Cylinder / Add Empty Cylinder) ----------
@@ -1838,6 +1857,12 @@ class CylinderReturnCreate(BaseModel):
     cylinder_type: Optional[Literal["cross", "pso"]] = None
     quantity: Decimal
     mode: Literal["transfer", "cash", "manual_add"]
+    # Reporting-only tag (§ models.CylinderReturn.origin) — "sell_cylinder"
+    # marks a row created from the Empty Cylinders page's "Sell Cylinder"
+    # button so the Daily Report can keep reporting sells as their own
+    # section; every other caller (Customer Ledger's Return Cylinder /
+    # Add Empty Cylinder modals) leaves this at the default.
+    origin: Literal["return_cylinder", "sell_cylinder"] = "return_cylinder"
 
     # mode == "transfer"
     to_customer_id: Optional[UUID] = None
@@ -1867,6 +1892,7 @@ class CylinderReturnOut(BaseModel):
     cylinder_type: Optional[str] = None
     quantity: Decimal
     mode: str
+    origin: str
     to_customer_id: Optional[UUID] = None
     payment_id: Optional[UUID] = None
     notes: Optional[str] = None
@@ -1902,6 +1928,7 @@ class ReportSectionOut(BaseModel):
 
 class DailySummaryOut(BaseModel):
     total_sales: Decimal
+    total_delivery_charges: Decimal
     total_purchases: Decimal
     total_customer_payments: Decimal
     total_plant_payments: Decimal
@@ -1926,6 +1953,7 @@ class GeneratedReportOut(BaseModel):
     business_date: str
     generated_at: datetime
     generated_by: str
+    language: str
     whatsapp_status: str
     whatsapp_sent_at: Optional[datetime] = None
     whatsapp_error: Optional[str] = None
@@ -2274,9 +2302,9 @@ class ShopStockSummary(BaseModel):
 
 class ShopTransactionRow(BaseModel):
     """One row in the Shop detail page's unified transaction history table
-    — covers Load/Sale/Payment, columns populated per type as relevant
-    (§16)."""
-    kind: Literal["load", "shop_sale", "payment"]
+    — covers Load/Sale/Payment/Emergency Transfer Out, columns populated
+    per type as relevant (§16)."""
+    kind: Literal["load", "shop_sale", "payment", "emergency_transfer_out"]
     date: datetime
     ref_id: UUID
     display_id: str

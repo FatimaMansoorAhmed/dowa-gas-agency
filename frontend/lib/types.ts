@@ -16,7 +16,8 @@ export type Party = { id: string; company_id: string; name: string };
 export type RateEntry = {
   id: string;
   company_id: string;
-  party_id: string;
+  // Optional — some real plants have no party at all (§ Party optional).
+  party_id: string | null;
   rate_118: string;
   rate_454: string;
   entered_by: string;
@@ -122,6 +123,13 @@ export type Sale = {
   // Sale's cylinders were drawn from a shop's own stock instead of a new
   // plant Load; null for every ordinary sale.
   emergency_transfer_shop_id?: string | null;
+  // GST on Sale (optional, locked at entry) — grand_total (total_amount +
+  // gst_amount) is what's actually charged to the customer's balance/
+  // ledger; total_amount stays excl.-GST for Dashboard/P&L/Tonnage.
+  gst_enabled?: boolean;
+  gst_rate?: string | null;
+  gst_amount?: string;
+  grand_total?: string;
 } & CorrectionFields;
 
 export type Payment = {
@@ -179,6 +187,10 @@ export type LedgerRow = {
   rate_per_cylinder?: string | null;
   rate_per_kg?: string | null;
   unified_sale_rates?: string[] | null;
+  // GST on Sale (§ GST on Sale) — set only for "sale"/"unified_sale" rows
+  // with GST applied; sale_amount above is already grand_total-inclusive.
+  gst_rate?: string | null;
+  gst_amount?: string;
 };
 
 // One superseded (status="corrected") original transaction, kept for the
@@ -378,6 +390,13 @@ export type UnifiedSaleBatch = {
   gate_pass_no?: string | null;
   notes?: string | null;
   payment_reference?: string | null;
+  // GST on Sale, extended to Unified Sale (optional, locked at entry) —
+  // grand_total (total_selling_amount + gst_amount) is what's posted to
+  // the customer's balance/ledger; total_selling_amount stays excl.-GST.
+  gst_enabled?: boolean;
+  gst_rate?: string | null;
+  gst_amount?: string;
+  grand_total?: string;
   qty_11_8kg: string;
   qty_45_4kg: string;
   total_kg: string;
@@ -465,6 +484,7 @@ export type CylinderReturn = {
   cylinder_type: CylinderType | null;
   quantity: string;
   mode: CylinderReturnMode;
+  origin: "return_cylinder" | "sell_cylinder";
   to_customer_id: string | null;
   payment_id: string | null;
   notes: string | null;
@@ -508,7 +528,7 @@ export type ReportSection = {
 };
 
 export type DailySummary = {
-  total_sales: string; total_purchases: string; total_customer_payments: string;
+  total_sales: string; total_delivery_charges: string; total_purchases: string; total_customer_payments: string;
   total_plant_payments: string; total_investments: string; total_expenses: string;
   total_owner_drawings: string; net_cash_movement: string;
   total_cylinders_out: string; total_cylinders_in: string;
@@ -522,7 +542,7 @@ export type WhatsAppStatus = "not_sent" | "sent" | "failed" | "unavailable";
 
 export type GeneratedReport = {
   id: string; report_type: string; business_date: string;
-  generated_at: string; generated_by: string;
+  generated_at: string; generated_by: string; language: "en" | "ur";
   whatsapp_status: WhatsAppStatus; whatsapp_sent_at: string | null; whatsapp_error: string | null;
 };
 
@@ -614,7 +634,7 @@ export type ShopStockSummary = {
 };
 
 export type ShopTransactionRow = {
-  kind: "load" | "shop_sale" | "payment";
+  kind: "load" | "shop_sale" | "payment" | "emergency_transfer_out";
   date: string;
   ref_id: string;
   display_id: string;

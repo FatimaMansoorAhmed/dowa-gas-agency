@@ -86,7 +86,7 @@ import type {
   Company, Party, RateEntry, Customer, Product, PaymentAccount, ExpenseCategory,
   Sale, Payment, Expense, CustomerLedgerSummary, CustomerFlag, Purchase, CompanyPayment,
   CompanyLedgerSummary, PlantLedgerSummaryRow, CylinderTransaction, CylinderBalance, OwnerDrawing, UnifiedSaleBatch, UnifiedSaleResult, DestinationType,
-  AccountType, AccountTransferResult, CylinderTransactionCreate, CustomerCombinedLedger, EmptyCylinderSale, CylinderReturn,
+  AccountType, AccountTransferResult, CylinderTransactionCreate, CustomerCombinedLedger, CylinderReturn,
   OwnerCapital, OwnerCapitalDestination, DailyReportData, GeneratedReport, SendWhatsAppResult,
   BoardRate, ShopListRow, ShopDetailOut, ShopSale, ShopStockBatch,
   ShopSupplyCustomer, ShopSupplyCustomerLedgerOut, ShopCustomerPayment, ShopExpenseTransaction, ShopBusinessLedgerOut,
@@ -108,7 +108,7 @@ export const api = {
   rates: {
     list: () => request<RateEntry[]>("/rates"),
     latest: () => request<RateEntry[]>("/rates/latest"),
-    create: (payload: { company_id: string; party_id: string; rate_118: number; entered_by: string; timestamp?: string }) =>
+    create: (payload: { company_id: string; party_id?: string | null; rate_118: number; entered_by: string; timestamp?: string }) =>
       request<RateEntry>("/rates", { method: "POST", body: JSON.stringify(payload) }),
   },
   customers: {
@@ -128,20 +128,6 @@ export const api = {
       request<Customer>(`/customers/${id}/adjust`, { method: "PATCH", body: JSON.stringify({ kind, amount }) }),
     addCylinderTransaction: (customerId: string, payload: CylinderTransactionCreate) =>
       request<{ status: string; data: CylinderTransaction }>(`/customers/${customerId}/cylinders`, {
-        method: "POST",
-        body: JSON.stringify(payload),
-      }),
-
-    // Sell a customer's empty cylinders back — decreases their empty
-    // cylinder balance and posts the sale amount to the Customer Ledger.
-    sellEmptyCylinders: (
-      customerId: string,
-      payload: {
-        cylinder_size: "118" | "454"; cylinder_type?: "cross" | "pso";
-        quantity: number; amount: number; notes?: string; entered_by: string;
-      }
-    ) =>
-      request<EmptyCylinderSale>(`/customers/${customerId}/empty-cylinders/sell`, {
         method: "POST",
         body: JSON.stringify(payload),
       }),
@@ -182,6 +168,7 @@ export const api = {
       quantity: number; rate_per_cylinder: number; gate_pass_no?: string;
       vehicle_no?: string; notes?: string; entered_by: string; cylinders_returned?: number;
       emergency_transfer_shop_id?: string;
+      gst_enabled?: boolean; gst_rate?: number;
     }) => request<Sale>("/sales", { method: "POST", body: JSON.stringify(payload) }),
     cancel: (id: string, by: string) => request<Sale>(`/sales/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
     // Ledger Correction (§1): reverses this sale, marks it "corrected"
@@ -192,6 +179,7 @@ export const api = {
       vehicle_no?: string; notes?: string; entered_by: string; cylinders_returned?: number;
       correction_reason: string; corrected_by: string;
       emergency_transfer_shop_id?: string;
+      gst_enabled?: boolean; gst_rate?: number;
     }) => request<Sale>(`/sales/${id}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
     invoiceUrl: (id: string) => `${BASE}/sales/${id}/invoice`,
   },
@@ -269,6 +257,7 @@ export const api = {
       cylinder_type?: "cross" | "pso";
       quantity: number;
       mode: "transfer" | "cash" | "manual_add";
+      origin?: "return_cylinder" | "sell_cylinder";
       to_customer_id?: string;
       amount?: number;
       method?: "cash" | "bank_transfer" | "cheque" | "online" | "other";
@@ -427,6 +416,16 @@ export const api = {
       vehicle_no?: string;
       notes?: string;
       entered_by?: string;
+      // GST on Sale, extended to Unified Sale (optional, locked at entry) —
+      // gst_enabled/gst_rate are what the backend actually uses (recomputes
+      // gst_amount/grand_total server-side from these); gst_amount/
+      // grand_total are included too for the request to carry the same
+      // breakdown the modal previews, though the server never trusts a
+      // client-supplied total.
+      gst_enabled?: boolean;
+      gst_rate?: number;
+      gst_amount?: number;
+      grand_total?: number;
     }) => request<UnifiedSaleResult>(
       "/sales/unified",
       { method: "POST", body: JSON.stringify(payload) }
@@ -461,6 +460,10 @@ export const api = {
         vehicle_no?: string;
         notes?: string;
         entered_by?: string;
+        gst_enabled?: boolean;
+        gst_rate?: number;
+        gst_amount?: number;
+        grand_total?: number;
       }
     ) => request<UnifiedSaleResult>(`/sales/unified/${id}`, {
       method: "PUT",
@@ -486,6 +489,10 @@ export const api = {
       request<UnifiedSaleResult>(`/sales/unified/${id}/cancel${cancelled_by ? `?by=${encodeURIComponent(cancelled_by)}` : ""}`, {
         method: "POST",
       }),
+    // One combined invoice PDF for the whole batch (§ One Invoice for
+    // Multi-Item Sales) — every line item on one document, not a separate
+    // invoice per product.
+    invoiceUrl: (id: string) => `${BASE}/sales/unified/${id}/invoice`,
   },
   // Daily PDF Reports (§5, §6, §7, §8).
   reports: {
@@ -497,12 +504,19 @@ export const api = {
     // Powers the Daily Activity screen/print AND is what the PDF is
     // rendered from server-side — same aggregator, so they can't disagree.
     dailyData: (businessDate: string) => request<DailyReportData>(`/reports/daily/${businessDate}/data`),
+    // Every generation produces BOTH an English and an Urdu row (§ Phase
+    // D3) — always returns a 2-element array now, never a single object.
     generateDaily: (businessDate: string, generatedBy: string) =>
-      request<GeneratedReport>(
+      request<GeneratedReport[]>(
         `/reports/daily/generate?business_date=${businessDate}&generated_by=${encodeURIComponent(generatedBy)}`,
         { method: "POST" }
       ),
     downloadUrl: (id: string) => `${BASE}/reports/${id}/download`,
+    // Same file as downloadUrl, but the backend sends Content-Disposition:
+    // inline — opens in the browser's own PDF viewer instead of forcing a
+    // save dialog. Used by the Eye (preview) icon; downloadUrl stays the
+    // Download icon's dedicated attachment trigger.
+    viewUrl: (id: string) => `${BASE}/reports/${id}/view`,
     sendWhatsApp: (id: string, to?: string) =>
       request<SendWhatsAppResult>(`/reports/${id}/send-whatsapp${to ? `?to=${encodeURIComponent(to)}` : ""}`, {
         method: "POST",

@@ -11,6 +11,7 @@ import {
   UserRound,
   FileText,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Field, inputClass, Button } from "./ui";
 import AmountInput from "./AmountInput";
@@ -56,6 +57,7 @@ export default function RecordShopSaleModal({
   // than vanishing along with a modal that just told the user nothing saved.
   onPartialSave?: () => void;
 }) {
+  const { t } = useTranslation();
   const { user } = useAuth();
 
   const [products, setProducts] = useState<Product[]>([]);
@@ -261,16 +263,16 @@ export default function RecordShopSaleModal({
         // the user retries the whole form, so this stays a distinct
         // message and doesn't close the modal (onSaved would).
         setError(
-          `Sale saved, but the Expense/Withdrawal line could not be saved (${e?.message || "unknown error"}). Add it separately from the shop's Expenses tab.`
+          t("modals.saleSavedExpenseFailed", { error: e?.message || "unknown error" })
         );
         onPartialSave?.();
       } else {
         setError(
           e?.message?.includes("Insufficient")
-            ? "Not enough stock for this quantity."
+            ? t("modals.notEnoughStock")
             : e?.message?.includes("amount_received")
-            ? "Amount received can't exceed the sale total."
-            : "Could not save the sale — check the fields and try again."
+            ? t("modals.amountReceivedExceedsSaleTotal")
+            : t("modals.couldNotSaveSaleGeneric")
         );
       }
     } finally {
@@ -313,11 +315,11 @@ export default function RecordShopSaleModal({
 
             <div>
               <h2 className="font-display text-xl font-bold text-ink">
-                Record Shop Sale
+                {t("modals.recordShopSaleTitle")}
               </h2>
 
               <p className="mt-1 font-body text-xs text-slate-500">
-                Record a retail sale from the shop's available inventory.
+                {t("modals.recordShopSaleCaption")}
               </p>
             </div>
 
@@ -326,7 +328,7 @@ export default function RecordShopSaleModal({
           <button
             onClick={onClose}
             disabled={saving}
-            aria-label="Close"
+            aria-label={t("unifiedSale.close")}
             className="
               flex
               h-10
@@ -367,18 +369,18 @@ export default function RecordShopSaleModal({
               <div className="mb-5">
 
                 <h3 className="font-display text-base font-bold text-slate-800">
-                  Sale Details
+                  {t("modals.saleDetails")}
                 </h3>
 
                 <p className="mt-1 font-body text-xs text-slate-500">
-                  Select the product, date, unit and quantity being sold.
+                  {t("modals.saleDetailsCaption")}
                 </p>
 
               </div>
 
               <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
 
-                <Field label="Product">
+                <Field label={t("unifiedSale.colProduct")}>
 
                   <select
                     value={productId}
@@ -388,7 +390,7 @@ export default function RecordShopSaleModal({
                     className={`${inputClass} h-12`}
                   >
                     <option value="">
-                      Select product
+                      {t("modals.selectProduct")}
                     </option>
 
                     {products.map((p) => (
@@ -403,7 +405,7 @@ export default function RecordShopSaleModal({
 
                 </Field>
 
-                <Field label="Sale Date">
+                <Field label={t("modals.saleDateLabel")}>
 
                   <input
                     type="date"
@@ -420,7 +422,7 @@ export default function RecordShopSaleModal({
 
               <div className="mt-5 grid grid-cols-1 gap-5 md:grid-cols-2">
 
-                <Field label="Unit">
+                <Field label={t("modals.unitLabel")}>
 
                   <select
                     value={unit}
@@ -434,11 +436,11 @@ export default function RecordShopSaleModal({
                     className={`${inputClass} h-12`}
                   >
                     <option value="cylinder">
-                      Full Cylinder(s)
+                      {t("modals.fullCylinders")}
                     </option>
 
                     <option value="kg">
-                      KG
+                      {t("modals.kgUnit")}
                     </option>
                   </select>
 
@@ -447,8 +449,8 @@ export default function RecordShopSaleModal({
                 <Field
                   label={
                     unit === "kg"
-                      ? "Quantity (KG)"
-                      : "Quantity (Cylinders)"
+                      ? t("modals.quantityKg")
+                      : t("modals.quantityCylindersLabelCap")
                   }
                 >
 
@@ -464,8 +466,8 @@ export default function RecordShopSaleModal({
                     }
                     placeholder={
                       unit === "kg"
-                        ? "Enter kilograms"
-                        : "Enter number of cylinders"
+                        ? t("modals.enterKilograms")
+                        : t("modals.enterNumberOfCylinders")
                     }
                     className={`${inputClass} h-12`}
                   />
@@ -497,20 +499,20 @@ export default function RecordShopSaleModal({
                   <div>
 
                     <p className="font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-teal">
-                      Sale Amount
+                      {t("modals.saleAmountLabel")}
                     </p>
 
                     <p className="mt-1.5 font-display text-lg font-bold text-slate-800">
                       {selectedProduct?.name ||
-                        "Selected Product"}
+                        t("modals.selectedProductFallback")}
                     </p>
 
                     {qty > 0 && (
                       <p className="mt-1.5 font-body text-sm text-slate-500">
                         {qty}{" "}
                         {unit === "kg"
-                          ? "KG"
-                          : "cylinder(s)"}
+                          ? t("modals.kgUnit")
+                          : t("modals.cylinderOrMore")}
 
                         {perUnitRate != null && (
                           <>
@@ -527,7 +529,7 @@ export default function RecordShopSaleModal({
                   <div className="sm:text-right">
 
                     <p className="font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
-                      Total
+                      {t("modals.totalLabel")}
                     </p>
 
                     <p className="mt-1 font-display text-3xl font-bold text-brand-green sm:text-4xl">
@@ -545,7 +547,7 @@ export default function RecordShopSaleModal({
                   <div className="bg-white px-5 py-4">
 
                     <p className="font-mono text-[9px] font-semibold uppercase tracking-wider text-slate-400">
-                      Quantity
+                      {t("modals.quantityLabel")}
                     </p>
 
                     <p className="mt-1 font-body text-sm font-semibold text-slate-800">
@@ -557,13 +559,13 @@ export default function RecordShopSaleModal({
                   <div className="bg-white px-5 py-4">
 
                     <p className="font-mono text-[9px] font-semibold uppercase tracking-wider text-slate-400">
-                      Unit
+                      {t("modals.unitLabel")}
                     </p>
 
                     <p className="mt-1 font-body text-sm font-semibold text-slate-800">
                       {unit === "kg"
-                        ? "KG"
-                        : "Cylinder(s)"}
+                        ? t("modals.kgUnit")
+                        : t("modals.cylinderPlural")}
                     </p>
 
                   </div>
@@ -571,7 +573,7 @@ export default function RecordShopSaleModal({
                   <div className="bg-white px-5 py-4">
 
                     <p className="font-mono text-[9px] font-semibold uppercase tracking-wider text-slate-400">
-                      Rate
+                      {t("customerLedger.colRate")}
                     </p>
 
                     <p className="mt-1 font-body text-sm font-semibold text-slate-800">
@@ -585,7 +587,7 @@ export default function RecordShopSaleModal({
                   <div className="bg-white px-5 py-4">
 
                     <p className="font-mono text-[9px] font-semibold uppercase tracking-wider text-slate-400">
-                      Payment
+                      {t("modals.paymentWord")}
                     </p>
 
                     <p
@@ -596,8 +598,8 @@ export default function RecordShopSaleModal({
                       }`}
                     >
                       {paymentType === "cash"
-                        ? "Cash"
-                        : "Credit"}
+                        ? t("unifiedSale.methodCash")
+                        : t("modals.creditOption")}
                     </p>
 
                   </div>
@@ -610,9 +612,7 @@ export default function RecordShopSaleModal({
                     <div className="border-t border-amber-200 bg-amber-50 px-6 py-4">
 
                       <p className="font-body text-xs leading-relaxed text-amber-800">
-                        Board Rate is not set for this
-                        product/date, so the sale amount
-                        cannot currently be calculated.
+                        {t("modals.boardRateNotSetWarning")}
                       </p>
 
                     </div>
@@ -621,10 +621,7 @@ export default function RecordShopSaleModal({
                 <div className="border-t border-teal/10 px-6 py-4">
 
                   <p className="font-body text-[11px] leading-relaxed text-slate-500">
-                    Price is calculated automatically from
-                    the Board Rate and the product's saleable
-                    weight. The server remains the final
-                    authority when the sale is saved.
+                    {t("modals.priceAutoCalcNote")}
                   </p>
 
                 </div>
@@ -647,19 +644,19 @@ export default function RecordShopSaleModal({
                     className="text-teal"
                   />
 
-                  Payment
+                  {t("modals.paymentWord")}
 
                 </h3>
 
                 <p className="mt-1 font-body text-xs text-slate-500">
-                  Choose how this sale is being paid.
+                  {t("modals.paymentSectionCaption")}
                 </p>
 
               </div>
 
               <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
 
-                <Field label="Payment Type">
+                <Field label={t("modals.paymentTypeLabel")}>
 
                   <select
                     value={paymentType}
@@ -673,11 +670,11 @@ export default function RecordShopSaleModal({
                     className={`${inputClass} h-12`}
                   >
                     <option value="cash">
-                      Cash
+                      {t("unifiedSale.methodCash")}
                     </option>
 
                     <option value="credit">
-                      Credit
+                      {t("modals.creditOption")}
                     </option>
                   </select>
 
@@ -686,8 +683,8 @@ export default function RecordShopSaleModal({
                 <Field
                   label={
                     paymentType === "credit"
-                      ? "Supply Customer"
-                      : "Supply Customer (optional)"
+                      ? t("modals.supplyCustomer")
+                      : t("modals.supplyCustomerOptional")
                   }
                 >
 
@@ -703,8 +700,8 @@ export default function RecordShopSaleModal({
 
                     <option value="">
                       {paymentType === "credit"
-                        ? "Select customer"
-                        : "Walk-in / public"}
+                        ? t("modals.selectCustomerGeneric")
+                        : t("modals.walkInPublic")}
                     </option>
 
                     {customers.map((c) => (
@@ -742,14 +739,13 @@ export default function RecordShopSaleModal({
                     />
 
                     <h3 className="font-display text-base font-bold text-slate-800">
-                      Payment Received Now
+                      {t("modals.paymentReceivedNow")}
                     </h3>
 
                   </div>
 
                   <p className="mt-1 font-body text-xs text-slate-500">
-                    Optionally collect part or all of the
-                    credit sale immediately.
+                    {t("modals.paymentReceivedNowCaption")}
                   </p>
 
                 </div>
@@ -772,12 +768,11 @@ export default function RecordShopSaleModal({
                     <div>
 
                       <div className="font-body text-sm font-semibold text-slate-800">
-                        Received payment now
+                        {t("modals.receivedPaymentNowCheckbox")}
                       </div>
 
                       <div className="mt-1 font-body text-xs text-slate-500">
-                        Record a payment together with
-                        this credit sale.
+                        {t("modals.receivedPaymentNowHint")}
                       </div>
 
                     </div>
@@ -790,18 +785,18 @@ export default function RecordShopSaleModal({
 
                       <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
 
-                        <Field label="Amount Received">
+                        <Field label={t("modals.amountReceivedLabel")}>
 
                           <AmountInput
                             value={amountReceived}
                             onChange={setAmountReceived}
-                            placeholder="e.g. 20000"
+                            placeholder={t("modals.amountReceivedPlaceholder")}
                             className={`${inputClass} h-12`}
                           />
 
                         </Field>
 
-                        <Field label="Destination Account">
+                        <Field label={t("modals.destinationAccount")}>
 
                           <select
                             value={destinationAccountId}
@@ -814,7 +809,7 @@ export default function RecordShopSaleModal({
                           >
 
                             <option value="">
-                              Shop Cash (default)
+                              {t("modals.shopCashDefault")}
                             </option>
 
                             {accounts.map((a) => (
@@ -839,11 +834,11 @@ export default function RecordShopSaleModal({
                           <div>
 
                             <p className="font-mono text-[9px] font-semibold uppercase tracking-wider text-slate-400">
-                              Remaining Balance
+                              {t("modals.remainingBalance")}
                             </p>
 
                             <p className="mt-1 font-body text-sm font-medium text-slate-600">
-                              Outstanding after payment
+                              {t("modals.outstandingAfterPayment")}
                             </p>
 
                           </div>
@@ -862,9 +857,7 @@ export default function RecordShopSaleModal({
                       )}
 
                       <p className="font-body text-[11px] leading-relaxed text-slate-500">
-                        The remainder of the sale stays as
-                        the customer's outstanding balance
-                        with the shop.
+                        {t("modals.remainderStaysNote")}
                       </p>
 
                     </>
@@ -890,24 +883,24 @@ export default function RecordShopSaleModal({
                     className="text-teal"
                   />
 
-                  Additional Information
+                  {t("modals.additionalInformation")}
 
                 </h3>
 
                 <p className="mt-1 font-body text-xs text-slate-500">
-                  Add an optional note about this transaction.
+                  {t("modals.additionalInformationCaption")}
                 </p>
 
               </div>
 
-              <Field label="Notes (optional)">
+              <Field label={t("modals.notesOptional")}>
 
                 <textarea
                   value={notes}
                   onChange={(e) =>
                     setNotes(e.target.value)
                   }
-                  placeholder="Add any notes about this sale..."
+                  placeholder={t("modals.notesPlaceholderSale")}
                   rows={4}
                   className={`${inputClass} min-h-[110px] resize-y py-3`}
                 />
@@ -938,10 +931,7 @@ export default function RecordShopSaleModal({
                 />
 
                 <p className="font-body text-xs leading-relaxed text-blue-800">
-                  This credit sale will be added to the
-                  selected customer's outstanding balance
-                  with the shop. It does not increase the
-                  amount owed to Dowa.
+                  {t("modals.creditSaleInfo")}
                 </p>
 
               </div>
@@ -978,7 +968,7 @@ export default function RecordShopSaleModal({
 
               <>
                 <p className="font-mono text-[9px] font-semibold uppercase tracking-wider text-slate-400">
-                  Sale Total
+                  {t("modals.saleTotal")}
                 </p>
 
                 <p className="mt-0.5 font-display text-lg font-bold text-slate-800">
@@ -989,7 +979,7 @@ export default function RecordShopSaleModal({
             ) : (
 
               <p className="font-body text-xs text-slate-500">
-                Complete the sale details to continue.
+                {t("modals.completeSaleDetailsToContinue")}
               </p>
 
             )}
@@ -1020,7 +1010,7 @@ export default function RecordShopSaleModal({
                 sm:flex-none
               "
             >
-              Cancel
+              {t("unifiedSale.cancel")}
             </button>
 
             <Button
@@ -1031,8 +1021,8 @@ export default function RecordShopSaleModal({
               <Check size={15} />
 
               {saving
-                ? "Saving…"
-                : "Save Sale"}
+                ? t("unifiedSale.saving")
+                : t("modals.saveSale")}
             </Button>
 
           </div>

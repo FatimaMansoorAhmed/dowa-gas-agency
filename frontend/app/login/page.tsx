@@ -3,10 +3,12 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
+import { useTranslation } from "react-i18next";
 import { useAuth } from "@/lib/auth";
 import { Button, inputClass } from "@/components/ui";
 
 export default function LoginPage() {
+  const { t } = useTranslation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -26,7 +28,7 @@ export default function LoginPage() {
       // Deliberately the same generic message the backend returns for
       // wrong password / pending / suspended / rejected / nonexistent
       // email alike — never let this page itself leak which case it was.
-      setError(result.error || "Invalid email or password.");
+      setError(result.error || t("auth.invalidCredentials"));
     }
   };
 
@@ -52,7 +54,7 @@ export default function LoginPage() {
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          placeholder="Email"
+          placeholder={t("auth.emailPlaceholder")}
           className={`${inputClass} mb-3 text-center`}
           onKeyDown={(e) => e.key === "Enter" && submit()}
           autoFocus
@@ -61,7 +63,7 @@ export default function LoginPage() {
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          placeholder="Password"
+          placeholder={t("auth.passwordPlaceholder")}
           className={`${inputClass} mb-4 text-center`}
           onKeyDown={(e) => e.key === "Enter" && submit()}
         />
@@ -71,15 +73,15 @@ export default function LoginPage() {
         )}
 
         <Button variant="teal" onClick={submit} disabled={!email.trim() || !password || saving}>
-          <span className="w-full text-center">{saving ? "Signing in…" : "Sign In"}</span>
+          <span className="w-full text-center">{saving ? t("auth.signingIn") : t("auth.signIn")}</span>
         </Button>
 
         <div className="font-body text-[11px] text-steel mt-4">
-          New here?{" "}
+          {t("auth.newHerePrefix")}{" "}
           <Link href="/register" className="text-teal font-semibold">
-            Create an account
+            {t("auth.createAnAccount")}
           </Link>{" "}
-          — an Owner will need to approve it before you can sign in.
+          {t("auth.newHereSuffix")}
         </div>
       </div>
     </div>

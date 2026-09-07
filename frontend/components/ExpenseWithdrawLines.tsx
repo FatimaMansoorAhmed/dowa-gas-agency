@@ -1,5 +1,6 @@
 "use client";
 import { Plus, Trash2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { inputClass } from "./ui";
 import AmountInput from "./AmountInput";
 import type { ExpenseCategory } from "@/lib/types";
@@ -48,6 +49,7 @@ export default function ExpenseWithdrawLines({
   onChange: (lines: ExpenseLine[]) => void;
   categories: ExpenseCategory[];
 }) {
+  const { t } = useTranslation();
   const updateLine = (i: number, patch: Partial<ExpenseLine>) =>
     onChange(lines.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
 
@@ -58,13 +60,13 @@ export default function ExpenseWithdrawLines({
     // the expanded one below, just without any lines in it yet.
     return (
       <div className="flex flex-col gap-2 rounded-lg border border-hairline p-3">
-        <div className="font-mono text-[10px] uppercase text-steel">Expense / Withdrawal (optional)</div>
+        <div className="font-mono text-[10px] uppercase text-steel">{t("modals.expenseWithdrawOptional")}</div>
         <button
           type="button"
           onClick={() => onChange([emptyExpenseLine()])}
           className="flex items-center gap-1 text-[12px] font-body text-teal bg-transparent border-none cursor-pointer w-fit"
         >
-          <Plus size={13} /> Add a line
+          <Plus size={13} /> {t("modals.addALine")}
         </button>
       </div>
     );
@@ -72,7 +74,7 @@ export default function ExpenseWithdrawLines({
 
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-hairline p-3">
-      <div className="font-mono text-[10px] uppercase text-steel">Expense / Withdrawal (optional)</div>
+      <div className="font-mono text-[10px] uppercase text-steel">{t("modals.expenseWithdrawOptional")}</div>
 
       {lines.map((line, i) => (
         <div key={i} className="overflow-x-auto">
@@ -85,25 +87,25 @@ export default function ExpenseWithdrawLines({
             }}
             className={inputClass}
           >
-            <option value="expense">Expense</option>
-            <option value="owner_withdrawal">Owner Withdrawal</option>
+            <option value="expense">{t("nav.expenses")}</option>
+            <option value="owner_withdrawal">{t("shopDetail.ownerWithdrawal")}</option>
           </select>
 
           {line.line_type === "expense" ? (
             <select value={line.category_id} onChange={(e) => updateLine(i, { category_id: e.target.value })} className={inputClass}>
-              <option value="">Category</option>
+              <option value="">{t("expenses.categoryLabel")}</option>
               {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           ) : (
             <input type="text" disabled value="—" className={`${inputClass} bg-slate-100/70 text-slate-400 cursor-not-allowed text-center font-mono`} />
           )}
 
-          <AmountInput value={line.amount} onChange={(v) => updateLine(i, { amount: v })} placeholder="Amount" className={inputClass} />
+          <AmountInput value={line.amount} onChange={(v) => updateLine(i, { amount: v })} placeholder={t("modals.amountPlaceholderShort")} className={inputClass} />
 
           <input
             value={line.description}
             onChange={(e) => updateLine(i, { description: e.target.value })}
-            placeholder="Description (optional)"
+            placeholder={t("modals.descriptionOptionalPlaceholder")}
             className={inputClass}
           />
 
@@ -111,7 +113,7 @@ export default function ExpenseWithdrawLines({
             type="button"
             onClick={() => onChange(lines.filter((_, idx) => idx !== i))}
             className="bg-transparent border-none cursor-pointer text-steel hover:text-brand-red"
-            title="Remove line"
+            title={t("modals.removeLineTitle")}
           >
             <Trash2 size={14} />
           </button>
@@ -124,7 +126,7 @@ export default function ExpenseWithdrawLines({
         onClick={() => onChange([...lines, emptyExpenseLine()])}
         className="flex items-center gap-1 text-[12px] font-body text-teal bg-transparent border-none cursor-pointer w-fit"
       >
-        <Plus size={13} /> Add line
+        <Plus size={13} /> {t("modals.addLine")}
       </button>
     </div>
   );

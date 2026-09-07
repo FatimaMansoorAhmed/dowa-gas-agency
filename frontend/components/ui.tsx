@@ -1,5 +1,6 @@
 "use client";
 import { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { pkr } from "@/lib/format";
 
 export function Eyebrow({ children }: { children: ReactNode }) {
@@ -95,6 +96,7 @@ export function Button({
 }
 
 export function BalanceTag({ amount }: { amount: number | string }) {
+  const { t } = useTranslation();
   const n = typeof amount === "string" ? parseFloat(amount) : amount;
   const isAdvance = n < 0;
   return (
@@ -102,7 +104,7 @@ export function BalanceTag({ amount }: { amount: number | string }) {
       {pkr(Math.abs(n))}
       {isAdvance && (
         <span className="ml-1.5 text-[10px] px-2 py-0.5 rounded-full bg-[#E4F3F3] text-tealdeep tracking-wide">
-          ADVANCE
+          {t("common.advance")}
         </span>
       )}
     </span>

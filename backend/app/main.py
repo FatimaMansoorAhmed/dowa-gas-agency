@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 from app.database import Base, engine
 from app.migrations import run_startup_migrations
+from app.reference_data import ensure_reference_data
 from app.scheduler import start_scheduler
 from app.routers import (
     companies, parties, rates, customers, products, payment_accounts,
@@ -66,6 +67,9 @@ def on_startup():
     # tables that already exist — this adds any new nullable/defaulted
     # columns models.py has picked up since the DB was first created.
     run_startup_migrations(engine)
+    # Structural config (Product rows) that must exist even on a database
+    # wiped of transactional data — separate from app/seed.py's demo data.
+    ensure_reference_data()
     start_scheduler()
 
 

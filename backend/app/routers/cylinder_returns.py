@@ -141,6 +141,7 @@ def create_cylinder_return(
         elif payload.mode == "cash":
             excess = payload.amount - customer.current_balance
             excess_amount = excess if excess > 0 else None
+            label = "Empty Cylinder Sale" if payload.origin == "sell_cylinder" else "Cylinder Return"
 
             payment = models.Payment(
                 display_id=next_display_id(db, models.Payment, "PAY", width=6),
@@ -150,7 +151,7 @@ def create_cylinder_return(
                 method=payload.method,
                 account_id=account_row.id if account_row else None,
                 reference_no=payload.reference_no,
-                notes=payload.notes or f"Cylinder Return {cret_display_id}",
+                notes=payload.notes or f"{label} {cret_display_id}",
                 excess_amount=excess_amount,
                 destination_type=destination_type,
                 target_plant_id=target_plant_id,
@@ -180,7 +181,7 @@ def create_cylinder_return(
             apply_settlement_routing(
                 db, date, payload.home_expense_amount, payload.home_expense_category_id,
                 payload.owner_drawings_amount, destination_type, target_plant_id, account_row,
-                net_settlement_amount, current_user.name, payment.id, f"Cylinder Return {cret_display_id}",
+                net_settlement_amount, current_user.name, payment.id, f"{label} {cret_display_id}",
             )
 
         else:  # manual_add
@@ -195,6 +196,7 @@ def create_cylinder_return(
             cylinder_type=payload.cylinder_type,
             quantity=payload.quantity,
             mode=payload.mode,
+            origin=payload.origin,
             to_customer_id=payload.to_customer_id if payload.mode == "transfer" else None,
             payment_id=payment_id,
             notes=payload.notes,

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, inputClass, Button, Th, Td } from "@/components/ui";
 import { api } from "@/lib/api";
@@ -40,6 +41,7 @@ type RegisterRow = {
 };
 
 function PaymentsBody() {
+  const { t, i18n } = useTranslation();
   const { user } = useAuth();
 
   // Data Sources
@@ -80,7 +82,7 @@ function PaymentsBody() {
       setPayments(payList);
       setUnifiedSales(unifiedList.filter((b) => b.status === "approved"));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load payment register data.");
+      setError(e instanceof Error ? e.message : t("payments.failedLoadRegister"));
     }
   };
 
@@ -90,13 +92,13 @@ function PaymentsBody() {
 
   const handleCancelPayment = async (id: string) => {
     if (!user || actionBusyId) return;
-    if (!window.confirm("Are you sure you want to cancel this payment?")) return;
+    if (!window.confirm(t("payments.confirmCancelPayment"))) return;
     setActionBusyId(id);
     try {
       await api.paymentReceipts.cancel(id, user.name);
       await loadData();
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to cancel payment.");
+      alert(e instanceof Error ? e.message : t("payments.failedCancelPayment"));
     } finally {
       setActionBusyId(null);
     }
@@ -120,7 +122,7 @@ function PaymentsBody() {
           account_id: p.account_category ?? p.account_id ?? null,
           reference_no: p.reference_no,
           notes: hasDeduction
-            ? `${p.notes ? p.notes + " · " : ""}gross ${pkr(gross)}`
+            ? `${p.notes ? p.notes + " · " : ""}${t("payments.grossLabel", { amount: pkr(gross) })}`
             : p.notes,
           source: "receipt" as const,
         };
@@ -140,13 +142,14 @@ function PaymentsBody() {
         target_plant_id: b.target_plant_id ?? null,
         account_id: b.account_id ?? null,
         reference_no: null,
-        notes: `Unified Sale settlement · ${b.display_id}${hasDeduction ? ` · gross ${pkr(gross)}` : ""}`,
+        notes: `${t("payments.unifiedSaleSettlement", { id: b.display_id })}${hasDeduction ? ` · ${t("payments.grossLabel", { amount: pkr(gross) })}` : ""}`,
         source: "unified_sale" as const,
       };
     });
 
     return [...receiptRows, ...unifiedRows].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [payments, unifiedSales]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payments, unifiedSales, i18n.language]);
 
   const filteredRegister = useMemo(() => {
     return registerRows.filter((row) => {
@@ -214,13 +217,13 @@ function PaymentsBody() {
   const resolveRouteBadge = (row: RegisterRow) => {
     if (row.destination_type === "plant" || row.target_plant_id) {
       const plant = companies.find((c) => c.id === row.target_plant_id);
-      return { label: plant ? `Plant: ${plant.name}` : "Plant Settlement", color: "bg-teal/10 text-teal border-teal/30" };
+      return { label: plant ? t("payments.plantLabel", { name: plant.name }) : t("payments.plantSettlementBadge"), color: "bg-teal/10 text-teal border-teal/30" };
     }
-    if (row.account_id === "dowa_account") return { label: "Dowa Account", color: "bg-blue-50 text-blue-700 border-blue-200" };
+    if (row.account_id === "dowa_account") return { label: t("payments.dowaAccount"), color: "bg-blue-50 text-blue-700 border-blue-200" };
     if (row.account_id === "owner_home" || row.account_id === "cash") {
-      return { label: "Owner Home", color: "bg-purple-50 text-purple-700 border-purple-200" };
+      return { label: t("payments.ownerHome"), color: "bg-purple-50 text-purple-700 border-purple-200" };
     }
-    if (row.account_id === "office_cash") return { label: "Office Cash", color: "bg-amber-50 text-amber-700 border-amber-200" };
+    if (row.account_id === "office_cash") return { label: t("payments.officeCash"), color: "bg-amber-50 text-amber-700 border-amber-200" };
 
     return { label: resolveAccountLabel(row.account_id, accounts), color: "bg-slate-50 text-slate-700 border-slate-200" };
   };
@@ -228,16 +231,16 @@ function PaymentsBody() {
   return (
     <div className="max-w-[1700px] mx-auto w-full space-y-6 px-4 sm:px-6">
       <PageHeader
-        eyebrow="Financial Audit"
-        title="Payment Register & Audit Log"
-        caption="Track customer collections, deduct home expenses or owner drawings, and route remaining balances to Plants, Dowa Account, Owner Home, or Office Cash."
+        eyebrow={t("payments.eyebrow")}
+        title={t("payments.title")}
+        caption={t("payments.caption")}
       />
 
       {/* TOP KPI SUMMARY CARDS */}
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3.5">
         <div className="p-4 bg-panel border border-hairline rounded-xl shadow-xs">
           <div className="flex justify-between items-center text-steel mb-1">
-            <span className="font-mono text-[10px] uppercase font-bold tracking-wider">Total Collections</span>
+            <span className="font-mono text-[10px] uppercase font-bold tracking-wider">{t("payments.totalCollections")}</span>
             <DollarSign size={14} />
           </div>
           <div className="font-mono text-xl font-bold text-ink">{pkr(kpis.totalCollections)}</div>
@@ -245,7 +248,7 @@ function PaymentsBody() {
 
         <div className="p-4 bg-panel border border-hairline rounded-xl shadow-xs">
           <div className="flex justify-between items-center text-teal mb-1">
-            <span className="font-mono text-[10px] uppercase font-bold tracking-wider">Plant Settlements</span>
+            <span className="font-mono text-[10px] uppercase font-bold tracking-wider">{t("payments.plantSettlements")}</span>
             <Building2 size={14} />
           </div>
           <div className="font-mono text-xl font-bold text-teal">{pkr(kpis.plantSettlements)}</div>
@@ -253,7 +256,7 @@ function PaymentsBody() {
 
         <div className="p-4 bg-panel border border-hairline rounded-xl shadow-xs">
           <div className="flex justify-between items-center text-blue-600 mb-1">
-            <span className="font-mono text-[10px] uppercase font-bold tracking-wider">Dowa Account</span>
+            <span className="font-mono text-[10px] uppercase font-bold tracking-wider">{t("payments.dowaAccount")}</span>
             <ShieldCheck size={14} />
           </div>
           <div className="font-mono text-xl font-bold text-blue-600">{pkr(bucketBalance(accounts, "dowa_account"))}</div>
@@ -261,7 +264,7 @@ function PaymentsBody() {
 
         <div className="p-4 bg-panel border border-hairline rounded-xl shadow-xs">
           <div className="flex justify-between items-center text-amber-600 mb-1">
-            <span className="font-mono text-[10px] uppercase font-bold tracking-wider">Office Cash</span>
+            <span className="font-mono text-[10px] uppercase font-bold tracking-wider">{t("payments.officeCash")}</span>
             <Wallet size={14} />
           </div>
           <div className="font-mono text-xl font-bold text-amber-600">{pkr(bucketBalance(accounts, "office_cash"))}</div>
@@ -269,7 +272,7 @@ function PaymentsBody() {
 
         <div className="p-4 bg-panel border border-hairline rounded-xl shadow-xs col-span-2 md:col-span-1">
           <div className="flex justify-between items-center text-purple-600 mb-1">
-            <span className="font-mono text-[10px] uppercase font-bold tracking-wider">Owner Home</span>
+            <span className="font-mono text-[10px] uppercase font-bold tracking-wider">{t("payments.ownerHome")}</span>
             <Home size={14} />
           </div>
           <div className="font-mono text-xl font-bold text-purple-600">{pkr(bucketBalance(accounts, "owner_home"))}</div>
@@ -281,21 +284,21 @@ function PaymentsBody() {
         <Panel>
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
             <div>
-              <Eyebrow>Payment Register Log</Eyebrow>
-              <SectionCaption>Audited records of customer collections & deductions.</SectionCaption>
+              <Eyebrow>{t("payments.registerLog")}</Eyebrow>
+              <SectionCaption>{t("payments.registerLogCaption")}</SectionCaption>
             </div>
 
             {/* FILTERING BAR & OPEN FORM BUTTON */}
             <div className="flex flex-wrap gap-2 w-full sm:w-auto items-center">
 <Button variant="primary" onClick={() => setIsFormOpen(true)}>
-  <Plus size={14} /> Receive Payment
+  <Plus size={14} /> {t("payments.receivePayment")}
 </Button>
               <div className="relative flex-1 sm:w-64">
                 <Search size={13} className="absolute left-2.5 top-2.5 text-steel" />
                 <input
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search payments..."
+                  placeholder={t("payments.searchPlaceholder")}
                   className={`${inputClass} pl-8 py-1.5 text-xs`}
                 />
               </div>
@@ -304,11 +307,11 @@ function PaymentsBody() {
                 onChange={(e) => setFilterRoute(e.target.value)}
                 className={`${inputClass} py-1.5 text-xs sm:w-40`}
               >
-                <option value="all">All Routes</option>
-                <option value="plant">Plant Settlements</option>
-                <option value="dowa">Dowa Account</option>
-                <option value="office_cash">Office Cash</option>
-                <option value="owner_home">Owner Home</option>
+                <option value="all">{t("payments.routeAll")}</option>
+                <option value="plant">{t("payments.plantSettlements")}</option>
+                <option value="dowa">{t("payments.dowaAccount")}</option>
+                <option value="office_cash">{t("payments.officeCash")}</option>
+                <option value="owner_home">{t("payments.ownerHome")}</option>
               </select>
             </div>
           </div>
@@ -328,7 +331,7 @@ function PaymentsBody() {
                       : "border-hairline bg-paper text-ink hover:bg-paper/70"
                   }`}
                 >
-                  {opt}
+                  {t(`payments.date${opt.charAt(0).toUpperCase()}${opt.slice(1)}`)}
                 </button>
               ))}
             </div>
@@ -371,12 +374,12 @@ function PaymentsBody() {
             <table className="w-full border-collapse">
               <thead>
                 <tr className="border-b border-hairline text-left">
-                  <Th>DATE</Th>
-                  <Th>CUSTOMER</Th>
-                  <Th right>RECEIVED</Th>
-                  <Th>SETTLEMENT ROUTE</Th>
-                  <Th>REMARKS / REF</Th>
-                  <Th right>ACTION</Th>
+                  <Th>{t("payments.colDate")}</Th>
+                  <Th>{t("payments.colCustomer")}</Th>
+                  <Th right>{t("payments.colReceived")}</Th>
+                  <Th>{t("payments.colSettlementRoute")}</Th>
+                  <Th>{t("payments.colRemarksRef")}</Th>
+                  <Th right>{t("payments.colAction")}</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-hairline">
@@ -409,7 +412,7 @@ function PaymentsBody() {
                       <Td right>
                         {row.source === "receipt" ? (
                           <button
-                            title="Cancel Receipt"
+                            title={t("payments.cancelReceiptTitle")}
                             disabled={isBusy}
                             onClick={() => handleCancelPayment(row.id)}
                             className="p-1 text-steel hover:text-brand-red transition-colors"
@@ -417,8 +420,8 @@ function PaymentsBody() {
                             <XCircle size={15} />
                           </button>
                         ) : (
-                          <span title="Approved via Unified Sale — manage it from that page" className="inline-flex items-center gap-1 text-[10px] font-mono text-steel/60">
-                            <Link2 size={12} /> Unified Sale
+                          <span title={t("payments.approvedViaUnifiedSaleTitle")} className="inline-flex items-center gap-1 text-[10px] font-mono text-steel/60">
+                            <Link2 size={12} /> {t("payments.unifiedSaleLabel")}
                           </span>
                         )}
                       </Td>
@@ -428,7 +431,7 @@ function PaymentsBody() {
                 {!filteredRegister.length && (
                   <tr>
                     <td colSpan={6} className="text-steel font-body text-[13px] py-8 text-center">
-                      No payments found for the selected criteria.
+                      {t("payments.noPaymentsFound")}
                     </td>
                   </tr>
                 )}

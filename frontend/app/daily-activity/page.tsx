@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FileDown } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Th, Td, inputClass, Button } from "@/components/ui";
 import PrintButton from "@/components/PrintButton";
@@ -16,6 +17,7 @@ import type { DailyReportData } from "@/lib/types";
  * PDF is rendered from, so this screen, the print output, and the PDF
  * can never disagree with each other. */
 function DailyActivityBody() {
+  const { t } = useTranslation();
   const { user } = useAuth();
   const router = useRouter();
   const [date, setDate] = useState(todayLocalInput());
@@ -38,9 +40,9 @@ function DailyActivityBody() {
     setToast(null);
     try {
       await api.reports.generateDaily(date, user.name);
-      setToast("PDF generated and saved — view it on the Reports page.");
+      setToast(t("dailyActivity.pdfGeneratedToast"));
     } catch {
-      setToast("Could not generate the PDF — try again.");
+      setToast(t("dailyActivity.pdfFailedToast"));
     } finally {
       setGenerating(false);
     }
@@ -49,18 +51,18 @@ function DailyActivityBody() {
   return (
     <div>
       <PageHeader
-        eyebrow="Daily Activity"
-        title="One business date, every transaction"
-        caption="Sales, purchases, payments, investments, expenses, and cylinder activity for the selected business date, drawn from the same ledger data used everywhere else."
+        eyebrow={t("nav.dailyActivity")}
+        title={t("dailyActivity.title")}
+        caption={t("dailyActivity.caption")}
         action={
           <div className="flex items-center flex-wrap gap-2 no-print">
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={`${inputClass} w-full sm:w-[160px]`} />
-            <PrintButton label="Print" />
+            <PrintButton label={t("dailyActivity.print")} />
             <Button variant="teal" onClick={handleGenerate} disabled={generating}>
-              <FileDown size={14} /> {generating ? "Generating…" : "Generate PDF"}
+              <FileDown size={14} /> {generating ? t("dailyActivity.generating") : t("dailyActivity.generatePdf")}
             </Button>
             <Button variant="outline" onClick={() => router.push("/reports")}>
-              View Reports
+              {t("dailyActivity.viewReports")}
             </Button>
           </div>
         }
@@ -70,31 +72,32 @@ function DailyActivityBody() {
 
       {loading && (
         <Panel>
-          <div className="font-body text-steel p-6">Loading…</div>
+          <div className="font-body text-steel p-6">{t("common.loading")}</div>
         </Panel>
       )}
 
       {!loading && data && (
         <div className="print-area">
           <div className="hidden print:block mb-4">
-            <div className="font-display font-bold text-xl">DOWA Gas Agency — Daily Activity</div>
-            <div className="font-mono text-xs text-steel">Business Date: {data.business_date}</div>
+            <div className="font-display font-bold text-xl">DOWA Gas Agency — {t("nav.dailyActivity")}</div>
+            <div className="font-mono text-xs text-steel">{t("dailyActivity.printHeaderBusinessDate", { date: data.business_date })}</div>
           </div>
 
           {/* Daily Summary */}
           <Panel className="mb-4">
-            <Eyebrow>Daily Summary</Eyebrow>
+            <Eyebrow>{t("dailyActivity.dailySummary")}</Eyebrow>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mt-2">
-              <SummaryTile label="Sales" value={data.summary.total_sales} />
-              <SummaryTile label="Purchases" value={data.summary.total_purchases} />
-              <SummaryTile label="Customer Payments" value={data.summary.total_customer_payments} />
-              <SummaryTile label="Plant Payments" value={data.summary.total_plant_payments} />
-              <SummaryTile label="Investments" value={data.summary.total_investments} />
-              <SummaryTile label="Expenses" value={data.summary.total_expenses} />
-              <SummaryTile label="Owner Drawings" value={data.summary.total_owner_drawings} />
-              <SummaryTile label="Net Cash Movement" value={data.summary.net_cash_movement} />
-              <SummaryTile label="Cylinders Out" value={data.summary.total_cylinders_out} plain />
-              <SummaryTile label="Cylinders In" value={data.summary.total_cylinders_in} plain />
+              <SummaryTile label={t("dailyActivity.sales")} value={data.summary.total_sales} />
+              <SummaryTile label={t("dailyActivity.deliveryCharges")} value={data.summary.total_delivery_charges} />
+              <SummaryTile label={t("dailyActivity.purchases")} value={data.summary.total_purchases} />
+              <SummaryTile label={t("dailyActivity.customerPayments")} value={data.summary.total_customer_payments} />
+              <SummaryTile label={t("dailyActivity.plantPayments")} value={data.summary.total_plant_payments} />
+              <SummaryTile label={t("dailyActivity.investments")} value={data.summary.total_investments} />
+              <SummaryTile label={t("nav.expenses")} value={data.summary.total_expenses} />
+              <SummaryTile label={t("unifiedSale.ownerDrawings")} value={data.summary.total_owner_drawings} />
+              <SummaryTile label={t("pnlChart.legendNetCashMovement")} value={data.summary.net_cash_movement} />
+              <SummaryTile label={t("dailyActivity.cylindersOut")} value={data.summary.total_cylinders_out} plain />
+              <SummaryTile label={t("dailyActivity.cylindersIn")} value={data.summary.total_cylinders_in} plain />
             </div>
           </Panel>
 
@@ -106,25 +109,25 @@ function DailyActivityBody() {
                 </Eyebrow>
                 {section.financial_total !== null && (
                   <div className="font-mono text-[13px] font-semibold text-ink">
-                    Total: {pkr(section.financial_total)}
+                    {t("dailyActivity.sectionTotal", { amount: pkr(section.financial_total) })}
                   </div>
                 )}
               </div>
               {section.rows.length === 0 ? (
-                <div className="font-body text-[13px] text-steel py-3">No activity for this date.</div>
+                <div className="font-body text-[13px] text-steel py-3">{t("dailyActivity.noActivityForDate")}</div>
               ) : (
                 <div className="overflow-x-auto">
                 <table className="w-full border-collapse mt-2">
                   <thead>
                     <tr>
-                      <Th>Time</Th>
-                      <Th>ID</Th>
-                      <Th>Description</Th>
-                      <Th>Customer/Plant</Th>
-                      <Th>Reference</Th>
-                      <Th>Entered By</Th>
-                      <Th>Status</Th>
-                      <Th right>Amount</Th>
+                      <Th>{t("purchases.colTime")}</Th>
+                      <Th>{t("customerLedger.colId")}</Th>
+                      <Th>{t("customerLedger.colDescription")}</Th>
+                      <Th>{t("dailyActivity.colCustomerPlant")}</Th>
+                      <Th>{t("dailyActivity.colReference")}</Th>
+                      <Th>{t("customerLedger.colEnteredBy")}</Th>
+                      <Th>{t("shopDetail.colStatus")}</Th>
+                      <Th right>{t("unifiedSale.colAmount")}</Th>
                     </tr>
                   </thead>
                   <tbody>

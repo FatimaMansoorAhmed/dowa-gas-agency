@@ -1,5 +1,6 @@
 "use client";
 import { Building2, Wallet } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Field, inputClass } from "@/components/ui";
 import AmountInput from "@/components/AmountInput";
 import { pkr } from "@/lib/format";
@@ -48,6 +49,7 @@ export default function SettlementDestinationFields({
   specialAccount, onSpecialAccountChange,
   accountId, onAccountIdChange,
 }: Props) {
+  const { t } = useTranslation();
   const homeExpense = parseFloat(homeExpenseAmount) || 0;
   const ownerDrawings = parseFloat(ownerDrawingsAmount) || 0;
   const netRemaining = Math.max(0, grossAmount - homeExpense - ownerDrawings);
@@ -56,15 +58,15 @@ export default function SettlementDestinationFields({
     <>
       {/* DEDUCTIONS SECTION */}
       <div className="p-3.5 bg-paper rounded-lg border border-hairline space-y-3">
-        <div className="font-mono text-[10px] text-steel uppercase font-bold tracking-wider">Deductions (Optional)</div>
+        <div className="font-mono text-[10px] text-steel uppercase font-bold tracking-wider">{t("modals.deductionsOptional")}</div>
 
         <div className="grid grid-cols-2 gap-2">
-          <Field label="Home Expense (PKR)">
+          <Field label={t("modals.homeExpensePkr")}>
             <AmountInput value={homeExpenseAmount} onChange={onHomeExpenseAmountChange} placeholder="0" className={inputClass} />
           </Field>
-          <Field label="Category">
+          <Field label={t("expenses.categoryLabel")}>
             <select value={homeExpenseCatId} onChange={(e) => onHomeExpenseCatIdChange(e.target.value)} className={inputClass}>
-              <option value="">Select Category</option>
+              <option value="">{t("modals.selectCategory2")}</option>
               {expenseCategories.map((cat) => (
                 <option key={cat.id} value={cat.id}>
                   {cat.name}
@@ -74,7 +76,7 @@ export default function SettlementDestinationFields({
           </Field>
         </div>
 
-        <Field label="Owner Drawings Amount (PKR)">
+        <Field label={t("modals.ownerDrawingsAmountPkr")}>
           <AmountInput value={ownerDrawingsAmount} onChange={onOwnerDrawingsAmountChange} placeholder="0" className={inputClass} />
         </Field>
       </div>
@@ -90,7 +92,7 @@ export default function SettlementDestinationFields({
         <div className="p-3.5 bg-slate-50 rounded-lg border border-hairline space-y-3">
           <div className="flex justify-between items-center">
             <span className="font-mono text-[10px] text-steel uppercase font-bold tracking-wider">
-              Route Remaining Balance ({pkr(netRemaining)}) To
+              {t("modals.routeRemainingBalanceTo2", { amount: pkr(netRemaining) })}
             </span>
           </div>
 
@@ -102,7 +104,7 @@ export default function SettlementDestinationFields({
                 destinationType === "plant" ? "bg-teal/10 border-teal text-teal shadow-xs" : "border-hairline bg-white text-steel hover:bg-paper"
               }`}
             >
-              <Building2 size={13} /> Plant Settlement
+              <Building2 size={13} /> {t("unifiedSale.plantSettlementOption")}
             </button>
             <button
               type="button"
@@ -111,14 +113,14 @@ export default function SettlementDestinationFields({
                 destinationType === "account" ? "bg-teal/10 border-teal text-teal shadow-xs" : "border-hairline bg-white text-steel hover:bg-paper"
               }`}
             >
-              <Wallet size={13} /> Account Deposit
+              <Wallet size={13} /> {t("unifiedSale.accountDepositOption")}
             </button>
           </div>
 
           {destinationType === "plant" ? (
-            <Field label="Select Plant Ledger">
+            <Field label={t("modals.selectPlantLedger")}>
               <select value={targetPlantId} onChange={(e) => onTargetPlantIdChange(e.target.value)} className={inputClass}>
-                <option value="">Select Target Plant</option>
+                <option value="">{t("modals.selectTargetPlant")}</option>
                 {companies.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name}
@@ -128,19 +130,19 @@ export default function SettlementDestinationFields({
             </Field>
           ) : (
             <div className="space-y-2">
-              <Field label="Select Destination Account">
+              <Field label={t("modals.selectDestinationAccount")}>
                 <select value={specialAccount} onChange={(e) => onSpecialAccountChange(e.target.value as SpecialAccount)} className={inputClass}>
-                  <option value="office_cash">Office Cash</option>
-                  <option value="owner_home">Owner Home Account</option>
-                  <option value="dowa_account">Dowa Account</option>
-                  <option value="bank">Specific Bank Account</option>
+                  <option value="office_cash">{t("payments.officeCash")}</option>
+                  <option value="owner_home">{t("payments.ownerHome")}</option>
+                  <option value="dowa_account">{t("payments.dowaAccount")}</option>
+                  <option value="bank">{t("modals.specificBankAccount")}</option>
                 </select>
               </Field>
 
               {specialAccount === "bank" && (
-                <Field label="Target Bank Account">
+                <Field label={t("modals.targetBankAccount")}>
                   <select value={accountId} onChange={(e) => onAccountIdChange(e.target.value)} className={inputClass}>
-                    <option value="">Select Bank Account</option>
+                    <option value="">{t("modals.selectBankAccount")}</option>
                     {accounts.map((a) => (
                       <option key={a.id} value={a.id}>
                         {a.name} ({a.kind})
@@ -155,7 +157,7 @@ export default function SettlementDestinationFields({
       ) : (
         grossAmount > 0 && (
           <div className="p-3 bg-slate-50 rounded-lg border border-hairline font-body text-xs text-steel">
-            Nothing left to route — Home Expense + Owner Drawings covers the full amount.
+            {t("modals.nothingLeftToRoute")}
           </div>
         )
       )}

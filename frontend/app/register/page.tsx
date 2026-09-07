@@ -2,10 +2,12 @@
 import { useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
+import { useTranslation } from "react-i18next";
 import { Button, inputClass } from "@/components/ui";
 import { API_BASE } from "@/lib/api";
 
 export default function RegisterPage() {
+  const { t } = useTranslation();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -29,12 +31,12 @@ export default function RegisterPage() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setError(body.detail || "Could not create the account — check the fields and try again.");
+        setError(body.detail || t("auth.couldNotCreateAccount"));
         return;
       }
       setDone(true);
     } catch {
-      setError("Could not reach the server — check your connection and try again.");
+      setError(t("auth.couldNotReachServer"));
     } finally {
       setSaving(false);
     }
@@ -61,15 +63,14 @@ export default function RegisterPage() {
         {done ? (
           <>
             <div className="font-display font-bold text-[15px] text-ink mb-2">
-              Waiting for Owner Approval
+              {t("auth.waitingForApproval")}
             </div>
             <div className="font-body text-[12.5px] text-steel mb-5">
-              Your account has been created. An Owner needs to approve it before you can sign in —
-              check back shortly.
+              {t("auth.waitingForApprovalCaption")}
             </div>
             <Link href="/login">
               <Button variant="outline">
-                <span className="w-full text-center">Back to Sign In</span>
+                <span className="w-full text-center">{t("auth.backToSignIn")}</span>
               </Button>
             </Link>
           </>
@@ -78,7 +79,7 @@ export default function RegisterPage() {
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Your name"
+              placeholder={t("auth.namePlaceholder")}
               className={`${inputClass} mb-3 text-center`}
               autoFocus
             />
@@ -86,38 +87,38 @@ export default function RegisterPage() {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="Email"
+              placeholder={t("auth.emailPlaceholder")}
               className={`${inputClass} mb-3 text-center`}
             />
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="Password (min. 8 characters)"
+              placeholder={t("auth.passwordMinPlaceholder")}
               className={`${inputClass} mb-3 text-center`}
             />
             <input
               type="password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
-              placeholder="Confirm password"
+              placeholder={t("auth.confirmPasswordPlaceholder")}
               className={`${inputClass} mb-4 text-center`}
               onKeyDown={(e) => e.key === "Enter" && submit()}
             />
 
             {password && confirmPassword && password !== confirmPassword && (
-              <div className="font-body text-xs text-brand-red mb-3">Passwords don't match.</div>
+              <div className="font-body text-xs text-brand-red mb-3">{t("auth.passwordsDontMatch")}</div>
             )}
             {error && <div className="font-body text-xs text-brand-red mb-4">{error}</div>}
 
             <Button variant="teal" onClick={submit} disabled={!canSubmit || saving}>
-              <span className="w-full text-center">{saving ? "Creating account…" : "Create Account"}</span>
+              <span className="w-full text-center">{saving ? t("auth.creatingAccount") : t("auth.createAccount")}</span>
             </Button>
 
             <div className="font-body text-[11px] text-steel mt-4">
-              Already have an account?{" "}
+              {t("auth.alreadyHaveAccount")}{" "}
               <Link href="/login" className="text-teal font-semibold">
-                Sign in
+                {t("auth.signIn2")}
               </Link>
             </div>
           </>

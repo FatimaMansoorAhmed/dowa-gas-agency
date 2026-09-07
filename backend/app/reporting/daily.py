@@ -43,6 +43,17 @@ def get_daily_report_data(db: Session, business_date: str) -> "schemas.DailyRepo
         return sum((r.amount for r in by_key.get(key, []) if r.amount is not None), start=Decimal("0"))
 
     total_sales = _sum("sales")
+    # Delivery Charges (§ Delivery Charges visibility) — real collected
+    # money, deliberately excluded from total_sales' per-line GST
+    # allocation above (adapters._fetch_sales) since it isn't attributable
+    # to any one product line. Shown as its own summary total instead so
+    # it isn't invisible: total_sales + total_delivery_charges reconciles
+    # back to every reported batch's own grand_total (see
+    # adapters._fetch_delivery_charges). Not part of net_cash_movement
+    # below, same as total_sales itself isn't — this is accrued invoiced
+    # value, not a cash movement; the actual cash only counts once
+    # collected, via externally_sourced_customer_payments.
+    total_delivery_charges = _sum("delivery_charges")
     total_purchases = _sum("purchases")
     total_customer_payments = _sum("customer_payments")
     total_plant_payments = _sum("plant_payments")
@@ -113,10 +124,24 @@ def get_daily_report_data(db: Session, business_date: str) -> "schemas.DailyRepo
         ).all()),
         start=Decimal("0"),
     )
-    total_cylinders_in += empty_sales_qty
+    # Sell Empty Cylinders' current flow (§ Empty Cylinders page) — a
+    # mode="cash", origin="sell_cylinder" CylinderReturn, same as any other
+    # Return Cylinder — Cash Mode row. Counted here on the exact same
+    # footing as the retired EmptyCylinderSale rows above, so a sell's
+    # physical quantity keeps showing up in this total going forward.
+    sell_cylinder_qty = sum(
+        (r.quantity for r in db.query(models.CylinderReturn).filter(
+            models.CylinderReturn.status == "active", models.CylinderReturn.mode == "cash",
+            models.CylinderReturn.origin == "sell_cylinder",
+            models.CylinderReturn.date >= start, models.CylinderReturn.date < end,
+        ).all()),
+        start=Decimal("0"),
+    )
+    total_cylinders_in += empty_sales_qty + sell_cylinder_qty
 
     summary = schemas.DailySummaryOut(
         total_sales=total_sales,
+        total_delivery_charges=total_delivery_charges,
         total_purchases=total_purchases,
         total_customer_payments=total_customer_payments,
         total_plant_payments=total_plant_payments,

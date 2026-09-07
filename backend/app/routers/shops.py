@@ -548,6 +548,35 @@ def get_shop_detail(
             entered_by=p.entered_by, status=p.status, correctable=True,
         ))
 
+    # Emergency Transfer Out (§ Shop — Emergency Transfer) — same Sale
+    # model _compute_stock_summary above already deducts from this shop's
+    # FIFO stock, but that Sale posts to the OTHER customer (Sale.customer_id
+    # is the recipient, never this shop), so the "loads" query above
+    # (filtered on customer_id == shop_id) never picks it up — it was
+    # entirely invisible on this page's Recent Transactions/Activity
+    # Register until now. Cash Impact is always Rs 0 by construction: this
+    # Sale's amount posts to the recipient customer's own ledger (see
+    # routers/ledger.py), never anything _compute_cash_summary reads (it
+    # only ever queries ShopSale/ShopCustomerPayment/ShopExpenseTransaction/
+    # Payment-from-shop-account/AccountTransfer — never models.Sale) — so
+    # Shop Cash Balance is guaranteed untouched, nothing to compute here.
+    transfers_out = db.query(models.Sale).filter(
+        models.Sale.emergency_transfer_shop_id == shop_id, models.Sale.status == "active",
+        models.Sale.date >= month_start, models.Sale.date < next_month,
+    ).all()
+    for s in transfers_out:
+        product_name = products.get(s.product_id).name if products.get(s.product_id) else "Product"
+        recipient = db.query(models.Customer).get(s.customer_id)
+        transactions.append(schemas.ShopTransactionRow(
+            kind="emergency_transfer_out", date=s.date, ref_id=s.id, display_id=s.display_id,
+            description=(
+                f"Emergency Transfer Out — {product_name} × {s.quantity} "
+                f"(to {recipient.name if recipient else 'customer'}) — Stock Transfer, no Shop Cash impact"
+            ),
+            quantity=-s.quantity, amount=Decimal("0"),
+            entered_by=s.entered_by, status=s.status, correctable=False,
+        ))
+
     shop_sales = db.query(models.ShopSale).filter(
         models.ShopSale.customer_id == shop_id, models.ShopSale.status == "active",
         models.ShopSale.date >= month_start, models.ShopSale.date < next_month,

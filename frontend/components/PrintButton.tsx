@@ -1,15 +1,17 @@
 "use client";
 import { Printer } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "./ui";
 
 /** Triggers the browser print dialog against whatever the page has marked
  * .print-area (see app/globals.css) — used by Customer Ledger, the Plant
  * Ledger panel, and Daily Activity (§3). Give it the "no-print" class
  * wrapper so the button itself never shows up on paper. */
-export default function PrintButton({ label = "Print" }: { label?: string }) {
+export default function PrintButton({ label }: { label?: string }) {
+  const { t } = useTranslation();
   return (
     <Button variant="outline" onClick={() => window.print()}>
-      <Printer size={14} /> {label}
+      <Printer size={14} /> {label ?? t("dailyActivity.print")}
     </Button>
   );
 }

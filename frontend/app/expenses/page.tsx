@@ -14,6 +14,7 @@ import {
   Tag,
   type LucideIcon,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { api } from "@/lib/api";
 import {
@@ -178,6 +179,7 @@ function SectionTag({
   label: string;
   optional?: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="mb-3 flex items-center gap-2">
       <span
@@ -196,7 +198,7 @@ function SectionTag({
 
       {optional && (
         <span className="text-[10px] font-medium text-slate-500">
-          Optional
+          {t("expenses.optional")}
         </span>
       )}
     </div>
@@ -204,6 +206,7 @@ function SectionTag({
 }
 
 function ExpensesBody() {
+  const { t } = useTranslation();
   const { user } = useAuth();
 
   const [categories, setCategories] = useState<
@@ -347,7 +350,7 @@ function ExpensesBody() {
         entered_by: user.name,
       });
 
-      setToast("Expense saved.");
+      setToast(t("expenses.expenseSavedToast"));
 
       setAmount("");
       setDescription("");
@@ -502,12 +505,12 @@ function ExpensesBody() {
 
   const filterLabel =
     filterType === "all"
-      ? "All Expenses"
+      ? t("expenses.allExpenses")
       : filterType === "day"
-      ? `Day — ${filterDay}`
+      ? t("expenses.dayFilterLabel", { day: filterDay })
       : filterType === "month"
-      ? `Month — ${filterMonth}`
-      : `Year — ${filterYear}`;
+      ? t("expenses.monthFilterLabel", { month: filterMonth })
+      : t("expenses.yearFilterLabel", { year: filterYear });
 
   return (
     <div className="min-h-screen">
@@ -524,18 +527,16 @@ function ExpensesBody() {
             />
 
             <span className="font-mono text-[10.5px] font-bold uppercase tracking-widest text-[#0b2138]">
-              Expenses
+              {t("nav.expenses")}
             </span>
           </div>
 
           <h1 className="text-[26px] font-extrabold tracking-tight text-slate-950 sm:text-[28px]">
-            Expense Management
+            {t("expenses.heading")}
           </h1>
 
           <p className="mt-1.5 max-w-xl text-[13.5px] leading-relaxed text-slate-600">
-            Record business spending,
-            track where funds were used,
-            and monitor your expenses.
+            {t("expenses.caption")}
           </p>
         </div>
 
@@ -546,7 +547,7 @@ function ExpensesBody() {
             }
           >
             <PlusCircle size={15} />
-            Record Expense
+            {t("expenses.recordExpense")}
           </Btn>
         )}
       </div>
@@ -558,7 +559,7 @@ function ExpensesBody() {
       <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatTile
           icon={Wallet}
-          label="Filtered Total"
+          label={t("expenses.filteredTotal")}
           value={pkr(filteredTotal)}
           hint={filterLabel}
           tone="indigo"
@@ -566,7 +567,7 @@ function ExpensesBody() {
 
         <StatTile
           icon={TrendingDown}
-          label="This Month"
+          label={t("expenses.thisMonth")}
           value={pkr(totalMTD)}
           hint={month}
           tone="rose"
@@ -574,7 +575,7 @@ function ExpensesBody() {
 
         <StatTile
           icon={ListChecks}
-          label="Entries"
+          label={t("expenses.entries")}
           value={String(
             filteredExpenses.length
           )}
@@ -584,11 +585,11 @@ function ExpensesBody() {
 
         <StatTile
           icon={Tag}
-          label="Categories"
+          label={t("expenses.categories")}
           value={String(
             filteredByCategory.length
           )}
-          hint="in current view"
+          hint={t("expenses.inCurrentView")}
           tone="emerald"
         />
       </div>
@@ -612,7 +613,7 @@ function ExpensesBody() {
               <CalendarDays size={13} />
 
               <span className="font-mono text-[10px] font-bold uppercase tracking-wider">
-                Period
+                {t("expenses.period")}
               </span>
             </div>
 
@@ -624,20 +625,20 @@ function ExpensesBody() {
                   "month",
                   "year",
                 ] as FilterType[]
-              ).map((t) => (
+              ).map((ft) => (
                 <button
-                  key={t}
+                  key={ft}
                   type="button"
                   onClick={() =>
-                    setFilterType(t)
+                    setFilterType(ft)
                   }
                   className={`rounded-md py-1.5 text-[11px] font-bold capitalize transition-colors ${
-                    filterType === t
+                    filterType === ft
                       ? "bg-[#0b2138] text-white shadow-sm shadow-[#0b2138]/20"
                       : "bg-slate-100 text-slate-600 hover:bg-slate-200"
                   }`}
                 >
-                  {t}
+                  {t(`payments.date${ft.charAt(0).toUpperCase()}${ft.slice(1)}`)}
                 </button>
               ))}
             </div>
@@ -713,11 +714,7 @@ function ExpensesBody() {
 
             <div className="mt-3 flex items-center justify-between border-t border-slate-200 pt-3">
               <span className="text-[11px] font-medium text-slate-600">
-                {filteredExpenses.length}{" "}
-                {filteredExpenses.length ===
-                1
-                  ? "entry"
-                  : "entries"}
+                {t("expenses.entryCount", { count: filteredExpenses.length })}
               </span>
 
               <span className="font-mono text-[13px] font-extrabold text-slate-950">
@@ -731,7 +728,7 @@ function ExpensesBody() {
           <div className="rounded-xl border border-slate-300 bg-white p-3.5 shadow-sm shadow-slate-300/50">
             <div className="mb-3 flex items-center justify-between">
               <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                By Category
+                {t("expenses.byCategory")}
               </span>
 
               <span className="font-mono text-[10px] font-semibold text-slate-500">
@@ -760,7 +757,7 @@ function ExpensesBody() {
                         <span className="truncate text-[12px] font-semibold text-slate-700">
                           {row.category
                             ?.name ||
-                            "Uncategorized"}
+                            t("expenses.uncategorized")}
                         </span>
 
                         <span className="shrink-0 font-mono text-[11px] font-bold text-slate-950">
@@ -789,8 +786,7 @@ function ExpensesBody() {
               {!filteredByCategory.length && (
                 <div className="rounded-lg border border-dashed border-slate-300 px-3 py-6 text-center">
                   <p className="text-[12px] font-medium text-slate-500">
-                    No expenses found
-                    for this period.
+                    {t("expenses.noExpensesForPeriod")}
                   </p>
                 </div>
               )}
@@ -820,18 +816,16 @@ function ExpensesBody() {
                     </div>
 
                     <span className="font-mono text-[10.5px] font-bold uppercase tracking-widest text-[#0b2138]">
-                      New Expense
+                      {t("expenses.newExpenseBadge")}
                     </span>
                   </div>
 
                   <h2 className="text-[16px] font-bold text-slate-950">
-                    Record an expense
+                    {t("expenses.recordAnExpense")}
                   </h2>
 
                   <p className="mt-0.5 text-[12px] text-slate-600">
-                    Enter the payment
-                    details below to
-                    create a new entry.
+                    {t("expenses.enterPaymentDetails")}
                   </p>
                 </div>
 
@@ -844,7 +838,7 @@ function ExpensesBody() {
                   }
                 >
                   <X size={14} />
-                  Close
+                  {t("unifiedSale.close")}
                 </Btn>
               </div>
 
@@ -855,11 +849,11 @@ function ExpensesBody() {
                 <div>
                   <SectionTag
                     n="01"
-                    label="Expense details"
+                    label={t("expenses.section01Label")}
                   />
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <FormField label="Date">
+                    <FormField label={t("unifiedSale.date")}>
                       <input
                         type="date"
                         value={date}
@@ -874,7 +868,7 @@ function ExpensesBody() {
                       />
                     </FormField>
 
-                    <FormField label="Category">
+                    <FormField label={t("expenses.categoryLabel")}>
                       {!addingCategory ? (
                         <div className="flex gap-2">
                           <select
@@ -889,8 +883,7 @@ function ExpensesBody() {
                             className={`${fieldInputCls} flex-1`}
                           >
                             <option value="">
-                              Select
-                              category
+                              {t("unifiedSale.selectCategory")}
                             </option>
 
                             {categories
@@ -922,7 +915,7 @@ function ExpensesBody() {
                             <PlusCircle
                               size={14}
                             />
-                            Add
+                            {t("expenses.add")}
                           </Btn>
                         </div>
                       ) : (
@@ -938,7 +931,7 @@ function ExpensesBody() {
                                   .value
                               )
                             }
-                            placeholder="New category name"
+                            placeholder={t("expenses.newCategoryNamePlaceholder")}
                             className={`${fieldInputCls} flex-1`}
                           />
 
@@ -983,7 +976,7 @@ function ExpensesBody() {
                 >
                   <div className="mb-2 flex items-center justify-between">
                     <label className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-600">
-                      Expense Amount
+                      {t("expenses.expenseAmount")}
                     </label>
 
                     <span className="font-mono text-[10px] font-semibold text-slate-500">
@@ -1010,9 +1003,7 @@ function ExpensesBody() {
                   </div>
 
                   <p className="mt-2 text-[11px] font-medium text-slate-600">
-                    Enter the total amount
-                    paid for this
-                    expense.
+                    {t("expenses.enterTotalAmountHint")}
                   </p>
                 </div>
 
@@ -1021,11 +1012,11 @@ function ExpensesBody() {
                 <div>
                   <SectionTag
                     n="02"
-                    label="Payment information"
+                    label={t("expenses.section02Label")}
                   />
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <FormField label="Payment Method">
+                    <FormField label={t("expenses.paymentMethod")}>
                       <select
                         value={method}
                         onChange={(e) =>
@@ -1039,28 +1030,28 @@ function ExpensesBody() {
                         }
                       >
                         <option value="cash">
-                          Cash
+                          {t("unifiedSale.methodCash")}
                         </option>
 
                         <option value="bank_transfer">
-                          Bank Transfer
+                          {t("expenses.methodBankTransfer")}
                         </option>
 
                         <option value="cheque">
-                          Cheque
+                          {t("unifiedSale.methodCheque")}
                         </option>
 
                         <option value="online">
-                          Online Payment
+                          {t("expenses.methodOnlinePayment")}
                         </option>
 
                         <option value="other">
-                          Other
+                          {t("expenses.methodOther")}
                         </option>
                       </select>
                     </FormField>
 
-                    <FormField label="Paid From">
+                    <FormField label={t("expenses.paidFrom")}>
                       <select
                         value={accountId}
                         onChange={(e) =>
@@ -1074,8 +1065,7 @@ function ExpensesBody() {
                         }
                       >
                         <option value="">
-                          Select
-                          account
+                          {t("expenses.selectAccount")}
                         </option>
 
                         {accounts
@@ -1102,13 +1092,13 @@ function ExpensesBody() {
                 <div>
                   <SectionTag
                     n="03"
-                    label="Additional information"
+                    label={t("expenses.section03Label")}
                     optional
                   />
 
                   <div className="flex flex-col gap-3">
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <FormField label="Vendor / Person">
+                      <FormField label={t("expenses.vendorPerson")}>
                         <input
                           value={vendor}
                           onChange={(e) =>
@@ -1117,14 +1107,14 @@ function ExpensesBody() {
                                 .value
                             )
                           }
-                          placeholder="e.g. Supplier, mechanic..."
+                          placeholder={t("expenses.vendorPlaceholder")}
                           className={
                             fieldInputCls
                           }
                         />
                       </FormField>
 
-                      <FormField label="Reference Number">
+                      <FormField label={t("expenses.referenceNumber")}>
                         <input
                           value={
                             referenceNo
@@ -1135,7 +1125,7 @@ function ExpensesBody() {
                                 .value
                             )
                           }
-                          placeholder="Receipt / invoice no."
+                          placeholder={t("expenses.referenceNoPlaceholder")}
                           className={
                             fieldInputCls
                           }
@@ -1143,7 +1133,7 @@ function ExpensesBody() {
                       </FormField>
                     </div>
 
-                    <FormField label="Description">
+                    <FormField label={t("expenses.descriptionLabel")}>
                       <input
                         value={description}
                         onChange={(e) =>
@@ -1152,7 +1142,7 @@ function ExpensesBody() {
                               .value
                           )
                         }
-                        placeholder="Add a short note about this expense..."
+                        placeholder={t("expenses.descriptionPlaceholder")}
                         className={
                           fieldInputCls
                         }
@@ -1166,7 +1156,7 @@ function ExpensesBody() {
                 <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-300 bg-slate-100 px-3.5 py-3">
                   <div>
                     <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-600">
-                      Entered by
+                      {t("expenses.enteredByLabel")}
                     </p>
 
                     <p className="mt-0.5 text-[13px] font-semibold text-slate-950">
@@ -1200,13 +1190,13 @@ function ExpensesBody() {
                     }
                   >
                     {saving ? (
-                      "Saving…"
+                      t("unifiedSale.saving")
                     ) : (
                       <>
                         <Check
                           size={15}
                         />
-                        Save Expense
+                        {t("expenses.saveExpense")}
                       </>
                     )}
                   </Btn>
@@ -1230,7 +1220,7 @@ function ExpensesBody() {
             <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-4 sm:px-5">
               <div>
                 <h2 className="text-[15px] font-bold text-slate-950">
-                  Expense transactions
+                  {t("expenses.expenseTransactions")}
                 </h2>
 
                 <p className="mt-0.5 text-[11.5px] font-medium text-slate-600">
@@ -1242,8 +1232,7 @@ function ExpensesBody() {
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-600" />
 
                 <span className="font-mono text-[9px] font-bold uppercase tracking-[0.08em] text-slate-600">
-                  {filteredExpenses.length}{" "}
-                  entries
+                  {t("expenses.entryCount", { count: filteredExpenses.length })}
                 </span>
               </span>
             </div>
@@ -1253,23 +1242,23 @@ function ExpensesBody() {
                 <thead>
                   <tr className="bg-slate-100">
                     <th className="whitespace-nowrap px-3 py-2.5 text-left font-mono text-[10.5px] font-bold uppercase tracking-wide text-slate-500">
-                      ID
+                      {t("customerLedger.colId")}
                     </th>
 
                     <th className="whitespace-nowrap px-3 py-2.5 text-left font-mono text-[10.5px] font-bold uppercase tracking-wide text-slate-500">
-                      Category
+                      {t("expenses.colCategory")}
                     </th>
 
                     <th className="whitespace-nowrap px-3 py-2.5 text-left font-mono text-[10.5px] font-bold uppercase tracking-wide text-slate-500">
-                      Source
+                      {t("expenses.colSource")}
                     </th>
 
                     <th className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-[10.5px] font-bold uppercase tracking-wide text-slate-500">
-                      Amount
+                      {t("unifiedSale.colAmount")}
                     </th>
 
                     <th className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-[10.5px] font-bold uppercase tracking-wide text-slate-500">
-                      Date
+                      {t("customerLedger.colDate")}
                     </th>
                   </tr>
                 </thead>
@@ -1314,7 +1303,7 @@ function ExpensesBody() {
                               <div className="flex flex-col gap-0.5">
                                 <span className="inline-flex items-center gap-1 text-[12px] font-medium text-slate-900">
                                   <span className="rounded bg-[#e8eef4] px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wide text-[#0b2138]">
-                                    Shop
+                                    {t("expenses.shopBadge")}
                                   </span>
 
                                   {
@@ -1328,10 +1317,10 @@ function ExpensesBody() {
                                 ) && (
                                   <span className="text-[11px] font-medium text-slate-500">
                                     {expense.customer_name ||
-                                      "Unknown customer"}
+                                      t("expenses.unknownCustomer")}
 
                                     {expense.shop_sale_display_id &&
-                                      ` · Sale ${expense.shop_sale_display_id}`}
+                                      t("expenses.saleRefSuffix", { id: expense.shop_sale_display_id })}
                                   </span>
                                 )}
                               </div>
@@ -1376,14 +1365,11 @@ function ExpensesBody() {
                           </div>
 
                           <p className="mt-3 text-[13px] font-semibold text-slate-800">
-                            No expenses
-                            found
+                            {t("expenses.noExpensesFound")}
                           </p>
 
                           <p className="mt-1 text-[11px] font-medium text-slate-500">
-                            Try another
-                            date, month,
-                            or year.
+                            {t("expenses.tryAnotherDateHint")}
                           </p>
                         </div>
                       </td>
@@ -1397,11 +1383,7 @@ function ExpensesBody() {
               10 && (
               <div className="border-t border-slate-200 px-4 py-3 text-center">
                 <span className="text-[11px] font-medium text-slate-500">
-                  Showing latest 10 of{" "}
-                  {
-                    filteredExpenses.length
-                  }{" "}
-                  expenses
+                  {t("expenses.showingLatestOf", { shown: 10, total: filteredExpenses.length })}
                 </span>
               </div>
             )}

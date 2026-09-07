@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Flag, Clock } from "lucide-react";
+import { Trans, useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption } from "@/components/ui";
 import { pkr, fmtTime, todayLocalInput } from "@/lib/format";
@@ -19,6 +20,7 @@ function currentMonth() {
 
 function DashboardBody() {
   const router = useRouter();
+  const { t } = useTranslation();
   const [companies, setCompanies] = useState<Company[]>([]);
   const [parties, setParties] = useState<Party[]>([]);
   const [latestRates, setLatestRates] = useState<RateEntry[]>([]);
@@ -92,7 +94,7 @@ function DashboardBody() {
     return () => clearInterval(id);
   }, [loadAll]);
 
-  if (loading) return <div className="font-body text-steel p-10">Loading…</div>;
+  if (loading) return <div className="font-body text-steel p-10">{t("common.loading")}</div>;
 
   // Flag Rule: this month's Closing Balance > this month's Opening Balance
   // (itself rolled over from the prior month's closing) -> Flagged.
@@ -155,111 +157,109 @@ function DashboardBody() {
   return (
     <div>
       <PageHeader
-        eyebrow="Dashboard"
-        title="Rates, sales, and customer balances, live"
-        caption="Sale P&L and Purchase Summary populate automatically as sales and expenses are recorded -- everything here refreshes on its own, no reload needed."
+        eyebrow={t("nav.dashboard")}
+        title={t("dashboard.title")}
+        caption={t("dashboard.caption")}
       />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 mb-4">
         <Panel className="min-h-[96px]">
-          <Eyebrow>Customers Flagged</Eyebrow>
+          <Eyebrow>{t("dashboard.customersFlagged")}</Eyebrow>
           <div className={`font-display font-bold text-2xl ${flaggedAccounts.length ? "text-brand-amber" : "text-ink"}`}>{flaggedAccounts.length}</div>
         </Panel>
 
         <Panel className="min-h-[96px]">
-          <Eyebrow>Total Sale Amount</Eyebrow>
+          <Eyebrow>{t("dashboard.totalSaleAmount")}</Eyebrow>
           <div className="font-display font-bold text-2xl text-ink">{pkr(totalSalesMTD)}</div>
           <div className="font-body text-[11px] text-steel mt-1">
-            {hasSalesData ? `${salesMTD.length} sale${salesMTD.length === 1 ? "" : "s"} this month` : "No sales recorded yet"}
+            {hasSalesData ? t("dashboard.salesThisMonth", { count: salesMTD.length }) : t("dashboard.noSalesYet")}
           </div>
         </Panel>
 
         <Panel className="min-h-[96px]">
-          <Eyebrow>Total Expense </Eyebrow>
+          <Eyebrow>{t("dashboard.totalExpense")}</Eyebrow>
           <div className="font-display font-bold text-2xl text-ink">{pkr(totalExpensesMTD)}</div>
           <div className="font-body text-[11px] text-steel mt-1">
-            {hasExpenseData ? "Expenses recorded this month" : "No purchases recorded yet — awaiting Purchase module"}
+            {hasExpenseData ? t("dashboard.expensesRecordedThisMonth") : t("dashboard.noPurchasesAwaiting")}
           </div>
         </Panel>
 
         <Panel className="min-h-[96px]">
-          <Eyebrow>Sale</Eyebrow>
+          <Eyebrow>{t("nav.sale")}</Eyebrow>
           <div className="flex items-baseline justify-between font-body text-[11px] text-steel mt-0.5">
-            <span>11.8kg cylinders</span><span className="font-semibold text-ink">{sale118.toFixed(0)}</span>
+            <span>{t("dashboard.cylinders118")}</span><span className="font-semibold text-ink">{sale118.toFixed(0)}</span>
           </div>
           <div className="flex items-baseline justify-between font-body text-[11px] text-steel">
-            <span>45.4kg cylinders</span><span className="font-semibold text-ink">{sale454.toFixed(0)}</span>
+            <span>{t("dashboard.cylinders454")}</span><span className="font-semibold text-ink">{sale454.toFixed(0)}</span>
           </div>
           <div className="font-display font-bold text-2xl text-ink mt-1">{totalSaleKgMTD.toFixed(2)} <span className="text-sm text-steel font-normal">kg</span></div>
           <div className="font-body text-[11px] text-steel mt-1">
-            {hasSalesData ? `${salesMTD.length} sale${salesMTD.length === 1 ? "" : "s"} this month` : "No sales recorded yet"}
+            {hasSalesData ? t("dashboard.salesThisMonth", { count: salesMTD.length }) : t("dashboard.noSalesYet")}
           </div>
         </Panel>
 
         <Panel className="min-h-[96px]">
-          <Eyebrow>Purc</Eyebrow>
+          <Eyebrow>{t("dashboard.purc")}</Eyebrow>
           <div className="flex items-baseline justify-between font-body text-[11px] text-steel mt-0.5">
-            <span>11.8kg cylinders</span><span className="font-semibold text-ink">{purc118.toFixed(0)}</span>
+            <span>{t("dashboard.cylinders118")}</span><span className="font-semibold text-ink">{purc118.toFixed(0)}</span>
           </div>
           <div className="flex items-baseline justify-between font-body text-[11px] text-steel">
-            <span>45.4kg cylinders</span><span className="font-semibold text-ink">{purc454.toFixed(0)}</span>
+            <span>{t("dashboard.cylinders454")}</span><span className="font-semibold text-ink">{purc454.toFixed(0)}</span>
           </div>
           <div className="font-display font-bold text-2xl text-ink mt-1">{totalPurchaseKgMTD.toFixed(2)} <span className="text-sm text-steel font-normal">kg</span></div>
           <div className="font-body text-[11px] text-steel mt-1">
-            {purchasesMTD.length ? `${purchasesMTD.length} purchase${purchasesMTD.length === 1 ? "" : "s"} this month` : "No purchases recorded yet"}
+            {purchasesMTD.length ? t("dashboard.purchasesThisMonth", { count: purchasesMTD.length }) : t("dashboard.noPurchasesYet")}
           </div>
         </Panel>
 
         <Panel className="min-h-[96px]">
-          <Eyebrow>Total Tonnage</Eyebrow>
+          <Eyebrow>{t("dashboard.totalTonnage")}</Eyebrow>
           <div className="flex items-baseline justify-between font-body text-[11px] text-steel mt-0.5">
-            <span>Total 11.8kg cylinders</span><span className="font-semibold text-ink">{tonnage118.toFixed(0)}</span>
+            <span>{t("dashboard.totalCylinders118")}</span><span className="font-semibold text-ink">{tonnage118.toFixed(0)}</span>
           </div>
           <div className="flex items-baseline justify-between font-body text-[11px] text-steel">
-            <span>Total 45.4kg cylinders</span><span className="font-semibold text-ink">{tonnage454.toFixed(0)}</span>
+            <span>{t("dashboard.totalCylinders454")}</span><span className="font-semibold text-ink">{tonnage454.toFixed(0)}</span>
           </div>
           <div className="font-display font-bold text-2xl text-ink mt-1">{totalTonnageMTD.toFixed(2)} <span className="text-sm text-steel font-normal">tons</span></div>
           <div className="font-body text-[11px] text-steel mt-1">
-            Sale {totalSaleKgMTD.toFixed(0)}kg + Shop Sale {totalShopSaleKgMTD.toFixed(0)}kg
+            {t("dashboard.saleShopSaleBreakdown", { sale: totalSaleKgMTD.toFixed(0), shop: totalShopSaleKgMTD.toFixed(0) })}
           </div>
         </Panel>
       </div>
 
       <Panel className="mb-3.5">
-        <Eyebrow>Profit / Loss — {month}</Eyebrow>
+        <Eyebrow>{t("dashboard.pnlEyebrow", { month })}</Eyebrow>
         <SectionCaption>
-          Sale Revenue − Purchase Cost (COGS) = Gross Profit, minus Expenses (plant + shop) = Net Profit/Loss.
-          Owner Drawings are shown as a separate final step — they never reduce reported business profit, only
-          personal cash taken out.
+          {t("dashboard.pnlCaption")}
         </SectionCaption>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 mt-1">
           <div className="rounded-lg border border-hairline bg-paper px-4 py-3.5">
-            <div className="font-mono text-[10px] uppercase text-steel tracking-wide">Gross Profit</div>
+            <div className="font-mono text-[10px] uppercase text-steel tracking-wide">{t("dashboard.grossProfit")}</div>
             <div className={`font-display font-bold text-[26px] mt-0.5 ${grossProfit >= 0 ? "text-brand-green" : "text-brand-red"}`}>
               {pkr(grossProfit)}
             </div>
             <div className="font-mono text-[10.5px] text-steel mt-1.5 flex flex-wrap gap-x-3">
-              <span>Sales {pkr(totalSalesMTD)}</span>
-              <span>− COGS {pkr(totalPurchasesMTD)}</span>
+              <span>{t("dashboard.salesLabel", { amount: pkr(totalSalesMTD) })}</span>
+              <span>{t("dashboard.cogsLabel", { amount: pkr(totalPurchasesMTD) })}</span>
             </div>
           </div>
           <div className="rounded-lg border border-hairline bg-paper px-4 py-3.5">
-            <div className="font-mono text-[10px] uppercase text-steel tracking-wide">Net Profit / Loss</div>
+            <div className="font-mono text-[10px] uppercase text-steel tracking-wide">{t("dashboard.netProfitLoss")}</div>
             <div className={`font-display font-bold text-[26px] mt-0.5 ${netProfitLoss >= 0 ? "text-brand-green" : "text-brand-red"}`}>
               {pkr(netProfitLoss)}
             </div>
             <div className="font-mono text-[10.5px] text-steel mt-1.5 flex flex-wrap gap-x-3">
-              <span>Gross Profit {pkr(grossProfit)}</span>
-              <span>− Expenses {pkr(totalExpensesMTD)}</span>
+              <span>{t("dashboard.grossProfitLabel", { amount: pkr(grossProfit) })}</span>
+              <span>{t("dashboard.expensesLabel", { amount: pkr(totalExpensesMTD) })}</span>
             </div>
           </div>
           <div className="rounded-lg border border-hairline bg-paper px-4 py-3.5">
-            <div className="font-mono text-[10px] uppercase text-steel tracking-wide">After Owner Withdrawals</div>
+            <div className="font-mono text-[10px] uppercase text-steel tracking-wide">{t("dashboard.afterOwnerWithdrawals")}</div>
             <div className={`font-display font-bold text-[26px] mt-0.5 ${netProfitAfterDrawings >= 0 ? "text-ink" : "text-brand-red"}`}>
               {pkr(netProfitAfterDrawings)}
             </div>
             <div className="font-mono text-[10.5px] text-steel mt-1.5">
-              Net Profit/Loss − Owner Drawings {pkr(totalOwnerDrawingsMTD)}
+              {t("dashboard.netProfitMinusDrawings", { amount: pkr(totalOwnerDrawingsMTD) })}
             </div>
           </div>
         </div>
@@ -271,15 +271,17 @@ function DashboardBody() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
         <Panel>
           <div className="flex items-center justify-between mb-1.5">
-            <Eyebrow>Latest Applied Rates</Eyebrow>
+            <Eyebrow>{t("dashboard.latestAppliedRates")}</Eyebrow>
             <div className="flex items-center gap-1.5 pb-1.5">
               <span className="live-dot" />
               <span className="font-mono text-[9.5px] text-steel">
-                {lastSynced ? `synced ${lastSynced.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Asia/Karachi" })}` : "syncing…"}
+                {lastSynced
+                  ? t("dashboard.synced", { time: lastSynced.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Asia/Karachi" }) })
+                  : t("dashboard.syncing")}
               </span>
             </div>
           </div>
-          <SectionCaption>Most recently updated Company · Party pairs — refreshes automatically every 30s.</SectionCaption>
+          <SectionCaption>{t("dashboard.latestRatesCaption")}</SectionCaption>
           <div className="flex flex-col gap-2">
             {latestRates.slice(0, 6).map((r) => {
               const company = companies.find((c) => c.id === r.company_id);
@@ -301,15 +303,14 @@ function DashboardBody() {
                 </div>
               );
             })}
-            {!latestRates.length && <div className="font-body text-[13px] text-steel">No rate entries yet.</div>}
+            {!latestRates.length && <div className="font-body text-[13px] text-steel">{t("dashboard.noRateEntries")}</div>}
           </div>
         </Panel>
 
         <Panel>
-          <Eyebrow>Flagged Accounts — {month}</Eyebrow>
+          <Eyebrow>{t("dashboard.flaggedAccountsEyebrow", { month })}</Eyebrow>
           <SectionCaption>
-            Customers whose Closing Balance this month is above the Opening Balance it rolled over with —
-            review these first. Click a customer to open their ledger.
+            {t("dashboard.flaggedAccountsCaption")}
           </SectionCaption>
           <div className="flex flex-col gap-2">
             {flaggedAccounts.map((f) => (
@@ -324,15 +325,15 @@ function DashboardBody() {
                 </div>
                 <div className="flex items-center gap-4 text-right">
                   <div>
-                    <div className="font-mono text-[9px] text-steel uppercase tracking-wide">Opening</div>
+                    <div className="font-mono text-[9px] text-steel uppercase tracking-wide">{t("dashboard.opening")}</div>
                     <div className="font-mono text-[11.5px] font-semibold text-ink">{pkr(f.opening_balance)}</div>
                   </div>
                   <div>
-                    <div className="font-mono text-[9px] text-steel uppercase tracking-wide">Closing</div>
+                    <div className="font-mono text-[9px] text-steel uppercase tracking-wide">{t("dashboard.closing")}</div>
                     <div className="font-mono text-[11.5px] font-semibold text-ink">{pkr(f.closing_balance)}</div>
                   </div>
                   <div>
-                    <div className="font-mono text-[9px] text-steel uppercase tracking-wide">Shortage</div>
+                    <div className="font-mono text-[9px] text-steel uppercase tracking-wide">{t("dashboard.shortage")}</div>
                     <div className="font-mono text-[12.5px] font-bold text-brand-amber">{pkr(Math.max(0, Number(f.closing_balance) - Number(f.opening_balance)))}</div>
                   </div>
                 </div>
@@ -340,7 +341,7 @@ function DashboardBody() {
             ))}
             {!flaggedAccounts.length && (
               <div className="font-body text-[13px] text-steel py-4 text-center">
-                No flagged customers this month.
+                {t("dashboard.noFlaggedCustomers")}
               </div>
             )}
           </div>
@@ -348,7 +349,11 @@ function DashboardBody() {
             <div className="mt-3 px-3 py-2.5 bg-[#FBEAEA] rounded-lg border border-[#EFC3C3]">
               {overpaid.map((c) => (
                 <div key={c.id} className="font-body text-[12.5px] text-brand-red">
-                  <b>{c.name}</b> paid {pkr(c.last_overpayment_amount!)} extra — sitting as credit-in-hand.
+                  <Trans
+                    i18nKey="dashboard.overpaidLine"
+                    values={{ name: c.name, amount: pkr(c.last_overpayment_amount!) }}
+                    components={{ bold: <b /> }}
+                  />
                 </div>
               ))}
             </div>

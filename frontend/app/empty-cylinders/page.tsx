@@ -1,19 +1,16 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Search, X, AlertTriangle } from "lucide-react";
+import { Search } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
-import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, Th, Td } from "@/components/ui";
-import AmountInput from "@/components/AmountInput";
+import { PageHeader, Panel, Eyebrow, SectionCaption, Th, Td, Button } from "@/components/ui";
 import { api } from "@/lib/api";
-import { useAuth } from "@/lib/auth";
 import AddEmptyCylinderModal from "@/components/AddEmptyCylinderModal";
+import ReturnCylinderModal from "@/components/ReturnCylinderModal";
 import type { Customer } from "@/lib/types";
 
 // "legacy" = the untyped, unclassified remainder of a size's balance for
 // customers that predate typed Cross/PSO tracking (or predate any typed
-// sale) — total_for_size − cross − pso. Selling it uses the old
-// size-only endpoint call (no cylinder_type), exactly as before this
-// feature existed; it is never guessed into Cross or PSO.
+// sale) — total_for_size − cross − pso.
 type SellType = "cross" | "pso" | "legacy";
 
 function unclassified(c: Customer, size: "118" | "454"): number {
@@ -24,19 +21,18 @@ function unclassified(c: Customer, size: "118" | "454"): number {
 }
 
 function EmptyCylindersBody() {
-  const { user } = useAuth();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [search, setSearch] = useState("");
 
+  // "Sell Cylinder" (§ Empty Cylinders page) now reuses ReturnCylinderModal
+  // in mode="cash"/variant="sell" — the EXACT SAME code path as Customer
+  // Ledger's Return Cylinder — Cash Mode (POST /cylinder-returns), instead
+  // of the old, separate, unrouted /empty-cylinders/sell endpoint. Full
+  // parity: Payment creation + settlement routing, correct balance
+  // direction (customer is credited, not debited), overpayment handling,
+  // and cancel support.
   const [sellModal, setSellModal] = useState<Customer | null>(null);
   const [addModal, setAddModal] = useState<Customer | null>(null);
-  const [cylSize, setCylSize] = useState<"118" | "454">("118");
-  const [sellType, setSellType] = useState<SellType>("cross");
-  const [quantity, setQuantity] = useState("");
-  const [amount, setAmount] = useState("");
-  const [notes, setNotes] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const load = async (q?: string) => setCustomers(await api.customers.list(q));
 
@@ -53,75 +49,6 @@ function EmptyCylindersBody() {
     if (type === "legacy") return unclassified(c, size);
     const key = `empty_cylinders_${size}_${type}` as keyof Customer;
     return parseFloat((c[key] as string) || "0");
-  };
-
-  const defaultTypeFor = (c: Customer, size: "118" | "454"): SellType => {
-    if (balanceFor(c, size, "cross") > 0) return "cross";
-    if (balanceFor(c, size, "pso") > 0) return "pso";
-    return "legacy";
-  };
-
-  const openSellModal = (c: Customer) => {
-    setSellModal(c);
-    // Default to whichever size actually has stock to sell.
-    const size = parseFloat(c.empty_cylinders_118 || "0") > 0 ? "118" : "454";
-    setCylSize(size);
-    setSellType(defaultTypeFor(c, size));
-    setQuantity("");
-    setAmount("");
-    setNotes("");
-    setError(null);
-  };
-
-  const closeSellModal = () => {
-    setSellModal(null);
-    setError(null);
-  };
-
-  const changeSize = (size: "118" | "454") => {
-    setCylSize(size);
-    if (sellModal) setSellType(defaultTypeFor(sellModal, size));
-    setQuantity("");
-  };
-
-  const availableBalance = sellModal ? balanceFor(sellModal, cylSize, sellType) : 0;
-  const qtyNum = parseFloat(quantity) || 0;
-  const amountNum = parseFloat(amount) || 0;
-
-  const submitSell = async () => {
-    if (!sellModal || !user) return;
-    setError(null);
-
-    if (qtyNum <= 0) {
-      setError("Quantity must be greater than 0.");
-      return;
-    }
-    if (qtyNum > availableBalance) {
-      setError(`Quantity cannot exceed the available balance (${availableBalance}).`);
-      return;
-    }
-    if (amountNum <= 0) {
-      setError("Amount must be greater than 0.");
-      return;
-    }
-
-    setSaving(true);
-    try {
-      await api.customers.sellEmptyCylinders(sellModal.id, {
-        cylinder_size: cylSize,
-        cylinder_type: sellType === "legacy" ? undefined : sellType,
-        quantity: qtyNum,
-        amount: amountNum,
-        notes: notes.trim() || undefined,
-        entered_by: user.name,
-      });
-      closeSellModal();
-      load(search || undefined);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to record the sale.");
-    } finally {
-      setSaving(false);
-    }
   };
 
   // Fleet-wide totals for the summary cards — sums the per-customer
@@ -237,10 +164,10 @@ function EmptyCylindersBody() {
                     </Button>
                     <Button
                       variant="teal"
-                      onClick={() => openSellModal(c)}
+                      onClick={() => setSellModal(c)}
                       disabled={parseFloat(c.empty_cylinders_118 || "0") <= 0 && parseFloat(c.empty_cylinders_454 || "0") <= 0}
                     >
-                      Sell Empty Cylinders
+                      Sell Cylinder
                     </Button>
                   </div>
                 </Td>
@@ -257,82 +184,13 @@ function EmptyCylindersBody() {
         </table>
       </Panel>
 
-      {sellModal && (
-        <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl px-6 py-6 w-full max-w-[380px]">
-            <div className="flex justify-between items-center mb-1">
-              <div className="font-display font-bold text-[17px] text-ink">{sellModal.name}</div>
-              <button onClick={closeSellModal} className="bg-transparent border-none cursor-pointer">
-                <X size={16} className="text-steel" />
-              </button>
-            </div>
-            <div className="flex flex-col gap-3">
-              <Field label="Cylinder Size">
-                <select
-                  value={cylSize}
-                  onChange={(e) => changeSize(e.target.value as "118" | "454")}
-                  className={inputClass}
-                >
-                  <option value="118">11.8 KG</option>
-                  <option value="454">45.4 KG</option>
-                </select>
-              </Field>
-              <Field label="Cylinder Type">
-                <select
-                  value={sellType}
-                  onChange={(e) => { setSellType(e.target.value as SellType); setQuantity(""); }}
-                  className={inputClass}
-                >
-                  <option value="cross">Cross ({balanceFor(sellModal, cylSize, "cross")} available)</option>
-                  <option value="pso">PSO ({balanceFor(sellModal, cylSize, "pso")} available)</option>
-                  {unclassified(sellModal, cylSize) > 0 && (
-                    <option value="legacy">Unclassified ({unclassified(sellModal, cylSize)} available)</option>
-                  )}
-                </select>
-              </Field>
-              <div className="font-mono text-xs text-steel">
-                Available {cylSize === "454" ? "45.4 KG" : "11.8 KG"} {sellType === "legacy" ? "unclassified" : sellType.toUpperCase()} empty cylinders: <b className="text-ink">{availableBalance}</b>
-              </div>
-              <Field label="Quantity">
-                <input
-                  type="number"
-                  min="0"
-                  autoFocus
-                  value={quantity}
-                  onChange={(e) => setQuantity(e.target.value)}
-                  className={inputClass}
-                />
-              </Field>
-              <Field label="Sale Amount (PKR)">
-                <AmountInput
-                  value={amount}
-                  onChange={setAmount}
-                  className={inputClass}
-                />
-              </Field>
-              <Field label="Notes (optional)">
-                <input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputClass} />
-              </Field>
-            </div>
-
-            {error && (
-              <div className="mt-2.5 px-2.5 py-2 bg-[#FBEAEA] rounded-md font-body text-xs text-brand-red flex gap-1.5 items-start">
-                <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
-                <span>{error}</span>
-              </div>
-            )}
-
-            <div className="mt-4 flex justify-end gap-2">
-              <Button variant="outline" onClick={closeSellModal} disabled={saving}>
-                Cancel
-              </Button>
-              <Button variant="teal" onClick={submitSell} disabled={saving || !quantity || !amount}>
-                {saving ? "Saving..." : "Confirm Sale"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ReturnCylinderModal
+        variant="sell"
+        isOpen={!!sellModal}
+        onClose={() => setSellModal(null)}
+        customer={sellModal}
+        onSuccess={() => load(search || undefined)}
+      />
 
       <AddEmptyCylinderModal
         isOpen={!!addModal}

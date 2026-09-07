@@ -9,6 +9,7 @@ from app.database import get_db
 from app import models, schemas
 from app.deps import require_active_user, require_csrf
 from app.reporting.invoice_pdf import render_sale_invoice_pdf
+from app.routers.purchases import _correct_purchase_internal
 from app.timezone import KARACHI_TZ
 from app.utils import next_display_id, adjust_cylinder_balance, resync_unified_sale_batch_totals
 
@@ -123,6 +124,17 @@ def _apply_sale(db: Session, payload: schemas.SaleCreate, entered_by: str) -> mo
     total_amount = payload.quantity * payload.rate_per_cylinder
     rate_per_kg = round(float(payload.rate_per_cylinder) / float(product.weight_kg), 2) if product.weight_kg else None
 
+    # GST on Sale (optional, locked at entry) — gst_amount is computed once
+    # here, from total_amount and the rate in effect at this exact moment,
+    # then frozen forever on the row (never recalculated later even if
+    # gst_rate is edited elsewhere or the concept of a "current" rate
+    # changes). grand_total is what actually posts to the customer's
+    # balance/ledger below — total_amount itself is never touched, so
+    # Dashboard/P&L/Tonnage (all keyed off total_amount) stay unaffected.
+    gst_enabled = bool(payload.gst_enabled and payload.gst_rate)
+    gst_amount = (total_amount * payload.gst_rate / Decimal("100")) if gst_enabled else Decimal("0")
+    grand_total = total_amount + gst_amount
+
     sale = models.Sale(
         display_id=next_display_id(db, models.Sale, "SALE", width=6),
         date=payload.date,
@@ -135,6 +147,10 @@ def _apply_sale(db: Session, payload: schemas.SaleCreate, entered_by: str) -> mo
         rate_per_kg=rate_per_kg,
         rate_per_cylinder=payload.rate_per_cylinder,
         total_amount=total_amount,
+        gst_enabled=gst_enabled,
+        gst_rate=payload.gst_rate if gst_enabled else None,
+        gst_amount=gst_amount,
+        grand_total=grand_total,
         gate_pass_no=payload.gate_pass_no,
         vehicle_no=payload.vehicle_no,
         notes=payload.notes,
@@ -146,8 +162,10 @@ def _apply_sale(db: Session, payload: schemas.SaleCreate, entered_by: str) -> mo
     db.flush()  # assigns sale.id so the audit log row / cylinder txn can reference it
 
     # Core formula (§13): New Customer Balance = Previous + Sale − Payment.
-    # A sale alone only ever adds to what's owed.
-    customer.current_balance = customer.current_balance + total_amount
+    # A sale alone only ever adds to what's owed. Posts grand_total (incl.
+    # GST, the customer's real liability), never total_amount — GST is
+    # money owed by the customer, not business revenue.
+    customer.current_balance = customer.current_balance + grand_total
     customer.last_transaction_at = payload.date
     db.add(customer)
 
@@ -205,7 +223,7 @@ def _reverse_sale(db: Session, sale: models.Sale, by: str) -> None:
     (the caller decides "cancelled" vs "corrected"). Shared by cancel_sale
     and correct_sale (§1)."""
     customer = db.query(models.Customer).get(sale.customer_id)
-    customer.current_balance = customer.current_balance - sale.total_amount
+    customer.current_balance = customer.current_balance - sale.grand_total
     db.add(customer)
 
     cylinder_txn = (
@@ -284,6 +302,26 @@ def cancel_sale(sale_id: UUID, by: str = Query(...), db: Session = Depends(get_d
     return sale
 
 
+def _find_active_linked_purchase(db: Session, unified_sale_id, product_id) -> "models.Purchase | None":
+    """The Purchase counterpart _create_pending_children created alongside
+    this Sale line (same unified_sale_id + product_id) — the same match
+    key purchaseRateFor() uses on the frontend. Only ever one live match
+    expected per (batch, product); a batch with two lines of the same
+    product is an existing ambiguity purchaseRateFor() already has too,
+    not something this introduces."""
+    if not unified_sale_id:
+        return None
+    return (
+        db.query(models.Purchase)
+        .filter(
+            models.Purchase.unified_sale_id == unified_sale_id,
+            models.Purchase.product_id == product_id,
+            models.Purchase.status == "active",
+        )
+        .first()
+    )
+
+
 @router.patch("/{sale_id}/correct", response_model=schemas.SaleOut)
 def correct_sale(
     sale_id: UUID, payload: schemas.SaleCorrect, db: Session = Depends(get_db),
@@ -291,7 +329,20 @@ def correct_sale(
 ):
     """Ledger Correction (§1): reverses this sale's effect, marks it
     "corrected" (kept forever, never deleted), and posts a brand-new Sale
-    with the corrected values — traceable back via corrected_from_id."""
+    with the corrected values — traceable back via corrected_from_id.
+
+    Unified-Sale-linked Purchase cascade (§ Purchase/Plant Ledger sync):
+    a Sale created via Unified Sale always has a matching Purchase line
+    (same unified_sale_id + product_id, see _create_pending_children) that
+    drives the Purchase Plant's payable. Correcting only the Sale side used
+    to leave that Purchase — and the plant's Company.current_balance —
+    silently stale (e.g. customer ledger shows 3 cylinders sold, plant
+    payable still reflects 2 purchased). Guarded upfront by a CompanyPayment
+    check: if money has already been paid out against that specific
+    Purchase (CompanyPayment.purchase_id), block the whole correction
+    rather than let the Purchase amount shift out from under an
+    already-made payment — same conservative shape as _reverse_sale's
+    ShopStockBatch guard below."""
     if not payload.correction_reason.strip():
         raise HTTPException(400, "correction_reason is required")
 
@@ -300,6 +351,29 @@ def correct_sale(
         raise HTTPException(404, "Sale not found")
     if original.status != "active":
         raise HTTPException(400, "Only an active sale can be corrected")
+
+    # Pre-flight, before any mutation: only guard when this correction would
+    # actually change the linked Purchase's quantity — a correction that
+    # leaves quantity untouched (fixing a typo'd gate_pass_no, say) never
+    # cascades, so it must never be blocked by a payment against a Purchase
+    # it wouldn't even touch.
+    linked_purchase = _find_active_linked_purchase(db, original.unified_sale_id, original.product_id)
+    if linked_purchase and linked_purchase.quantity != payload.quantity:
+        existing_payment = (
+            db.query(models.CompanyPayment)
+            .filter(
+                models.CompanyPayment.purchase_id == linked_purchase.id,
+                models.CompanyPayment.status == "active",
+            )
+            .first()
+        )
+        if existing_payment:
+            raise HTTPException(
+                400,
+                f"Cannot correct this Sale — its linked Purchase {linked_purchase.display_id} already has "
+                f"Company Payment {existing_payment.display_id} recorded against it. Correct or cancel that "
+                f"Company Payment first, then retry this correction.",
+            )
 
     _reverse_sale(db, original, current_user.name)
 
@@ -324,6 +398,34 @@ def correct_sale(
     corrected.unified_sale_id = original.unified_sale_id
     db.add(corrected)
     db.flush()
+
+    # Cascade to the linked Purchase (§ Purchase/Plant Ledger sync) — same
+    # reverse-then-repost shape as the Sale/Customer side above, via the
+    # shared helper purchases.py also uses for its own /correct endpoint
+    # (so the corrected Purchase keeps its unified_sale_id either way).
+    # Only when quantity actually differs — see the guard above for why.
+    if linked_purchase and linked_purchase.quantity != corrected.quantity:
+        old_purchase_total = linked_purchase.total_amount
+        purchase_payload = schemas.PurchaseCorrect(
+            date=linked_purchase.date, company_id=linked_purchase.company_id,
+            product_id=linked_purchase.product_id, quantity=corrected.quantity,
+            rate_per_cylinder=linked_purchase.rate_per_cylinder,
+            additional_charges=linked_purchase.additional_charges,
+            transport_charges=linked_purchase.transport_charges,
+            other_charges=linked_purchase.other_charges,
+            gate_pass_no=linked_purchase.gate_pass_no, vehicle_no=linked_purchase.vehicle_no,
+            driver_name=linked_purchase.driver_name, driver_contact=linked_purchase.driver_contact,
+            notes=linked_purchase.notes, entered_by=linked_purchase.entered_by,
+            correction_reason=f"Auto-corrected: linked Sale {original.display_id} quantity "
+                               f"{original.quantity} -> {corrected.quantity}",
+            corrected_by=current_user.name,
+        )
+        corrected_purchase = _correct_purchase_internal(db, linked_purchase, purchase_payload, current_user.name)
+        _log(
+            db, "purchase", linked_purchase.id, "correct (cascaded from sale correction)", current_user.name,
+            old=str(old_purchase_total), new=str(corrected_purchase.total_amount),
+        )
+
     resync_unified_sale_batch_totals(db, corrected.unified_sale_id)
 
     _log(db, "sale", original.id, "correct", current_user.name, old=str(original.total_amount), new=str(corrected.total_amount))

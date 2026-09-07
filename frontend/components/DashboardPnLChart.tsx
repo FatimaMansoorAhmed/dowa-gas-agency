@@ -2,20 +2,16 @@
 
 import { useMemo, useState } from "react";
 import {
-  ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine,
 } from "recharts";
+import { X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { pkr, toKarachiDateString, todayLocalInput } from "@/lib/format";
 import type { Sale, Purchase, Expense, OwnerDrawing } from "@/lib/types";
 
 type Granularity = "daily" | "monthly" | "yearly";
 
-const GRANULARITY_OPTIONS: { key: Granularity; label: string }[] = [
-  { key: "daily", label: "Daily" },
-  { key: "monthly", label: "Monthly" },
-  { key: "yearly", label: "Yearly" },
-];
-
-const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTH_KEYS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
 type Totals = { sale: number; purchase: number; outflow: number };
 const emptyTotals = (): Totals => ({ sale: 0, purchase: 0, outflow: 0 });
@@ -38,10 +34,11 @@ function shiftMonth(monthKey: string, deltaMonths: number): string {
 }
 
 function ComparisonBadge({ current, baseline, label }: { current: Totals; baseline: Totals | undefined; label: string }) {
+  const { t } = useTranslation();
   if (!baseline) {
     return (
       <span className="font-mono text-[10px] px-2 py-1 rounded-md bg-slate-100 text-steel whitespace-nowrap">
-        No prior-period data yet
+        {t("pnlChart.noPriorPeriodData")}
       </span>
     );
   }
@@ -81,7 +78,20 @@ export default function DashboardPnLChart({
 }: {
   sales: Sale[]; purchases: Purchase[]; expenses: Expense[]; drawings: OwnerDrawing[];
 }) {
+  const { t } = useTranslation();
   const [granularity, setGranularity] = useState<Granularity>("daily");
+  // Date Filter (§ Dashboard Chart) — a "jump to a specific date" readout,
+  // deliberately independent of the Daily/Monthly/Yearly toggle above (and
+  // of Daily's own current-month lock, see dailyBuckets below) rather than
+  // scrolling/restructuring the chart itself: byDay already holds exactly
+  // the per-day figures needed, for any date in history.
+  const [selectedDate, setSelectedDate] = useState<string>("");
+  const GRANULARITY_OPTIONS: { key: Granularity; label: string }[] = [
+    { key: "daily", label: t("pnlChart.granularityDaily") },
+    { key: "monthly", label: t("pnlChart.granularityMonthly") },
+    { key: "yearly", label: t("pnlChart.granularityYearly") },
+  ];
+  const monthAbbr = (i: number) => t(`months.${MONTH_KEYS[i]}`);
 
   const today = todayLocalInput();
   const currentMonth = today.slice(0, 7);
@@ -134,24 +144,38 @@ export default function DashboardPnLChart({
 
   const labelFor = (key: string) => {
     if (granularity === "daily") return key.slice(8, 10);
-    if (granularity === "monthly") return MONTH_ABBR[Number(key.slice(5, 7)) - 1];
+    if (granularity === "monthly") return monthAbbr(Number(key.slice(5, 7)) - 1);
     return key;
   };
   const fullLabelFor = (key: string) => {
     if (granularity === "daily") return key;
-    if (granularity === "monthly") return `${MONTH_ABBR[Number(key.slice(5, 7)) - 1]} ${key.slice(0, 4)}`;
+    if (granularity === "monthly") return `${monthAbbr(Number(key.slice(5, 7)) - 1)} ${key.slice(0, 4)}`;
     return key;
   };
 
-  const data = buckets.map(([key, t]) => ({
+  const data = buckets.map(([key, bucket]) => ({
     key,
     label: labelFor(key),
     fullLabel: fullLabelFor(key),
-    "Sale": Math.round(t.sale),
-    "Purchase": -Math.round(t.purchase),
-    "Expenses + Withdrawals": -Math.round(t.outflow),
-    "Net Cash Movement": Math.round(cashResult(t)),
+    "Sale": Math.round(bucket.sale),
+    "Purchase": -Math.round(bucket.purchase),
+    "Expenses + Withdrawals": -Math.round(bucket.outflow),
+    "Net Cash Movement": Math.round(cashResult(bucket)),
   }));
+
+  // Date Filter (§ Dashboard Chart) — read straight from byDay, independent
+  // of `buckets`/`data` above (which are locked to the current month/year
+  // per the toggle). Falls back to zeroed totals for a date with no
+  // activity rather than treating it as "not picked".
+  const selectedTotals = selectedDate ? byDay.get(selectedDate) ?? emptyTotals() : null;
+  const selectedHasActivity = !!selectedTotals && (selectedTotals.sale !== 0 || selectedTotals.purchase !== 0 || selectedTotals.outflow !== 0);
+  // Only meaningful when Daily granularity's own bars actually include this
+  // date (i.e. it falls in the current month) — otherwise there's no bar to
+  // point the ReferenceLine at.
+  const highlightLabel =
+    granularity === "daily" && selectedDate && selectedDate.startsWith(currentMonth)
+      ? labelFor(selectedDate)
+      : null;
 
   const currentTotals =
     granularity === "daily" ? byDay.get(today) ?? emptyTotals()
@@ -182,20 +206,20 @@ export default function DashboardPnLChart({
     : (byYear.has(baselineYearKey) ? sumWhere(baselineYearKey, (d) => d.slice(5, 10) <= todayMonthDay) : undefined);
 
   const comparisonLabel =
-    granularity === "daily" ? "vs same day last week"
-    : granularity === "monthly" ? `vs first ${daysElapsed} day${daysElapsed === 1 ? "" : "s"} of last month`
-    : `vs Jan 1–${MONTH_ABBR[Number(today.slice(5, 7)) - 1]} ${Number(today.slice(8, 10))} last year`;
+    granularity === "daily" ? t("pnlChart.vsSameDayLastWeek")
+    : granularity === "monthly" ? t("pnlChart.vsFirstDaysLastMonth", { count: daysElapsed })
+    : t("pnlChart.vsJanToDateLastYear", { month: monthAbbr(Number(today.slice(5, 7)) - 1), day: Number(today.slice(8, 10)) });
 
   const emptyMessage =
-    granularity === "daily" ? "No activity yet this month."
-    : granularity === "monthly" ? "No activity yet this year."
-    : "No activity recorded yet.";
+    granularity === "daily" ? t("pnlChart.noActivityThisMonth")
+    : granularity === "monthly" ? t("pnlChart.noActivityThisYear")
+    : t("pnlChart.noActivityRecorded");
 
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
         <div className="font-mono text-[10px] uppercase text-steel tracking-wide">
-          Sale · Purchase · Expenses + Withdrawals · Net Cash Movement
+          {t("pnlChart.legendSale")} · {t("pnlChart.legendPurchase")} · {t("pnlChart.legendExpensesWithdrawals")} · {t("pnlChart.legendNetCashMovement")}
         </div>
         <div className="flex items-center gap-2">
           <ComparisonBadge current={currentTotals} baseline={baselineTotals} label={comparisonLabel} />
@@ -216,6 +240,61 @@ export default function DashboardPnLChart({
         </div>
       </div>
 
+      {/* Date Filter (§ Dashboard Chart) — jump to one specific date's
+          figures, independent of the Daily/Monthly/Yearly toggle above. */}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <label className="font-mono text-[10px] uppercase text-steel tracking-wide">
+          {t("pnlChart.jumpToDate")}
+        </label>
+        <input
+          type="date"
+          value={selectedDate}
+          max={today}
+          onChange={(e) => setSelectedDate(e.target.value)}
+          className="font-mono text-[12px] px-2 py-1 rounded-md border border-hairline outline-none text-ink bg-white focus:border-teal"
+        />
+        {selectedDate && (
+          <button
+            type="button"
+            onClick={() => setSelectedDate("")}
+            title={t("pnlChart.clearSelectedDate")}
+            className="p-1 rounded-md hover:bg-paper text-steel hover:text-ink"
+          >
+            <X size={13} />
+          </button>
+        )}
+      </div>
+
+      {selectedDate && selectedTotals && (
+        <div className="mb-3 p-3 bg-paper rounded-lg border border-hairline">
+          <div className="font-mono text-[10px] uppercase text-steel tracking-wide mb-2">
+            {t("pnlChart.figuresFor", { date: selectedDate })}
+          </div>
+          {selectedHasActivity ? (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div>
+                <div className="font-mono text-[9.5px] uppercase text-steel tracking-wide">{t("pnlChart.legendSale")}</div>
+                <div className="font-display font-bold text-sm text-[#1E8A5F]">{pkr(selectedTotals.sale)}</div>
+              </div>
+              <div>
+                <div className="font-mono text-[9.5px] uppercase text-steel tracking-wide">{t("pnlChart.legendPurchase")}</div>
+                <div className="font-display font-bold text-sm text-[#D98E04]">{pkr(selectedTotals.purchase)}</div>
+              </div>
+              <div>
+                <div className="font-mono text-[9.5px] uppercase text-steel tracking-wide">{t("pnlChart.legendExpensesWithdrawals")}</div>
+                <div className="font-display font-bold text-sm text-[#C8102E]">{pkr(selectedTotals.outflow)}</div>
+              </div>
+              <div>
+                <div className="font-mono text-[9.5px] uppercase text-steel tracking-wide">{t("pnlChart.legendNetCashMovement")}</div>
+                <div className="font-display font-bold text-sm text-[#0F8B8D]">{pkr(cashResult(selectedTotals))}</div>
+              </div>
+            </div>
+          ) : (
+            <div className="font-body text-[12px] text-steel">{t("pnlChart.noActivityForDate")}</div>
+          )}
+        </div>
+      )}
+
       {!data.length ? (
         <div className="font-body text-[13px] text-steel py-10 text-center">{emptyMessage}</div>
       ) : (
@@ -230,16 +309,23 @@ export default function DashboardPnLChart({
               contentStyle={{ fontSize: 12, fontFamily: "monospace", borderRadius: 8, border: "1px solid #C5C1B4" }}
             />
             <Legend wrapperStyle={{ fontSize: 11, fontFamily: "monospace" }} />
-            <Bar dataKey="Sale" fill="#1E8A5F" radius={[3, 3, 0, 0]} />
-            <Bar dataKey="Purchase" fill="#D98E04" radius={[0, 0, 3, 3]} />
-            <Bar dataKey="Expenses + Withdrawals" fill="#C8102E" radius={[0, 0, 3, 3]} />
-            <Line type="monotone" dataKey="Net Cash Movement" stroke="#0F8B8D" strokeWidth={2.5} dot={{ r: 3 }} />
+            <Bar dataKey="Sale" name={t("pnlChart.legendSale")} fill="#1E8A5F" radius={[3, 3, 0, 0]} />
+            <Bar dataKey="Purchase" name={t("pnlChart.legendPurchase")} fill="#D98E04" radius={[0, 0, 3, 3]} />
+            <Bar dataKey="Expenses + Withdrawals" name={t("pnlChart.legendExpensesWithdrawals")} fill="#C8102E" radius={[0, 0, 3, 3]} />
+            <Line type="monotone" dataKey="Net Cash Movement" name={t("pnlChart.legendNetCashMovement")} stroke="#0F8B8D" strokeWidth={2.5} dot={{ r: 3 }} />
+            {/* Date Filter (§ Dashboard Chart) — purely additive marker,
+                only drawn when the picked date's bar is actually visible
+                under Daily granularity; never touches the bars/toggle
+                themselves. Drawn last so it sits on top of the bars. */}
+            {highlightLabel && (
+              <ReferenceLine x={highlightLabel} stroke="#0B2138" strokeDasharray="4 4" strokeWidth={1.5} ifOverflow="extendDomain" />
+            )}
           </ComposedChart>
         </ResponsiveContainer>
       )}
 
       <div className="font-mono text-[10px] text-steel mt-2">
-        Net Cash Movement = Sale − Purchase − (Expenses + Withdrawals) — differs from Net Profit/Loss above, which keeps Owner Withdrawals separate.
+        {t("pnlChart.footerFormula")}
       </div>
     </div>
   );

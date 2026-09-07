@@ -1,0 +1,508 @@
+<title>Urdu Terminology Glossary</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Nastaliq+Urdu:wght@400;600;700&display=swap">
+<style>
+  :root{
+    --ink:#0B2138;
+    --teal:#0F8B8D;
+    --teal-soft:#E4F3F3;
+    --teal-deep:#0A6668;
+    --steel:#55606F;
+    --paper:#F8F6EF;
+    --panel:#FFFFFF;
+    --hairline:#E1DFD3;
+    --amber:#B4790A;
+    --amber-soft:#FBF0DA;
+    --red:#A23B3B;
+    --red-soft:#F7E9E9;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ink:#EAF1F6;
+      --teal:#3FC6C8;
+      --teal-soft:#0F2E30;
+      --teal-deep:#7FE0E1;
+      --steel:#9FB0C0;
+      --paper:#0C1620;
+      --panel:#101E2B;
+      --hairline:#233245;
+      --amber:#E3A73F;
+      --amber-soft:#2E230F;
+      --red:#E08787;
+      --red-soft:#2E1717;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ink:#EAF1F6;
+    --teal:#3FC6C8;
+    --teal-soft:#0F2E30;
+    --teal-deep:#7FE0E1;
+    --steel:#9FB0C0;
+    --paper:#0C1620;
+    --panel:#101E2B;
+    --hairline:#233245;
+    --amber:#E3A73F;
+    --amber-soft:#2E230F;
+    --red:#E08787;
+    --red-soft:#2E1717;
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:"IBM Plex Sans", system-ui, sans-serif;
+    line-height:1.5;
+  }
+  ::selection{background:var(--teal-soft);}
+
+  .wrap{max-width:980px;margin:0 auto;padding:44px 28px 90px;}
+
+  /* ---- Header ---- */
+  header.doc{
+    border-bottom:2px solid var(--ink);
+    padding-bottom:22px;
+    margin-bottom:28px;
+  }
+  .eyebrow{
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11px;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    color:var(--teal-deep);
+    margin-bottom:10px;
+  }
+  h1{
+    font-family:"Fraunces", Georgia, serif;
+    font-weight:600;
+    font-size:clamp(28px,4vw,38px);
+    margin:0 0 10px;
+    text-wrap:balance;
+    letter-spacing:-0.01em;
+  }
+  .dek{
+    font-size:15px;
+    color:var(--steel);
+    max-width:62ch;
+    margin:0;
+  }
+  .doc-meta{
+    display:flex;
+    flex-wrap:wrap;
+    gap:18px;
+    margin-top:18px;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11.5px;
+    color:var(--steel);
+  }
+  .doc-meta b{color:var(--ink);font-weight:600;}
+
+  /* ---- Legend ---- */
+  .legend{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+    gap:14px;
+    background:var(--panel);
+    border:1px solid var(--hairline);
+    border-radius:10px;
+    padding:18px 20px;
+    margin-bottom:30px;
+  }
+  .legend .item{display:flex;gap:10px;align-items:flex-start;}
+  .legend .swatch{
+    flex:0 0 auto;
+    width:15px;height:15px;border-radius:4px;margin-top:2px;
+  }
+  .legend .txt b{display:block;font-size:12.5px;}
+  .legend .txt span{font-size:12px;color:var(--steel);}
+  .sw-loan{background:var(--teal);}
+  .sw-native{background:var(--ink);}
+  .sw-proper{background:var(--amber);}
+  .sw-judgment{background:var(--red);}
+
+  .rtl-note{
+    font-size:12.5px;
+    color:var(--steel);
+    background:var(--teal-soft);
+    border:1px solid var(--hairline);
+    border-radius:10px;
+    padding:14px 18px;
+    margin-bottom:34px;
+  }
+  .rtl-note b{color:var(--ink);}
+
+  /* ---- Jump nav ---- */
+  nav.toc{
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px;
+    margin-bottom:40px;
+  }
+  nav.toc a{
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11.5px;
+    color:var(--steel);
+    text-decoration:none;
+    border:1px solid var(--hairline);
+    border-radius:999px;
+    padding:6px 13px;
+    transition:border-color .15s, color .15s;
+  }
+  nav.toc a:hover, nav.toc a:focus-visible{
+    border-color:var(--teal);
+    color:var(--teal-deep);
+    outline:none;
+  }
+
+  /* ---- Sections ---- */
+  section.cat{margin-bottom:46px; scroll-margin-top:20px;}
+  .cat-head{
+    display:flex;
+    align-items:baseline;
+    gap:12px;
+    border-bottom:1px solid var(--hairline);
+    padding-bottom:10px;
+    margin-bottom:4px;
+  }
+  .cat-num{
+    font-family:"IBM Plex Mono", monospace;
+    font-size:13px;
+    color:var(--teal-deep);
+    font-weight:600;
+  }
+  .cat-head h2{
+    font-family:"Fraunces", Georgia, serif;
+    font-weight:600;
+    font-size:20px;
+    margin:0;
+    flex:1;
+  }
+  .cat-count{
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11px;
+    color:var(--steel);
+  }
+  .cat-desc{
+    font-size:13px;
+    color:var(--steel);
+    max-width:70ch;
+    margin:8px 0 16px;
+  }
+
+  .tbl-scroll{overflow-x:auto; border:1px solid var(--hairline); border-radius:10px;}
+  table{
+    width:100%;
+    border-collapse:collapse;
+    background:var(--panel);
+    font-size:13.5px;
+  }
+  thead th{
+    text-align:left;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:10.5px;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+    color:var(--steel);
+    font-weight:500;
+    padding:11px 16px;
+    border-bottom:1px solid var(--hairline);
+    white-space:nowrap;
+  }
+  tbody td{
+    padding:12px 16px;
+    border-bottom:1px solid var(--hairline);
+    vertical-align:top;
+  }
+  tbody tr:last-child td{border-bottom:none;}
+  tbody tr:hover td{background:var(--teal-soft);}
+
+  td.term{font-weight:600; white-space:nowrap;}
+  td.urdu{
+    font-family:"Noto Nastaliq Urdu", serif;
+    font-size:19px;
+    direction:rtl;
+    text-align:right;
+    line-height:2.1;
+    min-width:180px;
+  }
+  td.note{color:var(--steel); font-size:12.5px; max-width:340px;}
+  .tag{
+    display:inline-block;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:9.5px;
+    letter-spacing:.05em;
+    text-transform:uppercase;
+    padding:2px 7px;
+    border-radius:5px;
+    margin-right:6px;
+    white-space:nowrap;
+  }
+  .tag-loan{background:var(--teal-soft); color:var(--teal-deep);}
+  .tag-native{background:var(--hairline); color:var(--ink);}
+  .tag-proper{background:var(--amber-soft); color:var(--amber);}
+  .tag-judgment{background:var(--red-soft); color:var(--red);}
+  .tag-locked{background:var(--teal); color:#fff;}
+
+  .review-box{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    cursor:pointer;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:10.5px;
+    color:var(--steel);
+    user-select:none;
+  }
+  .review-box input{accent-color:var(--teal); width:13px; height:13px; cursor:pointer;}
+  tr.is-reviewed td:not(.review-cell){opacity:.5;}
+
+  footer.doc{
+    margin-top:50px;
+    padding-top:20px;
+    border-top:1px solid var(--hairline);
+    font-size:12px;
+    color:var(--steel);
+    display:flex;
+    justify-content:space-between;
+    flex-wrap:wrap;
+    gap:10px;
+  }
+
+  @media print{
+    body{background:#fff;}
+    nav.toc, .review-cell, .rtl-note b + br{display:none;}
+    tbody tr:hover td{background:none;}
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="doc">
+    <div class="eyebrow">Dowa Gas Agency &middot; Urdu Localization</div>
+    <h1>Domain Terms Glossary</h1>
+    <p class="dek">Every financial and operational term the app currently shows in English, with a proposed Urdu translation, for sign-off before any translation work begins. Nothing on this list has been implemented in the app yet.</p>
+    <div class="doc-meta">
+      <span><b>62</b> terms reviewed</span>
+      <span><b>9</b> categories</span>
+      <span><b>11</b> locked by sign-off</span>
+      <span><b>0</b> judgment calls still open</span>
+      <span><b>4</b> flagged as do-not-translate</span>
+    </div>
+  </header>
+
+  <div class="legend">
+    <div class="item"><span class="swatch sw-loan"></span><div class="txt"><b>Loanword</b><span>Widely used as-is in spoken business Urdu (e.g. "ریٹ" for rate) — proposed because staff already say it this way, not because a native word doesn't exist.</span></div></div>
+    <div class="item"><span class="swatch sw-native"></span><div class="txt"><b>Native Urdu</b><span>A standard Urdu word, no ambiguity — safe to approve as-is.</span></div></div>
+    <div class="item"><span class="swatch sw-proper"></span><div class="txt"><b>Proper noun — do not translate</b><span>Brand, company or product name. Stays in Latin script in both languages.</span></div></div>
+    <div class="item"><span class="swatch sw-judgment"></span><div class="txt"><b>Judgment call — open</b><span>More than one defensible option exists and no decision has been made yet.</span></div></div>
+  </div>
+
+  <div class="rtl-note" style="background:var(--teal-soft);">
+    <b>Sign-off note:</b> All 11 flagged judgment calls have been reviewed and locked — see the <span class="tag tag-locked" style="margin:0 3px;">locked</span> tag on those rows (2026-09-06: Balance, Outstanding Balance, Advance, Ledger, Invoice, COGS, Owner Drawings · 2026-09-13: Rate, Settlement, Owner Home account, Filled Out/Empty In). Nothing remains open — this glossary is the confirmed source of truth for Phase C onward.
+  </div>
+
+  <div class="rtl-note">
+    <b>One technical note worth knowing before you review:</b> Urdu script itself always reads right-to-left, even though the app's overall layout is staying left-to-right as agreed. In the table below, the Urdu column is set <code>dir="rtl"</code> on its own — that's exactly how it will behave inside the app too: an English-LTR page with correctly right-to-left Urdu text sitting inside individual labels and fields. This is normal and is not the "RTL layout mirroring" that was ruled out.
+  </div>
+
+  <nav class="toc">
+    <a href="#sales">1. Sales &amp; Transactions</a>
+    <a href="#customers">2. Customers &amp; Balances</a>
+    <a href="#payments">3. Payments &amp; Settlement</a>
+    <a href="#accounts">4. Fixed Money Accounts</a>
+    <a href="#cylinders">5. Cylinders</a>
+    <a href="#capital">6. Owner Capital &amp; P&amp;L</a>
+    <a href="#plants">7. Plants &amp; Purchases</a>
+    <a href="#status">8. Status &amp; Roles</a>
+    <a href="#docs">9. Ledger, Reports &amp; Invoice</a>
+  </nav>
+
+  <!-- 1 -->
+  <section class="cat" id="sales">
+    <div class="cat-head"><span class="cat-num">01</span><h2>Sales &amp; Transactions</h2><span class="cat-count">10 terms</span></div>
+    <p class="cat-desc">Core vocabulary of a sale/load entry — appears on Unified Sale, New Sale, and every sale-related table header.</p>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>English</th><th>Proposed Urdu</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td class="term">Sale</td><td class="urdu">فروخت</td><td class="note"><span class="tag tag-native">native</span>Used for the noun "Sale" across headers and buttons.</td></tr>
+          <tr><td class="term">Load</td><td class="urdu">لوڈ</td><td class="note"><span class="tag tag-loan">loan</span>Industry jargon for dispatching cylinders to a shop — staff already say "load" in Urdu speech.</td></tr>
+          <tr><td class="term">Quantity</td><td class="urdu">مقدار</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Rate</td><td class="urdu">ریٹ</td><td class="note"><span class="tag tag-loan">loan</span><span class="tag tag-locked">locked</span>Confirmed 2026-09-13 — loanword, matches near-universal Pakistani retail/wholesale speech.</td></tr>
+          <tr><td class="term">Board Rate</td><td class="urdu">بورڈ ریٹ</td><td class="note"><span class="tag tag-loan">loan</span>Compound industry term (the daily system-wide official rate) — transliterated as a fixed unit, not translated word-by-word.</td></tr>
+          <tr><td class="term">Gate Pass</td><td class="urdu">گیٹ پاس</td><td class="note"><span class="tag tag-loan">loan</span>Universal logistics/transport term in Pakistan — never seen translated in the wild.</td></tr>
+          <tr><td class="term">Vehicle No.</td><td class="urdu">گاڑی نمبر</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Delivery / Transport / Additional / Other Charges</td><td class="urdu">ترسیل / ٹرانسپورٹ / اضافی / دیگر اخراجات</td><td class="note"><span class="tag tag-native">native</span>"اخراجات" (charges/expenses) is shared; only the qualifying word changes per field.</td></tr>
+          <tr><td class="term">Entered By</td><td class="urdu">درج کنندہ</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Approve / Cancel / Correct</td><td class="urdu">منظور کریں / منسوخ کریں / تصحیح کریں</td><td class="note"><span class="tag tag-native">native</span>The three core action verbs on sale/payment rows.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="cat" id="customers">
+    <div class="cat-head"><span class="cat-num">02</span><h2>Customers &amp; Balances</h2><span class="cat-count">7 terms</span></div>
+    <p class="cat-desc">The balance/advance convention is explained explicitly in the app's own copy ("negative means the customer paid ahead, shown as Advance, not Balance Due") — get this cluster right first, it anchors everything downstream.</p>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>English</th><th>Proposed Urdu</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td class="term">Customer</td><td class="urdu">گاہک</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Opening Balance</td><td class="urdu">ابتدائی بیلنس</td><td class="note"><span class="tag tag-loan">loan</span>"بیلنس" kept as loanword to match "بیلنس" used elsewhere — see Balance below.</td></tr>
+          <tr><td class="term">Balance</td><td class="urdu">بیلنس</td><td class="note"><span class="tag tag-loan">loan</span><span class="tag tag-locked">locked</span>Confirmed — kept as loanword for consistency with "Opening/Closing Balance" everywhere it appears.</td></tr>
+          <tr><td class="term">Outstanding Balance</td><td class="urdu">بقایا</td><td class="note"><span class="tag tag-native">native</span><span class="tag tag-locked">locked</span>Confirmed — deliberately distinct from plain "Balance" (بیلنس) so the two read differently on screen.</td></tr>
+          <tr><td class="term">Advance</td><td class="urdu">ایڈوانس</td><td class="note"><span class="tag tag-loan">loan</span><span class="tag tag-locked">locked</span>Confirmed 2026-09-06 — kept as loanword for consistency with the Balance decision.</td></tr>
+          <tr><td class="term">Balance Due</td><td class="urdu">بقایا رقم</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Credit (on-account sale)</td><td class="urdu">ادھار</td><td class="note"><span class="tag tag-native">native</span>"ادھار" is the natural, everyday word for buying on credit — stronger choice than a literal "کریڈٹ" here.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="cat" id="payments">
+    <div class="cat-head"><span class="cat-num">03</span><h2>Payments &amp; Settlement</h2><span class="cat-count">9 terms</span></div>
+    <p class="cat-desc">Payment method options and the settlement/routing vocabulary from Unified Sale and Payment Register.</p>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>English</th><th>Proposed Urdu</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td class="term">Payment / Receipt</td><td class="urdu">ادائیگی / رسید</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Method</td><td class="urdu">طریقہ</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Cash</td><td class="urdu">نقد</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Online Transfer</td><td class="urdu">آن لائن ٹرانسفر</td><td class="note"><span class="tag tag-loan">loan</span>Banking terms are almost always kept as loanwords in Pakistani Urdu.</td></tr>
+          <tr><td class="term">Cheque / Check Deposit</td><td class="urdu">چیک / چیک ڈپازٹ</td><td class="note"><span class="tag tag-loan">loan</span></td></tr>
+          <tr><td class="term">Settlement</td><td class="urdu"><em>contextual — no single fixed term</em></td><td class="note"><span class="tag tag-locked">locked</span>Confirmed 2026-09-13 — deliberately translated per-context rather than one dictionary word ("Settlement Route" → ادائیگی کا راستہ, "Plant Settlement" → پلانٹ تصفیہ, "Settlement Details" → تصفیہ کی تفصیلات). "تصفیہ" is used where the word appears standalone; other occurrences use whatever phrase reads most naturally in that spot.</td></tr>
+          <tr><td class="term">Settlement Route</td><td class="urdu">ادائیگی کا راستہ</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Reference Number</td><td class="urdu">حوالہ نمبر</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Remarks</td><td class="urdu">ریمارکس</td><td class="note"><span class="tag tag-loan">loan</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section class="cat" id="accounts">
+    <div class="cat-head"><span class="cat-num">04</span><h2>Fixed Money Accounts</h2><span class="cat-count">4 terms</span></div>
+    <p class="cat-desc">The four fixed destination accounts every payment routes to (<code>ACCOUNT_TYPE_LABELS</code> in <code>lib/format.ts</code>). These appear in dropdowns constantly — worth getting exactly right since they're used dozens of times per day.</p>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>English</th><th>Proposed Urdu</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td class="term">Office Cash</td><td class="urdu">دفتری نقدی</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Owner Home (account)</td><td class="urdu">مالک کا ہوم اکاؤنٹ</td><td class="note"><span class="tag tag-locked">locked</span>Confirmed 2026-09-13 — fixed label for the account, not a literal "owner's house" translation.</td></tr>
+          <tr><td class="term">Dowa Account</td><td class="urdu"><span class="tag tag-proper" style="margin-right:0;">proper noun</span></td><td class="note">"Dowa" is the business name — stays in Latin script: <b>Dowa اکاؤنٹ</b>.</td></tr>
+          <tr><td class="term">Shop Cash</td><td class="urdu">دکان نقدی</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="cat" id="cylinders">
+    <div class="cat-head"><span class="cat-num">05</span><h2>Cylinders</h2><span class="cat-count">7 terms</span></div>
+    <p class="cat-desc">Empty-cylinder tracking, returns, and the two proper-noun product lines that must never be translated.</p>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>English</th><th>Proposed Urdu</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td class="term">Cylinder</td><td class="urdu">سلنڈر</td><td class="note"><span class="tag tag-loan">loan</span>Fully naturalized loanword — no native alternative in common use.</td></tr>
+          <tr><td class="term">Empty Cylinder</td><td class="urdu">خالی سلنڈر</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Cylinder Return</td><td class="urdu">سلنڈر واپسی</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Cylinder Ledger / Deposit Balance</td><td class="urdu">سلنڈر لیجر / ڈپازٹ بیلنس</td><td class="note"><span class="tag tag-loan">loan</span></td></tr>
+          <tr><td class="term">Filled Out / Empty In (cylinder exchange)</td><td class="urdu"><em>contextual — descriptive phrasing per column</em></td><td class="note"><span class="tag tag-locked">locked</span>Confirmed 2026-09-13 — kept descriptive rather than a single fixed term, e.g. "بھرا نکالا" / "خالی موصول" as column headers; wording may still adapt per table if space is tight.</td></tr>
+          <tr><td class="term">Emergency Transfer</td><td class="urdu">ایمرجنسی ٹرانسفر</td><td class="note"><span class="tag tag-loan">loan</span></td></tr>
+          <tr><td class="term">"Cross" / "PSO"</td><td class="urdu"><span class="tag tag-proper" style="margin-right:0;">proper noun</span></td><td class="note">Cylinder/regulator brand names seen on the Customers form (Cross 11.8kg, PSO 11.8kg, etc.) — <b>do not translate</b>, same as SALE-000123-style IDs.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="cat" id="capital">
+    <div class="cat-head"><span class="cat-num">06</span><h2>Owner Capital &amp; P&amp;L</h2><span class="cat-count">7 terms</span></div>
+    <p class="cat-desc">Dashboard financial-summary vocabulary. The app's own comments stress that Owner Drawings "must never reduce reported profit" — precision matters here more than anywhere else in the glossary.</p>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>English</th><th>Proposed Urdu</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td class="term">Owner Capital / Re-Investment</td><td class="urdu">مالک کا سرمایہ / دوبارہ سرمایہ کاری</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Owner Drawings</td><td class="urdu">مالک کے ذاتی اخراجات / ڈرائنگ</td><td class="note"><span class="tag tag-locked">locked</span>Confirmed as proposed — descriptive phrase, since no single fixed Urdu accounting term exists for "drawings."</td></tr>
+          <tr><td class="term">Net Cash Movement</td><td class="urdu">خالص نقدی نقل و حرکت</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Gross Profit</td><td class="urdu">مجموعی منافع</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Net Profit / Loss</td><td class="urdu">خالص منافع / نقصان</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">COGS (Cost of Goods Sold)</td><td class="urdu">COGS <span style="opacity:.6;">/ فروخت شدہ مال کی لاگت</span></td><td class="note"><span class="tag tag-locked">locked</span>Confirmed dual treatment — untranslated "COGS" acronym badge on compact dashboard cards, full phrase "فروخت شدہ مال کی لاگت" spelled out in tooltips and full views.</td></tr>
+          <tr><td class="term">P&amp;L (Profit &amp; Loss)</td><td class="urdu">منافع و نقصان</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="cat" id="plants">
+    <div class="cat-head"><span class="cat-num">07</span><h2>Plants &amp; Purchases</h2><span class="cat-count">4 terms</span></div>
+    <p class="cat-desc">Supplier-side vocabulary — "Plant" here means an LPG filling plant / supplier, not a physical facility in the generic sense.</p>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>English</th><th>Proposed Urdu</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td class="term">Plant</td><td class="urdu">پلانٹ</td><td class="note"><span class="tag tag-loan">loan</span>Industry-standard term for the LPG supplier/filling plant — kept as loanword, matches how it's said on the ground.</td></tr>
+          <tr><td class="term">Party</td><td class="urdu">پارٹی</td><td class="note"><span class="tag tag-loan">loan</span>Common trade-Urdu for "the other business party" in a deal.</td></tr>
+          <tr><td class="term">Payable</td><td class="urdu">قابل ادائیگی رقم</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Purchase Summary</td><td class="urdu">خریداری کا خلاصہ</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 8 -->
+  <section class="cat" id="status">
+    <div class="cat-head"><span class="cat-num">08</span><h2>Status &amp; Roles</h2><span class="cat-count">8 terms</span></div>
+    <p class="cat-desc">Status badges and user roles — short, high-frequency words that appear as pills/tags throughout the app.</p>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>English</th><th>Proposed Urdu</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td class="term">Pending</td><td class="urdu">زیر التوا</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Approved</td><td class="urdu">منظور شدہ</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Active</td><td class="urdu">فعال</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Suspended</td><td class="urdu">معطل</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Rejected</td><td class="urdu">مسترد</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Requested</td><td class="urdu">درخواست شدہ</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Owner (role)</td><td class="urdu">مالک</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Staff (role)</td><td class="urdu">عملہ</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 9 -->
+  <section class="cat" id="docs">
+    <div class="cat-head"><span class="cat-num">09</span><h2>Ledger, Reports &amp; Invoice</h2><span class="cat-count">10 terms</span></div>
+    <p class="cat-desc">Shared across on-screen ledgers and the server-generated PDF invoices/statements — this is the cluster that also feeds Phase D's PDF work, once that's scheduled.</p>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>English</th><th>Proposed Urdu</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td class="term">Ledger</td><td class="urdu">لیجر</td><td class="note"><span class="tag tag-loan">loan</span><span class="tag tag-locked">locked</span>Confirmed — matches "Customer Ledger," "Cylinder Ledger" as already used across the English UI.</td></tr>
+          <tr><td class="term">Statement</td><td class="urdu">گوشوارہ</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Daily Activity / Daily Report</td><td class="urdu">روزانہ کی سرگرمی / روزانہ رپورٹ</td><td class="note"><span class="tag tag-loan">loan</span></td></tr>
+          <tr><td class="term">Invoice</td><td class="urdu">انوائس</td><td class="note"><span class="tag tag-loan">loan</span><span class="tag tag-locked">locked</span>Confirmed — matches what's printed on most Pakistani trade documents today.</td></tr>
+          <tr><td class="term">Bill To</td><td class="urdu">بل بنام</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Description</td><td class="urdu">تفصیل</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Signature</td><td class="urdu">دستخط</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Prepared By / Authorized Signature</td><td class="urdu">تیار کنندہ / مجاز دستخط</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Amount in Words</td><td class="urdu">رقم بالفاظ</td><td class="note"><span class="tag tag-native">native</span></td></tr>
+          <tr><td class="term">Number-to-words (One, Twenty, Thousand…)</td><td class="urdu">ایک، بیس، ہزار…</td><td class="note"><span class="tag tag-judgment">judgment</span>Not a simple string swap — this is a full Urdu number-to-words algorithm (<code>_amount_in_words</code> in <code>invoice_pdf.py</code>), plus a Nastaliq-capable font in ReportLab. Scoped separately under Phase D.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer class="doc">
+    <span>Dowa Gas Agency — Urdu Localization Glossary</span>
+    <span>No code or translations implemented yet — review only</span>
+  </footer>
+
+</div>

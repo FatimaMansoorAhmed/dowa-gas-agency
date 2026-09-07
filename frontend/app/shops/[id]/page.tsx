@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import { useTranslation } from "react-i18next";
 
 import {
   PlusCircle,
@@ -67,24 +68,25 @@ function currentMonth() {
   return todayLocalInput().slice(0, 7);
 }
 
-function transactionLabel(kind: string) {
+function transactionLabel(kind: string, t: (key: string) => string) {
   const labels: Record<string, string> = {
-    load: "Load",
-    shop_sale: "Shop Sale",
-    payment: "Payment",
+    load: t("shopDetail.load"),
+    shop_sale: t("shopDetail.shopSale"),
+    payment: t("customerLedger.colPayment"),
+    emergency_transfer_out: t("shopDetail.emergencyTransferOut"),
   };
 
   return labels[kind] ?? kind;
 }
 
-function ledgerLabel(kind: string) {
+function ledgerLabel(kind: string, t: (key: string) => string) {
   const labels: Record<string, string> = {
-    cash_sale: "Cash Sale",
-    credit_sale: "Credit Sale",
-    customer_payment: "Customer Payment",
-    expense: "Expense",
-    owner_withdrawal: "Owner Withdrawal",
-    dowa_payment: "Payment to Dowa",
+    cash_sale: t("shopDetail.cashSale"),
+    credit_sale: t("shopDetail.creditSale"),
+    customer_payment: t("shopDetail.customerPayment"),
+    expense: t("nav.expenses"),
+    owner_withdrawal: t("shopDetail.ownerWithdrawal"),
+    dowa_payment: t("shopDetail.paymentToDowa"),
   };
 
   return labels[kind] ?? kind;
@@ -109,6 +111,7 @@ function TransactionHistoryModal({
   onCorrect: (row: ShopTransactionRow) => void;
   correctLoading: string | null;
 }) {
+  const { t } = useTranslation();
   const [year, mo] = month.split("-");
 
   return (
@@ -125,11 +128,11 @@ function TransactionHistoryModal({
 
             <div>
               <h2 className="font-display text-xl font-bold text-slate-900">
-                Transaction History
+                {t("shopDetail.transactionHistory")}
               </h2>
 
               <p className="mt-1 text-sm text-slate-500">
-                Complete shop activity for the selected month.
+                {t("shopDetail.transactionHistoryCaption")}
               </p>
             </div>
           </div>
@@ -170,7 +173,7 @@ function TransactionHistoryModal({
             <button
               onClick={onClose}
               className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-50 hover:text-slate-800"
-              title="Close"
+              title={t("unifiedSale.close")}
             >
               <X size={18} />
             </button>
@@ -181,8 +184,7 @@ function TransactionHistoryModal({
         {/* Transaction Count */}
         <div className="flex shrink-0 items-center justify-between border-b border-slate-100 bg-slate-50/60 px-6 py-3">
           <span className="text-xs font-medium text-slate-500">
-            {transactions.length} transaction
-            {transactions.length === 1 ? "" : "s"} found
+            {t("shopDetail.countFound", { count: transactions.length })}
           </span>
 
           <span className="font-mono text-[10px] uppercase tracking-wider text-slate-400">
@@ -199,51 +201,51 @@ function TransactionHistoryModal({
               <tr className="border-b border-slate-200 bg-slate-100">
 
                 <th className="border-r border-slate-200 px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  Date
+                  {t("customerLedger.colDate")}
                 </th>
 
                 <th className="border-r border-slate-200 px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  Type
+                  {t("shopDetail.colType")}
                 </th>
 
                 <th className="border-r border-slate-200 px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  ID
+                  {t("customerLedger.colId")}
                 </th>
 
                 <th className="border-r border-slate-200 px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  Description
+                  {t("customerLedger.colDescription")}
                 </th>
 
                 <th className="border-r border-slate-200 px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  Quantity
+                  {t("shopDetail.colQuantity")}
                 </th>
 
                 <th className="border-r border-slate-200 px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  Rate/kg
+                  {t("shopDetail.colRateKg")}
                 </th>
 
                 <th className="border-r border-slate-200 px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  Amount
+                  {t("unifiedSale.colAmount")}
                 </th>
 
                 <th className="border-r border-slate-200 px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  Paid
+                  {t("shopDetail.colPaid")}
                 </th>
 
                 <th className="border-r border-slate-200 px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  Balance Due
+                  {t("shopDetail.colBalanceDue")}
                 </th>
 
                 <th className="border-r border-slate-200 px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  Entered By
+                  {t("customerLedger.colEnteredBy")}
                 </th>
 
                 <th className="border-r border-slate-200 px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  Status
+                  {t("shopDetail.colStatus")}
                 </th>
 
                 <th className="px-4 py-3 text-center text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  Action
+                  {t("shopDetail.colAction")}
                 </th>
 
               </tr>
@@ -251,16 +253,16 @@ function TransactionHistoryModal({
 
             <tbody>
 
-              {transactions.map((t, index) => {
+              {transactions.map((row, index) => {
 
                 const outstanding =
-                  t.kind === "shop_sale" &&
-                  t.amount_outstanding != null &&
-                  parseFloat(t.amount_outstanding) > 0;
+                  row.kind === "shop_sale" &&
+                  row.amount_outstanding != null &&
+                  parseFloat(row.amount_outstanding) > 0;
 
                 return (
                   <tr
-                    key={t.ref_id}
+                    key={row.ref_id}
                     className={`
                       border-b border-slate-100
                       transition-colors
@@ -270,7 +272,7 @@ function TransactionHistoryModal({
                   >
 
                     <td className="border-r border-slate-100 px-4 py-3 font-mono text-xs text-slate-500">
-                      {fmtTime(t.date)}
+                      {fmtTime(row.date)}
                     </td>
 
                     <td className="border-r border-slate-100 px-4 py-3">
@@ -279,48 +281,48 @@ function TransactionHistoryModal({
                           inline-flex rounded-md px-2 py-1
                           text-[10px] font-semibold uppercase tracking-wide
                           ${
-                            t.kind === "payment"
+                            row.kind === "payment"
                               ? "bg-emerald-50 text-emerald-700"
-                              : t.kind === "shop_sale"
+                              : row.kind === "shop_sale"
                               ? "bg-blue-50 text-blue-700"
                               : "bg-slate-100 text-slate-600"
                           }
                         `}
                       >
-                        {transactionLabel(t.kind)}
+                        {transactionLabel(row.kind, t)}
                       </span>
                     </td>
 
                     <td className="border-r border-slate-100 px-4 py-3 font-mono text-xs text-slate-500">
-                      {t.display_id}
+                      {row.display_id}
                     </td>
 
                     <td className="border-r border-slate-100 px-4 py-3 text-sm text-slate-700">
-                      {t.description || "—"}
+                      {row.description || "—"}
                     </td>
 
                     <td className="border-r border-slate-100 px-4 py-3 text-right font-mono text-xs text-slate-600">
-                      {t.quantity ?? "—"}
+                      {row.quantity ?? "—"}
                     </td>
 
                     <td className="border-r border-slate-100 px-4 py-3 text-right font-mono text-xs text-slate-600">
-                      {t.board_rate_per_kg ?? t.load_rate_per_kg ?? "—"}
+                      {row.board_rate_per_kg ?? row.load_rate_per_kg ?? "—"}
                     </td>
 
                     <td className="border-r border-slate-100 px-4 py-3 text-right font-mono text-xs font-semibold text-slate-700">
-                      {t.amount ? pkr(t.amount) : "—"}
+                      {row.amount ? pkr(row.amount) : "—"}
                     </td>
 
                     <td className="border-r border-slate-100 px-4 py-3 text-right font-mono text-xs text-slate-600">
-                      {t.kind === "shop_sale" &&
-                      t.amount_received != null
-                        ? pkr(t.amount_received)
+                      {row.kind === "shop_sale" &&
+                      row.amount_received != null
+                        ? pkr(row.amount_received)
                         : "—"}
                     </td>
 
                     <td className="border-r border-slate-100 px-4 py-3 text-right font-mono text-xs">
-                      {t.kind === "shop_sale" &&
-                      t.amount_outstanding != null ? (
+                      {row.kind === "shop_sale" &&
+                      row.amount_outstanding != null ? (
                         <span
                           className={
                             outstanding
@@ -328,7 +330,7 @@ function TransactionHistoryModal({
                               : "font-medium text-slate-600"
                           }
                         >
-                          {pkr(t.amount_outstanding)}
+                          {pkr(row.amount_outstanding)}
                         </span>
                       ) : (
                         "—"
@@ -336,22 +338,22 @@ function TransactionHistoryModal({
                     </td>
 
                     <td className="border-r border-slate-100 px-4 py-3 font-mono text-xs text-slate-500">
-                      {t.entered_by}
+                      {row.entered_by}
                     </td>
 
                     <td className="border-r border-slate-100 px-4 py-3">
                       <span className="font-mono text-[10px] uppercase text-slate-500">
-                        {t.status}
+                        {row.status}
                       </span>
                     </td>
 
                     <td className="px-4 py-3 text-center">
                       <div className="flex items-center justify-center gap-1">
-                        {t.correctable && (
+                        {row.correctable && (
                           <button
-                            onClick={() => onCorrect(t)}
-                            disabled={correctLoading === t.ref_id}
-                            title="Correct this transaction"
+                            onClick={() => onCorrect(row)}
+                            disabled={correctLoading === row.ref_id}
+                            title={t("customerLedger.correctThisTransaction")}
                             className="
                               inline-flex h-8 w-8
                               items-center justify-center
@@ -367,12 +369,12 @@ function TransactionHistoryModal({
                             <Pencil size={14} />
                           </button>
                         )}
-                        {t.kind === "shop_sale" && (
+                        {row.kind === "shop_sale" && (
                           <a
-                            href={api.shops.saleInvoiceUrl(t.ref_id)}
+                            href={api.shops.saleInvoiceUrl(row.ref_id)}
                             target="_blank"
                             rel="noreferrer"
-                            title="View/print invoice"
+                            title={t("unifiedSale.viewPrintInvoice")}
                             className="
                               inline-flex h-8 w-8
                               items-center justify-center
@@ -407,11 +409,11 @@ function TransactionHistoryModal({
                       />
 
                       <p className="mt-3 text-sm font-medium text-slate-500">
-                        No transactions this month.
+                        {t("customerLedger.noTransactionsThisMonth")}
                       </p>
 
                       <p className="mt-1 text-xs text-slate-400">
-                        Transactions will appear here once recorded.
+                        {t("shopDetail.transactionsWillAppear")}
                       </p>
                     </div>
                   </td>
@@ -427,14 +429,14 @@ function TransactionHistoryModal({
         <div className="flex shrink-0 items-center justify-between border-t border-slate-200 bg-slate-50 px-6 py-3">
 
           <span className="text-xs text-slate-500">
-            Showing transaction history for {month}
+            {t("shopDetail.showingHistoryFor", { month })}
           </span>
 
           <button
             onClick={onClose}
             className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"
           >
-            Close
+            {t("unifiedSale.close")}
           </button>
 
         </div>
@@ -449,6 +451,7 @@ function TransactionHistoryModal({
 /* -------------------------------------------------------------------------- */
 
 function ShopDetailBody() {
+  const { t } = useTranslation();
   const params = useParams();
   const shopId = params.id as string;
   const { user } = useAuth();
@@ -592,7 +595,7 @@ function ShopDetailBody() {
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-300 border-t-teal" />
 
             <span className="font-body text-sm text-slate-500">
-              Loading shop...
+              {t("shopDetail.loadingShop")}
             </span>
           </div>
         </Panel>
@@ -628,7 +631,7 @@ function ShopDetailBody() {
       <div className="mx-auto w-full max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8 xl:px-10">
 
         <PageHeader
-          eyebrow="Shop Management"
+          eyebrow={t("shopDetail.eyebrow")}
           title={detail.customer.name}
           caption={`${detail.customer.display_id} · ${detail.customer.mobile}`}
           action={
@@ -639,7 +642,7 @@ function ShopDetailBody() {
                 onClick={() => setShowPay(true)}
               >
                 <PlusCircle size={14} />
-                Receive Payment
+                {t("customerLedger.receivePayment")}
               </Button>
 
               <Button
@@ -647,7 +650,7 @@ function ShopDetailBody() {
                 onClick={() => setShowSale(true)}
               >
                 <ShoppingCart size={14} />
-                Record Shop Sale
+                {t("shopDetail.recordShopSale")}
               </Button>
 
               <Button
@@ -655,7 +658,7 @@ function ShopDetailBody() {
                 onClick={() => setShowExpense(true)}
               >
                 <Wallet size={14} />
-                Record Expense
+                {t("expenses.recordExpense")}
               </Button>
 
               <Button
@@ -663,7 +666,7 @@ function ShopDetailBody() {
                 onClick={() => setShowAddCustomer(true)}
               >
                 <Users size={14} />
-                Add Supply Customer
+                {t("shopDetail.addSupplyCustomer")}
               </Button>
 
               <Button
@@ -671,10 +674,10 @@ function ShopDetailBody() {
                 onClick={() => setShowEmergencyTransfer(true)}
               >
                 <Zap size={14} />
-                Emergency Transfer
+                {t("shopDetail.emergencyTransfer")}
               </Button>
 
-              <PrintButton label="Print" />
+              <PrintButton label={t("shopDetail.print")} />
 
             </div>
           }
@@ -696,11 +699,11 @@ function ShopDetailBody() {
 
               <div>
                 <div className="text-sm font-semibold text-slate-800">
-                  Business Date
+                  {t("shopDetail.businessDate")}
                 </div>
 
                 <div className="mt-0.5 text-xs text-slate-500">
-                  Select the business day you want to review.
+                  {t("shopDetail.selectBusinessDayHint")}
                 </div>
               </div>
 
@@ -724,11 +727,11 @@ function ShopDetailBody() {
 
             <div className="mb-4">
               <h2 className="font-display text-xl font-bold text-slate-900">
-                Business Overview
+                {t("shopDetail.businessOverview")}
               </h2>
 
               <p className="mt-1 text-sm text-slate-500">
-                Current financial and inventory position for this shop.
+                {t("shopDetail.businessOverviewCaption")}
               </p>
             </div>
 
@@ -741,7 +744,7 @@ function ShopDetailBody() {
 
                   <div>
                     <div className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700/80">
-                      Shop Cash Balance
+                      {t("shopDetail.shopCashBalance")}
                     </div>
 
                     <div className="mt-2 font-display text-3xl font-bold text-brand-green">
@@ -758,7 +761,7 @@ function ShopDetailBody() {
                 <div className="mt-5 flex items-center justify-between border-t border-emerald-200/60 pt-3 text-xs">
 
                   <span className="text-slate-500">
-                    Opening Cash
+                    {t("shopDetail.openingCash")}
                   </span>
 
                   <span className="font-mono font-semibold text-slate-700">
@@ -777,7 +780,7 @@ function ShopDetailBody() {
 
                   <div>
                     <div className="text-[11px] font-semibold uppercase tracking-wider text-rose-700/80">
-                      Dowa Outstanding
+                      {t("shopDetail.dowaOutstanding")}
                     </div>
 
                     <div className="mt-2 font-display text-3xl font-bold text-brand-red">
@@ -794,7 +797,7 @@ function ShopDetailBody() {
                 <div className="mt-5 flex items-center justify-between border-t border-rose-200/60 pt-3 text-xs">
 
                   <span className="text-slate-500">
-                    Account Holder
+                    {t("shopDetail.accountHolder")}
                   </span>
 
                   <span className="font-semibold text-slate-700">
@@ -813,13 +816,13 @@ function ShopDetailBody() {
 
                   <div>
                     <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                      Closing Stock Inventory
+                      {t("shopDetail.closingStockInventory")}
                     </div>
 
                     <div className="mt-2 font-display text-3xl font-bold text-slate-900">
                       {s.total_closing_stock}
                       <span className="ml-2 text-sm font-normal text-slate-400">
-                        units
+                        {t("shopDetail.units")}
                       </span>
                     </div>
                   </div>
@@ -833,21 +836,21 @@ function ShopDetailBody() {
                 <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-100 pt-3 text-xs">
 
                   <span className="text-slate-500">
-                    Opening{" "}
+                    {t("shopDetail.opening")}{" "}
                     <strong className="text-slate-700">
                       {s.total_opening_stock}
                     </strong>
                   </span>
 
                   <span className="text-emerald-600">
-                    Loaded{" "}
+                    {t("shopDetail.loaded")}{" "}
                     <strong>
                       +{s.total_new_load}
                     </strong>
                   </span>
 
                   <span className="text-slate-600">
-                    Sold{" "}
+                    {t("shopDetail.sold")}{" "}
                     <strong>
                       -{s.total_sales}
                     </strong>
@@ -889,18 +892,18 @@ function ShopDetailBody() {
 
               <div>
                 <h2 className="font-display text-xl font-bold text-slate-900">
-                  Shop Cash Flow
+                  {t("shopDetail.shopCashFlow")}
                 </h2>
 
                 <p className="mt-1 text-sm text-slate-500">
-                  Business Date: {detail.cash.business_date}
+                  {t("shopDetail.businessDateLabel", { date: detail.cash.business_date })}
                 </p>
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
 
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  Live Account Balance
+                  {t("shopDetail.liveAccountBalance")}
                 </div>
 
                 <div className="mt-1 text-sm font-semibold text-slate-800">
@@ -920,7 +923,7 @@ function ShopDetailBody() {
 
               <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
                 <span className="block text-xs font-medium text-slate-500">
-                  Opening Cash
+                  {t("shopDetail.openingCash")}
                 </span>
 
                 <span className="mt-1 block font-mono text-sm font-semibold text-slate-800">
@@ -930,7 +933,7 @@ function ShopDetailBody() {
 
               <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-4">
                 <span className="block text-xs font-medium text-emerald-700">
-                  Cash Sales (+)
+                  {t("shopDetail.cashSalesPlus")}
                 </span>
 
                 <span className="mt-1 block font-mono text-sm font-semibold text-brand-green">
@@ -940,7 +943,7 @@ function ShopDetailBody() {
 
               <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-4">
                 <span className="block text-xs font-medium text-emerald-700">
-                  Collections (+)
+                  {t("shopDetail.collectionsPlus")}
                 </span>
 
                 <span className="mt-1 block font-mono text-sm font-semibold text-brand-green">
@@ -950,7 +953,7 @@ function ShopDetailBody() {
 
               <div className="rounded-xl border border-rose-100 bg-rose-50/50 p-4">
                 <span className="block text-xs font-medium text-rose-700">
-                  Expenses (-)
+                  {t("shopDetail.expensesMinus")}
                 </span>
 
                 <span className="mt-1 block font-mono text-sm font-semibold text-brand-red">
@@ -960,7 +963,7 @@ function ShopDetailBody() {
 
               <div className="rounded-xl border border-rose-100 bg-rose-50/50 p-4">
                 <span className="block text-xs font-medium text-rose-700">
-                  Withdrawals (-)
+                  {t("shopDetail.withdrawalsMinus")}
                 </span>
 
                 <span className="mt-1 block font-mono text-sm font-semibold text-brand-red">
@@ -970,7 +973,7 @@ function ShopDetailBody() {
 
               <div className="rounded-xl border border-slate-200 bg-slate-100 p-4">
                 <span className="block text-xs font-medium text-slate-600">
-                  Closing Cash
+                  {t("shopDetail.closingCash")}
                 </span>
 
                 <span className="mt-1 block font-mono text-base font-bold text-slate-900">
@@ -988,22 +991,19 @@ function ShopDetailBody() {
 
                 {detail.cash.dowa_payments !== "0" && (
                   <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-800">
-                    Payments to Dowa: -
-                    {pkr(detail.cash.dowa_payments)}
+                    {t("shopDetail.paymentsToDowaLine", { amount: pkr(detail.cash.dowa_payments) })}
                   </span>
                 )}
 
                 {detail.cash.transfers_in !== "0" && (
                   <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-800">
-                    Transfers In: +
-                    {pkr(detail.cash.transfers_in)}
+                    {t("shopDetail.transfersInLine", { amount: pkr(detail.cash.transfers_in) })}
                   </span>
                 )}
 
                 {detail.cash.transfers_out !== "0" && (
                   <span className="inline-flex items-center rounded-full border border-purple-200 bg-purple-50 px-3 py-1.5 text-xs font-medium text-purple-800">
-                    Transfers Out: -
-                    {pkr(detail.cash.transfers_out)}
+                    {t("shopDetail.transfersOutLine", { amount: pkr(detail.cash.transfers_out) })}
                   </span>
                 )}
 
@@ -1023,11 +1023,11 @@ function ShopDetailBody() {
               <div className="border-b border-slate-200 bg-white px-6 py-5">
 
                 <h2 className="font-display text-xl font-bold text-slate-900">
-                  Stock & Sale Pricing
+                  {t("shopDetail.stockSalePricing")}
                 </h2>
 
                 <p className="mt-1 text-sm text-slate-500">
-                  Product-level stock, board rates and today's sales.
+                  {t("shopDetail.stockPricingCaption")}
                 </p>
 
               </div>
@@ -1040,31 +1040,31 @@ function ShopDetailBody() {
                     <tr className="border-b border-slate-200 bg-slate-50">
 
                       <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                        Product
+                        {t("unifiedSale.colProduct")}
                       </th>
 
                       <th className="px-5 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                        Board Rate/kg
+                        {t("shopDetail.colBoardRateKg")}
                       </th>
 
                       <th className="px-5 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                        Physical
+                        {t("shopDetail.colPhysical")}
                       </th>
 
                       <th className="px-5 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                        Wastage
+                        {t("shopDetail.colWastage")}
                       </th>
 
                       <th className="px-5 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                        Net Saleable
+                        {t("shopDetail.colNetSaleable")}
                       </th>
 
                       <th className="px-5 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                        Sale Rate
+                        {t("shopDetail.colSaleRate")}
                       </th>
 
                       <th className="px-5 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                        Today's Sales
+                        {t("shopDetail.colTodaysSales")}
                       </th>
 
                     </tr>
@@ -1085,7 +1085,7 @@ function ShopDetailBody() {
                         <td className="px-5 py-4 text-right font-mono text-xs text-slate-600">
                           {p.board_rate_per_kg
                             ? `${pkr(p.board_rate_per_kg)}/kg`
-                            : "Not set"}
+                            : t("shopDetail.notSet")}
                         </td>
 
                         <td className="px-5 py-4 text-right font-mono text-xs text-slate-600">
@@ -1140,11 +1140,11 @@ function ShopDetailBody() {
 
                   <div>
                     <h2 className="font-display text-xl font-bold text-slate-900">
-                      Shop Business Ledger
+                      {t("shopDetail.shopBusinessLedger")}
                     </h2>
 
                     <p className="mt-1 text-sm text-slate-500">
-                      Complete business activity — visible at a glance.
+                      {t("shopDetail.businessLedgerCaption")}
                     </p>
                   </div>
 
@@ -1154,7 +1154,7 @@ function ShopDetailBody() {
 
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-2">
                     <div className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">
-                      Business Date
+                      {t("shopDetail.businessDate")}
                     </div>
 
                     <div className="mt-0.5 font-mono text-xs font-semibold text-slate-700">
@@ -1164,7 +1164,7 @@ function ShopDetailBody() {
 
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-2">
                     <div className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">
-                      Entries
+                      {t("shopDetail.entries")}
                     </div>
 
                     <div className="mt-0.5 font-mono text-xs font-semibold text-slate-700">
@@ -1186,31 +1186,31 @@ function ShopDetailBody() {
                     <tr className="border-b border-slate-200 bg-slate-100">
 
                       <th className="border-r border-slate-200 px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                        Time
+                        {t("purchases.colTime")}
                       </th>
 
                       <th className="border-r border-slate-200 px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                        Type
+                        {t("shopDetail.colType")}
                       </th>
 
                       <th className="border-r border-slate-200 px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                        ID
+                        {t("customerLedger.colId")}
                       </th>
 
                       <th className="border-r border-slate-200 px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                        Description
+                        {t("customerLedger.colDescription")}
                       </th>
 
                       <th className="border-r border-slate-200 px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                        Amount
+                        {t("unifiedSale.colAmount")}
                       </th>
 
                       <th className="border-r border-slate-200 px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                        Cash Impact
+                        {t("shopDetail.colCashImpact")}
                       </th>
 
                       <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                        Entered By
+                        {t("customerLedger.colEnteredBy")}
                       </th>
 
                     </tr>
@@ -1262,7 +1262,7 @@ function ShopDetailBody() {
                                 }
                               `}
                             >
-                              {ledgerLabel(r.kind)}
+                              {ledgerLabel(r.kind, t)}
                             </span>
 
                           </td>
@@ -1321,11 +1321,11 @@ function ShopDetailBody() {
               <div className="flex flex-col gap-2 border-t border-slate-200 bg-slate-50/60 px-6 py-3 sm:flex-row sm:items-center sm:justify-between">
 
                 <span className="text-xs text-slate-500">
-                  Showing all business entries for this date.
+                  {t("shopDetail.showingAllEntries")}
                 </span>
 
                 <span className="font-mono text-[10px] uppercase tracking-wider text-slate-400">
-                  Live business ledger
+                  {t("shopDetail.liveBusinessLedger")}
                 </span>
 
               </div>
@@ -1342,11 +1342,11 @@ function ShopDetailBody() {
 
             <div className="mb-5">
               <h2 className="font-display text-xl font-bold text-slate-900">
-                Activity & Records
+                {t("shopDetail.activityRecords")}
               </h2>
 
               <p className="mt-1 text-sm text-slate-500">
-                Open detailed records when you need them.
+                {t("shopDetail.activityRecordsCaption")}
               </p>
             </div>
 
@@ -1389,7 +1389,7 @@ function ShopDetailBody() {
                   <div className="flex items-center gap-2">
 
                     <h3 className="font-display text-lg font-bold text-slate-900">
-                      Recent Transactions
+                      {t("shopDetail.recentTransactions")}
                     </h3>
 
                     <span className="rounded-full bg-slate-100 px-2.5 py-1 font-mono text-[10px] font-semibold text-slate-500">
@@ -1399,8 +1399,7 @@ function ShopDetailBody() {
                   </div>
 
                   <p className="mt-1 max-w-xl text-sm leading-6 text-slate-500">
-                    View loads, shop sales and payments in the complete
-                    transaction register.
+                    {t("shopDetail.recentTransactionsCaption")}
                   </p>
 
                 </div>
@@ -1408,27 +1407,27 @@ function ShopDetailBody() {
 
                 <div className="mt-5 space-y-3 border-t border-slate-100 pt-4">
 
-                  {detail.transactions.slice(0, 3).map((t) => (
+                  {detail.transactions.slice(0, 3).map((row) => (
                     <div
-                      key={t.ref_id}
+                      key={row.ref_id}
                       className="flex items-center justify-between gap-4"
                     >
 
                       <div className="min-w-0">
 
                         <div className="truncate text-xs font-semibold text-slate-700">
-                          {t.description ||
-                            transactionLabel(t.kind)}
+                          {row.description ||
+                            transactionLabel(row.kind, t)}
                         </div>
 
                         <div className="mt-1 font-mono text-[10px] text-slate-400">
-                          {fmtTime(t.date)} · {t.display_id}
+                          {fmtTime(row.date)} · {row.display_id}
                         </div>
 
                       </div>
 
                       <div className="shrink-0 font-mono text-xs font-semibold text-slate-700">
-                        {t.amount ? pkr(t.amount) : "—"}
+                        {row.amount ? pkr(row.amount) : "—"}
                       </div>
 
                     </div>
@@ -1436,7 +1435,7 @@ function ShopDetailBody() {
 
                   {!detail.transactions.length && (
                     <div className="py-3 text-xs text-slate-400">
-                      No transactions this month.
+                      {t("customerLedger.noTransactionsThisMonth")}
                     </div>
                   )}
 
@@ -1446,11 +1445,11 @@ function ShopDetailBody() {
                 <div className="mt-5 flex items-center justify-between border-t border-slate-100 pt-4">
 
                   <span className="text-xs font-medium text-slate-500">
-                    {detail.transactions.length} total records
+                    {t("shopDetail.totalRecords", { count: detail.transactions.length })}
                   </span>
 
                   <span className="text-xs font-semibold text-teal">
-                    View full history →
+                    {t("shopDetail.viewFullHistory")}
                   </span>
 
                 </div>
@@ -1476,12 +1475,11 @@ function ShopDetailBody() {
                 <div className="mt-5">
 
                   <h3 className="font-display text-lg font-bold text-slate-900">
-                    Supply Customers
+                    {t("shopDetail.supplyCustomers")}
                   </h3>
 
                   <p className="mt-1 text-sm leading-6 text-slate-500">
-                    Customers supplied by this shop and their current
-                    outstanding balances.
+                    {t("shopDetail.supplyCustomersCaption")}
                   </p>
 
                 </div>
@@ -1502,7 +1500,7 @@ function ShopDetailBody() {
       </div>
 
       <div className="mt-1 font-mono text-[10px] text-slate-400">
-        {customer.mobile ?? "No mobile"}
+        {customer.mobile ?? t("shopDetail.noMobile")}
       </div>
     </div>
 
@@ -1528,7 +1526,7 @@ function ShopDetailBody() {
             cursor-pointer
           "
         >
-          Receive Payment
+          {t("customerLedger.receivePayment")}
         </span>
       )}
     </div>
@@ -1537,13 +1535,13 @@ function ShopDetailBody() {
 
                 <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
                   <span className="text-[11px] font-medium text-slate-500">
-                    {supplyCustomers.length} customer{supplyCustomers.length === 1 ? "" : "s"} total
+                    {t("shopDetail.customersTotal", { count: supplyCustomers.length })}
                   </span>
                   <button
                     onClick={() => { setLedgerInitialCustomerId(undefined); setShowCustomerLedger(true); }}
                     className="text-[11px] font-semibold text-teal hover:underline cursor-pointer"
                   >
-                    View Ledger →
+                    {t("shopDetail.viewLedger")}
                   </button>
                 </div>
 
@@ -1567,7 +1565,7 @@ function ShopDetailBody() {
                   "
                 >
                   <PlusCircle size={14} />
-                  Add Supply Customer
+                  {t("shopDetail.addSupplyCustomer")}
                 </button>
 
                   </div>
@@ -1611,12 +1609,11 @@ function ShopDetailBody() {
                   <div>
 
                     <h2 className="font-display text-base font-bold text-slate-800">
-                      Correction History
+                      {t("shopDetail.correctionHistory")}
                     </h2>
 
                     <p className="mt-0.5 text-xs text-slate-500">
-                      {allCorrections.length} corrected transaction
-                      {allCorrections.length === 1 ? "" : "s"}
+                      {t("shopDetail.correctedTransactionCount", { count: allCorrections.length })}
                     </p>
 
                   </div>
@@ -1625,8 +1622,8 @@ function ShopDetailBody() {
 
                 <span className="text-xs font-semibold text-teal">
                   {showCorrections
-                    ? "Hide Details"
-                    : "Show Details"}
+                    ? t("shopDetail.hideDetails")
+                    : t("shopDetail.showDetails")}
                 </span>
 
               </button>
@@ -1645,15 +1642,15 @@ function ShopDetailBody() {
                   <thead>
                     <tr className="border-b border-slate-200 bg-slate-50">
 
-                      <Th>Date</Th>
-                      <Th>Type</Th>
-                      <Th>Original ID</Th>
-                      <Th>Description</Th>
-                      <Th right>Original Amount</Th>
-                      <Th>Reason</Th>
-                      <Th>Corrected By</Th>
-                      <Th>Corrected At</Th>
-                      <Th>Replaced By</Th>
+                      <Th>{t("customerLedger.colDate")}</Th>
+                      <Th>{t("shopDetail.colType")}</Th>
+                      <Th>{t("customerLedger.colOriginalId")}</Th>
+                      <Th>{t("customerLedger.colDescription")}</Th>
+                      <Th right>{t("customerLedger.colOriginalAmount")}</Th>
+                      <Th>{t("customerLedger.colReason")}</Th>
+                      <Th>{t("customerLedger.colCorrectedBy")}</Th>
+                      <Th>{t("customerLedger.colCorrectedAt")}</Th>
+                      <Th>{t("customerLedger.colReplacedBy")}</Th>
 
                     </tr>
                   </thead>

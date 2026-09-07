@@ -3,6 +3,7 @@ import { ReactNode, useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
+import { useTranslation } from "react-i18next";
 import {
   LayoutGrid,
   PlusCircle,
@@ -28,39 +29,41 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { CylinderStripe } from "./ui";
+import LanguageToggle from "./LanguageToggle";
 
 const NAV = [
-  { href: "/", label: "Dashboard", icon: LayoutGrid },
+  { href: "/", labelKey: "nav.dashboard", icon: LayoutGrid },
   // { href: "/new-rate", label: "New Rate Entry", icon: PlusCircle },
-  { href: "/rate-dashboard", label: "Rate Dashboard", icon: Radio },
-  { href: "/unified-sale", label: " Sale", icon: ShoppingBag }, // <-- Naya link yahan add kiya gaya hai
-   { href: "/payments", label: "Payments", icon: CreditCard },
-  { href: "/purchases", label: "Purchases", icon: Truck },
+  { href: "/rate-dashboard", labelKey: "nav.rateDashboard", icon: Radio },
+  { href: "/unified-sale", labelKey: "nav.sale", icon: ShoppingBag }, // <-- Naya link yahan add kiya gaya hai
+   { href: "/payments", labelKey: "nav.payments", icon: CreditCard },
+  { href: "/purchases", labelKey: "nav.purchases", icon: Truck },
   // { href: "/new-sale", label: "New Sale", icon: ReceiptText },
-  
-  { href: "/customers", label: "Customers", icon: Users },
-  { href: "/customer-ledger", label: "Customer Ledger", icon: BookOpenText },
+
+  { href: "/customers", labelKey: "nav.customers", icon: Users },
+  { href: "/customer-ledger", labelKey: "nav.customerLedger", icon: BookOpenText },
   // { href: "/cylinder-ledger", label: "Cylinder Ledger", icon: CircleGauge },
-  { href: "/empty-cylinders", label: "Empty Cylinders", icon: PackageOpen },
- 
-  { href: "/expenses", label: "Expenses", icon: Wallet },
-   { href: "/cash-managment", label: "Cash Book", icon: Wallet },
-  { href: "/owner-capital", label: "Owner Investment", icon: Banknote },
-  { href: "/shops", label: "Shops", icon: Store },
-  { href: "/daily-activity", label: "Daily Activity", icon: CalendarClock },
-  { href: "/reports", label: "Reports", icon: FileStack },
+  { href: "/empty-cylinders", labelKey: "nav.emptyCylinders", icon: PackageOpen },
+
+  { href: "/expenses", labelKey: "nav.expenses", icon: Wallet },
+   { href: "/cash-managment", labelKey: "nav.cashBook", icon: Wallet },
+  { href: "/owner-capital", labelKey: "nav.ownerInvestment", icon: Banknote },
+  { href: "/shops", labelKey: "nav.shops", icon: Store },
+  { href: "/daily-activity", labelKey: "nav.dailyActivity", icon: CalendarClock },
+  { href: "/reports", labelKey: "nav.reports", icon: FileStack },
 
 ];
 
 // Owner-only — cosmetic gating (real enforcement is the backend's
 // require_owner dependency on /users/*). Kept separate from NAV rather
 // than baked in since it's the only role-conditional entry.
-const OWNER_NAV = { href: "/users", label: "User Management", icon: UserCog };
+const OWNER_NAV = { href: "/users", labelKey: "nav.userManagement", icon: UserCog };
 
 export default function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout } = useAuth();
+  const { t } = useTranslation();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   // Close the mobile drawer whenever the route changes, so navigating to a
@@ -77,7 +80,7 @@ export default function Shell({ children }: { children: ReactNode }) {
       <div className="lg:hidden fixed top-0 inset-x-0 z-40 flex items-center gap-3 bg-ink px-4 py-3 shadow-sm">
         <button
           onClick={() => setMobileNavOpen(true)}
-          aria-label="Open menu"
+          aria-label={t("shell.openMenu")}
           className="bg-transparent border-none cursor-pointer shrink-0 p-1 -ml-1"
         >
           <Menu size={22} color="#FFFFFF" />
@@ -121,7 +124,7 @@ export default function Shell({ children }: { children: ReactNode }) {
           </div>
           <button
             onClick={() => setMobileNavOpen(false)}
-            aria-label="Close menu"
+            aria-label={t("shell.closeMenu")}
             className="lg:hidden bg-transparent border-none cursor-pointer p-1"
           >
             <X size={18} color="#8A98A3" />
@@ -148,7 +151,7 @@ export default function Shell({ children }: { children: ReactNode }) {
                     active ? "font-semibold text-white" : "font-normal text-[#B7C0C7]"
                   }`}
                 >
-                  {n.label}
+                  {t(n.labelKey)}
                 </span>
                 {active && <ChevronRight size={13} color="#0F8B8D" className="ml-auto" />}
               </Link>
@@ -160,7 +163,9 @@ export default function Shell({ children }: { children: ReactNode }) {
           <div className="flex justify-between items-center">
             <div>
               <div className="font-body text-[12.5px] text-white font-semibold">{user?.name}</div>
-              <div className="font-mono text-[9.5px] text-[#7FA9AA]">{user?.role === "owner" ? "Owner" : "Staff"}</div>
+              <div className="font-mono text-[9.5px] text-[#7FA9AA]">
+                {user?.role === "owner" ? t("shell.roleOwner") : t("shell.roleStaff")}
+              </div>
             </div>
             <button
               onClick={() => {
@@ -168,10 +173,13 @@ export default function Shell({ children }: { children: ReactNode }) {
                 router.push("/login");
               }}
               className="bg-transparent border-none cursor-pointer"
-              aria-label="Log out"
+              aria-label={t("shell.logout")}
             >
               <LogOut size={14} color="#8A98A3" />
             </button>
+          </div>
+          <div className="mt-3">
+            <LanguageToggle />
           </div>
         </div>
       </div>
@@ -180,7 +188,8 @@ export default function Shell({ children }: { children: ReactNode }) {
         <div className="bg-panel border-b border-hairline">
           <div className="flex items-center justify-between px-4 sm:px-6 lg:px-8 py-3.5 flex-wrap gap-2">
             <div className="font-body text-[13.5px] font-medium text-slate-800">
-              Dowa gas Agency — <span className="text-slate-900 font-bold">Rates &amp; Customers</span>, Purchases , Sales.
+              Dowa Gas Agency — <span className="text-slate-900 font-bold">{t("shell.topbarBold")}</span>
+              {t("shell.topbarSuffix")}
             </div>
             <div className="font-mono text-[12px] font-semibold text-slate-800 bg-paper px-3.5 py-1.5 rounded-full border border-hairline">
               {new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Karachi" })}

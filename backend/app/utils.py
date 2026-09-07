@@ -1,3 +1,5 @@
+from decimal import Decimal
+from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, Integer, cast
 
@@ -126,10 +128,27 @@ def get_or_create_shop_account(db: Session, shop):
     return account
 
 
+def compute_gst(
+    base_amount: Decimal, gst_enabled: bool, gst_rate: Optional[Decimal]
+) -> tuple[bool, Optional[Decimal], Decimal, Decimal]:
+    """Shared GST calc (§ GST on Sale) — gst_amount = base_amount * rate/100,
+    computed fresh from whatever base_amount is passed in (the caller
+    decides whether that's a frozen snapshot or a just-resynced total);
+    the rate itself is never invented here, only ever the one already
+    chosen by the user. Returns (enabled, rate, gst_amount, grand_total).
+    `enabled` is normalized to False when no rate was actually given, so a
+    stray gst_enabled=true with no rate never silently taxes at 0%."""
+    enabled = bool(gst_enabled and gst_rate)
+    amount = (base_amount * gst_rate / Decimal("100")) if enabled else Decimal("0")
+    return enabled, (gst_rate if enabled else None), amount, base_amount + amount
+
+
 def resync_unified_sale_batch_totals(db: Session, unified_sale_id) -> None:
-    """Keeps UnifiedSaleBatch.total_selling_amount/total_credit_received/
-    net_plant_payment in sync after a child Sale or Payment is corrected
-    (routers/sales.py::correct_sale, routers/payments.py::correct_payment).
+    """Keeps UnifiedSaleBatch.total_selling_amount/total_purchase_amount/
+    total_credit_received/net_plant_payment in sync after a child Sale,
+    Purchase, or Payment is corrected (routers/sales.py::correct_sale —
+    including its linked-Purchase cascade — and
+    routers/payments.py::correct_payment).
 
     These are stored (not computed-on-read) fields, set once at
     create/approve time and otherwise read only for DISPLAY — the ledger's
@@ -154,9 +173,31 @@ def resync_unified_sale_batch_totals(db: Session, unified_sale_id) -> None:
     if not batch:
         return
 
+    # total_selling_amount = Σ line amounts + delivery_charges (§ Delivery
+    # Charges visibility) — same formula routers/unified_sale.py uses at
+    # create/edit time (total_selling_amount = Σ item amounts +
+    # delivery_charges). delivery_charges is batch-level, untouched by a
+    # Sale correction, so it must be re-added here every time — omitting it
+    # (as this function used to) silently zeroed the delivery charge out of
+    # total_selling_amount/gst_amount/grand_total the first time any Sale
+    # in the batch was ever corrected.
     total_selling_amount = (
         db.query(func.coalesce(func.sum(models.Sale.total_amount), 0))
         .filter(models.Sale.unified_sale_id == unified_sale_id, models.Sale.status == "active")
+        .scalar()
+    ) + (batch.delivery_charges or 0)
+    # total_purchase_amount = Σ active Purchase.total_amount for the batch
+    # (§ Purchase/Plant Ledger sync) — mirrors total_selling_amount above.
+    # This is what posted, once, to Company.current_balance at
+    # approve_unified_sale_sale (a lump sum, not per-Purchase-row) — kept
+    # in sync here purely for the batch's own stored bookkeeping/display
+    # (_batch_to_out), same "stored, not computed-on-read" reasoning as
+    # every other field this function resyncs. Never re-posts to
+    # Company.current_balance itself — that's correct_sale's linked-Purchase
+    # cascade's job, exactly once, via its own reverse+repost.
+    total_purchase_amount = (
+        db.query(func.coalesce(func.sum(models.Purchase.total_amount), 0))
+        .filter(models.Purchase.unified_sale_id == unified_sale_id, models.Purchase.status == "active")
         .scalar()
     )
     total_credit_received = (
@@ -165,8 +206,15 @@ def resync_unified_sale_batch_totals(db: Session, unified_sale_id) -> None:
         .scalar()
     )
     batch.total_selling_amount = total_selling_amount
+    batch.total_purchase_amount = total_purchase_amount
     batch.total_credit_received = total_credit_received
     batch.net_plant_payment = total_credit_received - (batch.home_expense_amount or 0) - (batch.owner_drawings_amount or 0)
+    # GST (§ GST on Sale) — re-derives gst_amount/grand_total from the
+    # freshly resynced total_selling_amount using the batch's own already-
+    # frozen gst_enabled/gst_rate (never a new rate); keeps grand_total in
+    # sync with total_selling_amount exactly the way this function already
+    # keeps total_selling_amount itself in sync after a child correction.
+    _, _, batch.gst_amount, batch.grand_total = compute_gst(total_selling_amount, batch.gst_enabled, batch.gst_rate)
     db.add(batch)
 
 

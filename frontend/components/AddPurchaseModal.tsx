@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { X, Check, PlusCircle } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Field, inputClass, Button } from "./ui";
 import AmountInput from "./AmountInput";
 import NewPlantModal from "./NewPlantModal";
@@ -14,6 +15,7 @@ const MULTIPLIER_454 = 45.4 / 11.8;
 export default function AddPurchaseModal({
   onClose, onSaved, initialCompanyId,
 }: { onClose: () => void; onSaved: () => void; initialCompanyId?: string }) {
+  const { t } = useTranslation();
   const { user } = useAuth();
 
   const [companies, setCompanies] = useState<Company[]>([]);
@@ -157,7 +159,7 @@ const isoDate = fullDateTime.toISOString();
 
       onSaved();
     } catch (e) {
-      setError("Could not save purchase — check the fields and try again.");
+      setError(t("modals.couldNotSavePurchase"));
     } finally {
       setSaving(false);
     }
@@ -167,15 +169,15 @@ const isoDate = fullDateTime.toISOString();
     <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-6">
       <div className="bg-white rounded-xl px-6 py-6 w-full max-w-[560px] max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-4">
-          <div className="font-display font-bold text-[17px] text-ink">Add New Purchase</div>
+          <div className="font-display font-bold text-[17px] text-ink">{t("modals.addNewPurchase")}</div>
           <button onClick={onClose} className="bg-transparent border-none cursor-pointer"><X size={16} className="text-steel" /></button>
         </div>
 
         <div className="flex flex-col gap-3.5">
-          <Field label="Plant / Party Name">
+          <Field label={t("modals.plantPartyName")}>
             <div className="flex gap-1.5">
               <select value={companyId} onChange={(e) => setCompanyId(e.target.value)} className={`${inputClass} flex-1`}>
-                <option value="">Select plant</option>
+                <option value="">{t("ownerCapital.selectPlant")}</option>
                 {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
               <Button variant="outline" onClick={() => setShowNewPlant(true)}><PlusCircle size={14} /></Button>
@@ -183,49 +185,49 @@ const isoDate = fullDateTime.toISOString();
           </Field>
 
           <div className="grid grid-cols-3 gap-3">
-            <Field label="Date">
+            <Field label={t("unifiedSale.date")}>
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} />
             </Field>
-            <Field label="Gate Pass (optional)">
+            <Field label={t("modals.gatePassOptional")}>
               <input value={gatePass} onChange={(e) => setGatePass(e.target.value)} className={inputClass} />
             </Field>
-            <Field label="Vehicle No">
+            <Field label={t("modals.vehicleNo")}>
               <input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} placeholder="KP-7517" className={inputClass} />
             </Field>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Driver Name (optional)">
+            <Field label={t("modals.driverNameOptional")}>
               <input value={driverName} onChange={(e) => setDriverName(e.target.value)} className={inputClass} />
             </Field>
-            <Field label="Driver Contact (optional)">
+            <Field label={t("modals.driverContactOptional")}>
               <input value={driverContact} onChange={(e) => setDriverContact(e.target.value)} className={inputClass} />
             </Field>
           </div>
 
           <div className="grid grid-cols-2 gap-3 p-3 bg-paper rounded-lg border border-hairline">
             <div className="flex flex-col gap-2">
-              <div className="font-mono text-[10.5px] tracking-wide uppercase text-steel">11.8 KG</div>
-              <input type="number" value={qty118} onChange={(e) => setQty118(e.target.value)} placeholder="Qty" className={inputClass} />
-              <AmountInput value={rate118} onChange={handleRate118Change} placeholder="Rate / cylinder" className={inputClass} />
+              <div className="font-mono text-[10.5px] tracking-wide uppercase text-steel">{t("unifiedSale.col118")}</div>
+              <input type="number" value={qty118} onChange={(e) => setQty118(e.target.value)} placeholder={t("unifiedSale.qtyPlaceholder")} className={inputClass} />
+              <AmountInput value={rate118} onChange={handleRate118Change} placeholder={t("modals.ratePerCylinder")} className={inputClass} />
               <div className="font-mono text-xs text-teal font-semibold">{cylinderTotal118 > 0 ? pkr(cylinderTotal118) : "—"}</div>
             </div>
             <div className="flex flex-col gap-2">
-              <div className="font-mono text-[10.5px] tracking-wide uppercase text-steel">45.4 KG</div>
-              <input type="number" value={qty454} onChange={(e) => setQty454(e.target.value)} placeholder="Qty" className={inputClass} />
-              <AmountInput value={rate454} onChange={setRate454} placeholder="Rate / cylinder" className={inputClass} />
+              <div className="font-mono text-[10.5px] tracking-wide uppercase text-steel">{t("unifiedSale.col454")}</div>
+              <input type="number" value={qty454} onChange={(e) => setQty454(e.target.value)} placeholder={t("unifiedSale.qtyPlaceholder")} className={inputClass} />
+              <AmountInput value={rate454} onChange={setRate454} placeholder={t("modals.ratePerCylinder")} className={inputClass} />
               <div className="font-mono text-xs text-teal font-semibold">{cylinderTotal454 > 0 ? pkr(cylinderTotal454) : "—"}</div>
             </div>
           </div>
 
           <div className="grid grid-cols-3 gap-3">
-            <Field label="Additional Charges"><AmountInput value={additionalCharges} onChange={setAdditionalCharges} placeholder="0" className={inputClass} /></Field>
-            <Field label="Transport Charges"><AmountInput value={transportCharges} onChange={setTransportCharges} placeholder="0" className={inputClass} /></Field>
-            <Field label="Other Charges"><AmountInput value={otherCharges} onChange={setOtherCharges} placeholder="0" className={inputClass} /></Field>
+            <Field label={t("modals.additionalCharges")}><AmountInput value={additionalCharges} onChange={setAdditionalCharges} placeholder="0" className={inputClass} /></Field>
+            <Field label={t("modals.transportCharges")}><AmountInput value={transportCharges} onChange={setTransportCharges} placeholder="0" className={inputClass} /></Field>
+            <Field label={t("modals.otherCharges")}><AmountInput value={otherCharges} onChange={setOtherCharges} placeholder="0" className={inputClass} /></Field>
           </div>
 
           <div className="flex justify-between items-center px-3 py-2.5 bg-ink rounded-lg">
-            <span className="font-mono text-[11px] text-[#9FD8D8] tracking-wide">TOTAL PURCHASE AMOUNT</span>
+            <span className="font-mono text-[11px] text-[#9FD8D8] tracking-wide">{t("modals.totalPurchaseAmount")}</span>
             <span className="font-display font-bold text-lg text-white">{pkr(grandTotal)}</span>
           </div>
 
@@ -234,27 +236,27 @@ const isoDate = fullDateTime.toISOString();
               onClick={() => setRecordPayment((v) => !v)}
               className="font-body text-[13px] font-semibold text-teal bg-transparent border-none cursor-pointer p-0 mb-3"
             >
-              {recordPayment ? "− Remove payment from this entry" : "+ Pay the plant now"}
+              {recordPayment ? t("modals.removePaymentFromEntry") : t("modals.payThePlantNow")}
             </button>
 
             {recordPayment && (
               <div className="grid grid-cols-3 gap-3">
-                <Field label="Method">
+                <Field label={t("expenses.paymentMethod")}>
                   <select value={payMethod} onChange={(e) => setPayMethod(e.target.value as typeof payMethod)} className={inputClass}>
-                    <option value="cash">Cash</option>
-                    <option value="bank_transfer">Bank Transfer</option>
-                    <option value="cheque">Cheque</option>
-                    <option value="online">Online Payment</option>
-                    <option value="other">Other</option>
+                    <option value="cash">{t("unifiedSale.methodCash")}</option>
+                    <option value="bank_transfer">{t("expenses.methodBankTransfer")}</option>
+                    <option value="cheque">{t("unifiedSale.methodCheque")}</option>
+                    <option value="online">{t("expenses.methodOnlinePayment")}</option>
+                    <option value="other">{t("expenses.methodOther")}</option>
                   </select>
                 </Field>
-                <Field label="Pay From (Account)">
+                <Field label={t("modals.payFromAccount")}>
                   <select value={payAccountId} onChange={(e) => setPayAccountId(e.target.value)} className={inputClass}>
-                    <option value="">Select account</option>
+                    <option value="">{t("expenses.selectAccount")}</option>
                     {accounts.filter((a) => a.active === "active").map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                   </select>
                 </Field>
-                <Field label="Amount">
+                <Field label={t("modals.amountField")}>
                   <input type="number" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className={inputClass} />
                 </Field>
               </div>
@@ -263,14 +265,14 @@ const isoDate = fullDateTime.toISOString();
 
           {selectedCompany && (
             <div className="font-body text-xs text-steel">
-              Current payable {pkr(selectedCompany.current_balance)} → after this entry: <b className="text-ink">{pkr(projectedBalance!)}</b>
+              {t("modals.currentPayableAfterEntry", { before: pkr(selectedCompany.current_balance), after: "" })}<b className="text-ink">{pkr(projectedBalance!)}</b>
             </div>
           )}
 
           {error && <div className="font-body text-xs text-brand-red">{error}</div>}
 
           <Button variant="primary" onClick={handleSubmit} disabled={!canSubmit || saving}>
-            <Check size={14} /> {saving ? "Saving…" : "Save Purchase"}
+            <Check size={14} /> {saving ? t("unifiedSale.saving") : t("modals.savePurchase")}
           </Button>
         </div>
       </div>

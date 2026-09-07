@@ -30,21 +30,30 @@ def list_rates(
 
 @router.get("/latest", response_model=list[schemas.RateOut])
 def latest_rates(db: Session = Depends(get_db)):
-    """The single most recent rate entry per Party — what the Rate Dashboard
-    and Executive Dashboard both surface as 'the rate right now'."""
+    """The single most recent rate entry per (company, party) — what the Rate
+    Dashboard and Executive Dashboard both surface as 'the rate right now'.
+    Grouped by company_id + party_id together, not party_id alone — a plain
+    GROUP BY party_id collapses every no-party company's rows into one SQL
+    NULL group, silently hiding every no-party plant but the most recently
+    updated one (§ Party optional)."""
     subq = (
         db.query(
+            models.RateEntry.company_id,
             models.RateEntry.party_id,
             func.max(models.RateEntry.timestamp).label("max_ts"),
         )
-        .group_by(models.RateEntry.party_id)
+        .group_by(models.RateEntry.company_id, models.RateEntry.party_id)
         .subquery()
     )
     rows = (
         db.query(models.RateEntry)
         .join(
             subq,
-            (models.RateEntry.party_id == subq.c.party_id)
+            (models.RateEntry.company_id == subq.c.company_id)
+            # Plain `==` on two NULLs evaluates to NULL (never TRUE) in SQL,
+            # so a no-party row would never join its own group — is_distinct_from
+            # treats NULL == NULL as a match, same as party_id's GROUP BY above.
+            & (~models.RateEntry.party_id.is_distinct_from(subq.c.party_id))
             & (models.RateEntry.timestamp == subq.c.max_ts),
         )
         .order_by(models.RateEntry.timestamp.desc())
@@ -58,9 +67,12 @@ def create_rate(
     payload: schemas.RateCreate, db: Session = Depends(get_db),
     current_user: models.User = Depends(require_active_user),
 ):
-    party = db.query(models.Party).get(payload.party_id)
-    if not party or party.company_id != payload.company_id:
-        raise HTTPException(400, "Party does not belong to the given company")
+    # Only look up/validate a Party when one was actually given — party_id
+    # is optional (§ Party optional), None means "no party", nothing to check.
+    if payload.party_id is not None:
+        party = db.query(models.Party).get(payload.party_id)
+        if not party or party.company_id != payload.company_id:
+            raise HTTPException(400, "Party does not belong to the given company")
 
     rate_454 = round(float(payload.rate_118) * models.RateEntry.RATIO, 2)
     entry = models.RateEntry(

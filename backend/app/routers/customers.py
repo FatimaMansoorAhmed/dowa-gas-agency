@@ -130,7 +130,7 @@ def recalculate_all_balances(db: Session = Depends(get_db)):
         customers = db.query(models.Customer).all()
         
         for customer in customers:
-            total_sales = db.query(func.coalesce(func.sum(models.Sale.total_amount), 0)).filter(
+            total_sales = db.query(func.coalesce(func.sum(models.Sale.grand_total), 0)).filter(
                 models.Sale.customer_id == customer.id,
                 models.Sale.status == "active"
             ).scalar()
@@ -241,75 +241,14 @@ def add_cylinder_transaction(
     return {"status": "success", "data": txn}
 
 
-# 7b. SELL EMPTY CYLINDERS (Empty Cylinders page action)
-@router.post("/{customer_id}/empty-cylinders/sell", response_model=schemas.EmptyCylinderSaleOut, status_code=201)
-def sell_empty_cylinders(
-    customer_id: UUID,
-    payload: schemas.EmptyCylinderSaleCreate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(require_active_user),
-):
-    customer = db.query(models.Customer).get(customer_id)
-    if not customer:
-        raise HTTPException(404, "Customer not found")
-
-    if payload.quantity <= 0:
-        raise HTTPException(400, "Quantity must be greater than 0")
-    if payload.amount <= 0:
-        raise HTTPException(400, "Amount must be greater than 0")
-
-    is_454 = payload.cylinder_size == "454"
-    size_label = "45.4" if is_454 else "11.8"
-    size_total = (customer.empty_cylinders_454 if is_454 else customer.empty_cylinders_118) or 0
-
-    # When cylinder_type is given, the exact size+type balance is checked
-    # and deducted (§ Empty Cylinder Sale) — Cross and PSO are tracked
-    # completely independently, selling one must never touch the other.
-    # Omitted means the untyped legacy path: only the size total is
-    # checked/deducted, unchanged from before this feature existed.
-    if payload.cylinder_type:
-        type_attr = f"empty_cylinders_{'454' if is_454 else '118'}_{payload.cylinder_type}"
-        type_available = getattr(customer, type_attr) or 0
-        if payload.quantity > type_available:
-            raise HTTPException(
-                400,
-                f"Quantity exceeds the customer's available {size_label} KG {payload.cylinder_type.upper()} empty cylinder balance",
-            )
-        setattr(customer, type_attr, type_available - payload.quantity)
-    elif payload.quantity > size_total:
-        raise HTTPException(
-            400,
-            f"Quantity exceeds the customer's available {size_label} KG empty cylinder balance",
-        )
-
-    sale = models.EmptyCylinderSale(
-        display_id=next_display_id(db, models.EmptyCylinderSale, "ECS", width=6),
-        date=payload.date or datetime.utcnow(),
-        customer_id=customer_id,
-        cylinder_size=payload.cylinder_size,
-        cylinder_type=payload.cylinder_type,
-        quantity=payload.quantity,
-        amount=payload.amount,
-        notes=payload.notes,
-        status="active",
-        entered_by=current_user.name,
-    )
-    db.add(sale)
-
-    if is_454:
-        customer.empty_cylinders_454 = size_total - payload.quantity
-    else:
-        customer.empty_cylinders_118 = size_total - payload.quantity
-    customer.empty_cylinders = (customer.empty_cylinders or 0) - payload.quantity
-    # Same core formula as a regular Sale (§13): a sale only ever adds to
-    # what the customer owes.
-    customer.current_balance = customer.current_balance + payload.amount
-    customer.last_transaction_at = sale.date
-    db.add(customer)
-
-    db.commit()
-    db.refresh(sale)
-    return sale
+# 7b. SELL EMPTY CYLINDERS — retired. The Empty Cylinders page's "Sell
+# Cylinder" button now posts straight to POST /cylinder-returns with
+# mode="cash" (see routers/cylinder_returns.py), the exact same code path
+# as Customer Ledger's Return Cylinder — Cash Mode, so a sell gets full
+# money routing, correct balance direction, overpayment handling, and
+# cancel support instead of the flat, unrouted, unreversible amount this
+# endpoint used to record. models.EmptyCylinderSale and its table are kept
+# for historical rows only — nothing new is ever written to it.
 
 
 # 8. GET COMBINED FINANCIAL & CYLINDER LEDGER FOR A CUSTOMER
@@ -343,7 +282,7 @@ def get_customer_combined_ledger(customer_id: UUID, db: Session = Depends(get_db
             "date": s.date,
             "type": "SALE",
             "description": f"Sale - {s.display_id}",
-            "debit": float(s.total_amount),
+            "debit": float(s.grand_total),
             "credit": 0.0,
             "cyl_out": int(s.quantity),
             "cyl_in": 0

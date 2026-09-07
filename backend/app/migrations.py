@@ -158,6 +158,32 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     # genuinely no customer/sale to attribute those to.
     ("shop_expense_transactions", "supply_customer_id", "GUID"),
     ("shop_expense_transactions", "shop_sale_id", "GUID"),
+    # Daily Report Urdu translation (§ Phase D3) — every existing row
+    # predates bilingual generation and was, by construction, English-only,
+    # so it gets 'en' from the column default rather than being guessed.
+    ("generated_reports", "language", "VARCHAR(10) NOT NULL DEFAULT 'en'"),
+    # GST on Sale (optional, locked at entry) — every existing sale had no
+    # GST, so gst_enabled/gst_amount get safe zero-value defaults here.
+    # grand_total is added nullable and backfilled to equal total_amount
+    # for every pre-existing row below (models.Sale.grand_total itself
+    # stays nullable=False — the ORM always populates it going forward).
+    ("sales", "gst_enabled", "BOOLEAN NOT NULL DEFAULT false"),
+    ("sales", "gst_rate", "NUMERIC(5, 2)"),
+    ("sales", "gst_amount", "NUMERIC(14, 2) NOT NULL DEFAULT 0"),
+    ("sales", "grand_total", "NUMERIC(14, 2)"),
+    # GST on Sale, extended to Unified Sale — same additive/backfill
+    # pattern as the sales.* columns above.
+    ("unified_sale_batches", "gst_enabled", "BOOLEAN NOT NULL DEFAULT false"),
+    ("unified_sale_batches", "gst_rate", "NUMERIC(5, 2)"),
+    ("unified_sale_batches", "gst_amount", "NUMERIC(14, 2) NOT NULL DEFAULT 0"),
+    ("unified_sale_batches", "grand_total", "NUMERIC(14, 2)"),
+    # Sell Empty Cylinders / Return Cylinder unification (§ Empty Cylinders
+    # page) — every existing cylinder_returns row predates this distinction
+    # and was, by construction, an ordinary Customer Ledger return, so it
+    # gets 'return_cylinder' from the column default. Going forward, the
+    # Empty Cylinders page's "Sell Cylinder" button passes
+    # origin='sell_cylinder' explicitly (see models.CylinderReturn.origin).
+    ("cylinder_returns", "origin", "VARCHAR(20) NOT NULL DEFAULT 'return_cylinder'"),
 ]
 
 
@@ -226,6 +252,15 @@ def run_startup_migrations(engine: Engine) -> None:
             expense_line_columns = {c["name"]: c for c in inspector.get_columns("shop_expense_lines")}
             if expense_line_columns.get("category_id", {}).get("nullable") is False:
                 conn.execute(text("ALTER TABLE shop_expense_lines ALTER COLUMN category_id DROP NOT NULL"))
+
+        # rate_entries.party_id was NOT NULL before Party became optional —
+        # some real plants have no party at all (§ Party optional). Postgres
+        # only, same reasoning as payments.account_id above; local SQLite dev
+        # keeps the NOT NULL constraint for now (out of scope, per decision).
+        if "rate_entries" in existing_tables and engine.dialect.name == "postgresql":
+            rate_entry_columns = {c["name"]: c for c in inspector.get_columns("rate_entries")}
+            if rate_entry_columns.get("party_id", {}).get("nullable") is False:
+                conn.execute(text("ALTER TABLE rate_entries ALTER COLUMN party_id DROP NOT NULL"))
 
         # One-time backfill: bring pre-existing Unified Sale batches (created
         # under the old single-status workflow) up to date with the new
@@ -469,3 +504,21 @@ def run_startup_migrations(engine: Engine) -> None:
                     text("UPDATE payment_accounts SET current_balance = :bal WHERE id = :aid"),
                     {"bal": new_balance, "aid": account_id},
                 )
+
+        # One-time backfill: every existing sales row predates GST and was,
+        # by construction, GST-free — grand_total (added nullable above)
+        # equals total_amount for every one of them. Guarded by
+        # grand_total IS NULL so a re-run never touches a row a real GST-
+        # aware create/correct already populated (including one
+        # deliberately saved with gst_amount = 0, i.e. GST toggled off).
+        if "sales" in existing_tables:
+            conn.execute(text("""
+                UPDATE sales SET grand_total = total_amount WHERE grand_total IS NULL
+            """))
+
+        # Same backfill for Unified Sale batches — every existing batch
+        # predates GST and was, by construction, GST-free.
+        if "unified_sale_batches" in existing_tables:
+            conn.execute(text("""
+                UPDATE unified_sale_batches SET grand_total = total_selling_amount WHERE grand_total IS NULL
+            """))

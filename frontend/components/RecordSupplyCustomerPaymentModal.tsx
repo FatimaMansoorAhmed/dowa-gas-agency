@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { X, Check } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Field, inputClass, Button } from "./ui";
 import AmountInput from "./AmountInput";
 import ExpenseWithdrawLines, { ExpenseLine, expenseLinesValid, hasFilledExpenseLines, toExpenseLinesPayload } from "./ExpenseWithdrawLines";
@@ -16,6 +17,7 @@ import type { ShopSupplyCustomer, PaymentAccount, ExpenseCategory } from "@/lib/
 export default function RecordSupplyCustomerPaymentModal({
   shopId, customer, onClose, onSaved,
 }: { shopId: string; customer: ShopSupplyCustomer; onClose: () => void; onSaved: () => void }) {
+  const { t } = useTranslation();
   const { user } = useAuth();
   const [date, setDate] = useState(todayLocalInput());
   const [amount, setAmount] = useState("");
@@ -67,7 +69,7 @@ export default function RecordSupplyCustomerPaymentModal({
 
       onSaved();
     } catch (e) {
-      setError("Could not save the payment — check the fields and try again.");
+      setError(t("modals.couldNotSavePayment"));
     } finally {
       setSaving(false);
     }
@@ -77,33 +79,33 @@ export default function RecordSupplyCustomerPaymentModal({
     <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-xl px-6 py-6 w-full max-w-[380px]">
         <div className="flex justify-between items-center mb-4">
-          <div className="font-display font-bold text-[17px] text-ink">Receive Payment — {customer.name}</div>
+          <div className="font-display font-bold text-[17px] text-ink">{t("modals.receivePaymentTitle", { name: customer.name })}</div>
           <button onClick={onClose} className="bg-transparent border-none cursor-pointer"><X size={16} className="text-steel" /></button>
         </div>
         <div className="font-body text-[12px] text-steel mb-3">
-          Outstanding: {pkr(customer.current_balance)}
+          {t("modals.outstandingLabel", { amount: pkr(customer.current_balance) })}
         </div>
         <div className="flex flex-col gap-3">
-          <Field label="Date">
+          <Field label={t("unifiedSale.date")}>
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} />
           </Field>
-          <Field label="Amount">
+          <Field label={t("modals.amountField")}>
             <AmountInput value={amount} onChange={setAmount} className={inputClass} />
           </Field>
-          <Field label="Method">
+          <Field label={t("expenses.paymentMethod")}>
             <select value={method} onChange={(e) => setMethod(e.target.value)} className={inputClass}>
-              <option value="cash">Cash</option>
-              <option value="bank_transfer">Bank Transfer</option>
-              <option value="other">Other</option>
+              <option value="cash">{t("unifiedSale.methodCash")}</option>
+              <option value="bank_transfer">{t("expenses.methodBankTransfer")}</option>
+              <option value="other">{t("expenses.methodOther")}</option>
             </select>
           </Field>
-          <Field label="Deposit To Account">
+          <Field label={t("modals.depositToAccount")}>
             <select value={accountId} onChange={(e) => setAccountId(e.target.value)} className={inputClass}>
-              <option value="">Shop Cash (default)</option>
+              <option value="">{t("modals.shopCashDefault")}</option>
               {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
           </Field>
-          <Field label="Notes (optional)">
+          <Field label={t("modals.notesOptional")}>
             <input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputClass} />
           </Field>
           <ExpenseWithdrawLines lines={expenseLines} onChange={setExpenseLines} categories={categories} />
@@ -111,7 +113,7 @@ export default function RecordSupplyCustomerPaymentModal({
         {error && <div className="font-body text-xs text-brand-red mt-2">{error}</div>}
         <div className="mt-4">
           <Button variant="primary" onClick={submit} disabled={!canSubmit || saving}>
-            <Check size={14} /> {saving ? "Saving…" : "Save Payment"}
+            <Check size={14} /> {saving ? t("unifiedSale.saving") : t("modals.savePayment")}
           </Button>
         </div>
       </div>

@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { X, Wallet } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Field, inputClass, Button } from "@/components/ui";
 import AmountInput from "@/components/AmountInput";
 import SettlementDestinationFields, { SpecialAccount } from "@/components/SettlementDestinationFields";
@@ -27,6 +28,7 @@ interface Props {
 }
 
 export default function PaymentReceiptModal({ isOpen, onClose, onSuccess, defaultCustomerId }: Props) {
+  const { t } = useTranslation();
   const { user } = useAuth();
 
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -70,7 +72,7 @@ export default function PaymentReceiptModal({ isOpen, onClose, onSuccess, defaul
         setAccounts(accList);
         setExpenseCategories(catList);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load form data.");
+        setError(e instanceof Error ? e.message : t("modals.failedLoadFormData"));
       }
     })();
     if (defaultCustomerId) setCustomerId(defaultCustomerId);
@@ -169,7 +171,7 @@ export default function PaymentReceiptModal({ isOpen, onClose, onSuccess, defaul
       onSuccess();
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to record payment.");
+      setError(e instanceof Error ? e.message : t("modals.failedRecordPayment"));
     } finally {
       setSaving(false);
     }
@@ -181,7 +183,7 @@ export default function PaymentReceiptModal({ isOpen, onClose, onSuccess, defaul
         <div className="flex justify-between items-center px-5 py-4 border-b border-hairline bg-paper">
           <div className="flex items-center gap-2">
             <Wallet className="text-teal" size={20} />
-            <h3 className="font-display font-semibold text-lg text-ink">Record Payment</h3>
+            <h3 className="font-display font-semibold text-lg text-ink">{t("modals.recordPaymentTitle")}</h3>
           </div>
           <button onClick={handleClose} className="text-steel hover:text-ink cursor-pointer">
             <X size={20} />
@@ -190,20 +192,20 @@ export default function PaymentReceiptModal({ isOpen, onClose, onSuccess, defaul
 
         <div className="p-5 flex flex-col gap-4">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Date">
+            <Field label={t("unifiedSale.date")}>
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} />
             </Field>
-            <Field label="Payment Method">
+            <Field label={t("expenses.paymentMethod")}>
               <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as typeof paymentMethod)} className={inputClass}>
-                <option value="cash">Cash</option>
-                <option value="bank_transfer">Bank Transfer</option>
-                <option value="cheque">Cheque</option>
-                <option value="online">Online</option>
+                <option value="cash">{t("unifiedSale.methodCash")}</option>
+                <option value="bank_transfer">{t("expenses.methodBankTransfer")}</option>
+                <option value="cheque">{t("unifiedSale.methodCheque")}</option>
+                <option value="online">{t("modals.methodOnlineShort")}</option>
               </select>
             </Field>
           </div>
 
-          <Field label="Customer">
+          <Field label={t("unifiedSale.customer")}>
             <div className="relative">
               <input
                 value={selectedCustomer ? `${selectedCustomer.name} · ${selectedCustomer.display_id}` : customerSearch}
@@ -211,7 +213,7 @@ export default function PaymentReceiptModal({ isOpen, onClose, onSuccess, defaul
                   setCustomerId("");
                   setCustomerSearch(e.target.value);
                 }}
-                placeholder="Search customer name or ID"
+                placeholder={t("modals.searchCustomerNameOrId")}
                 className={inputClass}
               />
               {!customerId && customerSearch.trim() && (
@@ -234,7 +236,7 @@ export default function PaymentReceiptModal({ isOpen, onClose, onSuccess, defaul
             </div>
           </Field>
 
-          <Field label="Total Credit / Payment Received (PKR)">
+          <Field label={t("modals.totalCreditPaymentReceivedPkr")}>
             <AmountInput
               value={totalCreditReceived}
               onChange={setTotalCreditReceived}
@@ -265,11 +267,11 @@ export default function PaymentReceiptModal({ isOpen, onClose, onSuccess, defaul
           />
 
           <div className="grid grid-cols-2 gap-2">
-            <Field label="Reference / Cheque #">
-              <input value={referenceNo} onChange={(e) => setReferenceNo(e.target.value)} placeholder="Txn #" className={inputClass} />
+            <Field label={t("modals.referenceChequeHash")}>
+              <input value={referenceNo} onChange={(e) => setReferenceNo(e.target.value)} placeholder={t("modals.txnHashPlaceholder")} className={inputClass} />
             </Field>
-            <Field label="Notes">
-              <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Remarks" className={inputClass} />
+            <Field label={t("unifiedSale.notes")}>
+              <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t("unifiedSale.remarksPlaceholder")} className={inputClass} />
             </Field>
           </div>
 
@@ -278,10 +280,10 @@ export default function PaymentReceiptModal({ isOpen, onClose, onSuccess, defaul
 
         <div className="flex justify-end gap-2 px-5 py-3 border-t border-hairline bg-paper">
           <Button variant="outline" onClick={handleClose} disabled={saving}>
-            Cancel
+            {t("unifiedSale.cancel")}
           </Button>
           <Button variant="teal" onClick={handleSubmit} disabled={!canSubmit || saving}>
-            {saving ? "Posting Receipt…" : "Post Payment Receipt"}
+            {saving ? t("modals.postingReceipt") : t("modals.postPaymentReceipt")}
           </Button>
         </div>
       </div>

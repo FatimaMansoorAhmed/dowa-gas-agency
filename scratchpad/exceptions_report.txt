@@ -1,0 +1,334 @@
+Total HTTPException calls with a message: 190
+Distinct exact templates: 109
+Distinct loose-pattern groups: 109
+
+================================================================================
+LOOSE PATTERN GROUPS (sorted by frequency desc)
+================================================================================
+
+[14x] KEY: customer not found
+    e.g. (customers.py:122, 404): 'Customer not found'
+
+[7x] KEY: payment not found
+    e.g. (company_payments.py:121, 404): 'Payment not found'
+
+[6x] KEY: company not found
+    e.g. (companies.py:42, 404): 'Company not found'
+
+[6x] KEY: payment account not found
+    e.g. (company_payments.py:43, 404): 'Payment account not found'
+
+[5x] KEY: correction_reason is required
+    e.g. (company_payments.py:145, 400): 'correction_reason is required'
+
+[5x] KEY: unified sale not found
+    e.g. (unified_sale.py:275, 404): 'Unified sale not found'
+
+[4x] KEY: expense category not found
+    e.g. (cylinder_returns.py:123, 404): 'Expense category not found'
+
+[4x] KEY: product not found
+    e.g. (cylinder_transactions.py:53, 404): 'Product not found'
+
+[4x] KEY: shop sale not found
+    e.g. (shops.py:665, 404): 'Shop sale not found'
+
+[4x] KEY: user not found
+    e.g. (users.py:50, 404): 'User not found'
+
+[3x] KEY: payment is already cancelled
+    e.g. (company_payments.py:123, 400): 'Payment is already cancelled'
+
+[3x] KEY: quantity must be greater than <N>
+    e.g. (customers.py:257, 400): 'Quantity must be greater than 0'
+
+[3x] KEY: home_expense_category_id is required when home_expense_amount > <N>
+    e.g. (cylinder_returns.py:121, 400): 'home_expense_category_id is required when home_expense_amount > 0'
+
+[3x] KEY: destination account not found
+    e.g. (emergency_transfers.py:72, 404): 'Destination account not found'
+
+[3x] KEY: account not found
+    e.g. (payment_accounts.py:95, 404): 'Account not found'
+
+[3x] KEY: purchase not found
+    e.g. (purchases.py:103, 404): 'Purchase not found'
+
+[3x] KEY: report not found
+    e.g. (reports.py:53, 404): 'Report not found'
+
+[3x] KEY: sale not found
+    e.g. (sales.py:269, 404): 'Sale not found'
+
+[3x] KEY: supply customer not found for this shop
+    e.g. (shops.py:924, 404): 'Supply customer not found for this shop'
+
+[2x] KEY: only an active payment can be corrected
+    e.g. (company_payments.py:151, 400): 'Only an active payment can be corrected'
+
+[2x] KEY: quantities cannot be negative
+    e.g. (customers.py:208, 400): 'Quantities cannot be negative'
+
+[2x] KEY: enter a quantity out or in
+    e.g. (customers.py:210, 400): 'Enter a quantity out or in'
+
+[2x] KEY: amount must be greater than <N>
+    e.g. (customers.py:259, 400): 'Amount must be greater than 0'
+
+[2x] KEY: already cancelled
+    e.g. (cylinder_returns.py:224, 400): 'Already cancelled'
+
+[2x] KEY: cancel failed, nothing was changed: <X>
+    e.g. (cylinder_returns.py:260, 500): 'Cancel failed, nothing was changed: {}'
+
+[2x] KEY: shop not found
+    e.g. (emergency_transfers.py:41, 404): 'Shop not found'
+
+[2x] KEY: plant not found
+    e.g. (owner_capital.py:83, 404): 'Plant not found'
+
+[2x] KEY: account_id is required when destination_type is <X>
+    e.g. (owner_capital.py:50, 400): "account_id is required when destination_type is 'account'"
+
+[2x] KEY: source account not found
+    e.g. (payments.py:45, 404): 'Source account not found'
+
+[2x] KEY: amount must be positive
+    e.g. (payment_accounts.py:45, 400): 'Amount must be positive'
+
+[2x] KEY: report file is no longer on disk
+    e.g. (reports.py:63, 404): 'Report file is no longer on disk'
+
+[2x] KEY: business_date must be yyyy-mm-dd
+    e.g. (reports.py:45, 400): 'business_date must be YYYY-MM-DD'
+
+[2x] KEY: supply customer not found
+    e.g. (shops.py:799, 404): 'Supply customer not found'
+
+[1x] KEY: invalid email or password
+    e.g. (auth.py:82, 401): 'Invalid email or password'
+
+[1x] KEY: a valid email is required
+    e.g. (auth.py:58, 400): 'A valid email is required'
+
+[1x] KEY: password must be at least <N> characters
+    e.g. (auth.py:60, 400): 'Password must be at least 8 characters'
+
+[1x] KEY: an account with this email already exists
+    e.g. (auth.py:62, 400): 'An account with this email already exists'
+
+[1x] KEY: too many login attempts — try again shortly
+    e.g. (auth.py:97, 429): 'Too many login attempts — try again shortly'
+
+[1x] KEY: no board rate has been set on or before this date yet
+    e.g. (board_rates.py:25, 400): 'No Board Rate has been set on or before this date yet'
+
+[1x] KEY: company already exists
+    e.g. (companies.py:50, 400): 'Company already exists'
+
+[1x] KEY: purchase does not belong to this company
+    e.g. (company_payments.py:48, 400): 'Purchase does not belong to this company'
+
+[1x] KEY: database error: <X>
+    e.g. (customers.py:114, 500): 'Database error: {}'
+
+[1x] KEY: str(e)
+    e.g. (customers.py:151, 500): 'str(e)'
+
+[1x] KEY: quantity exceeds the customer's available <X> kg <X> empty cylinder balance
+    e.g. (customers.py:274, 400): "Quantity exceeds the customer's available {} KG {} empty cylinder balance"
+
+[1x] KEY: quantity exceeds the customer's available <X> kg empty cylinder balance
+    e.g. (customers.py:280, 400): "Quantity exceeds the customer's available {} KG empty cylinder balance"
+
+[1x] KEY: cylinder return not found
+    e.g. (cylinder_returns.py:222, 404): 'Cylinder return not found'
+
+[1x] KEY: quantity exceeds the customer's available <X> kg<X> empty cylinder balance
+    e.g. (cylinder_returns.py:92, 400): "Quantity exceeds the customer's available {} KG{} empty cylinder balance"
+
+[1x] KEY: to_customer_id is required when mode is <X>
+    e.g. (cylinder_returns.py:103, 400): "to_customer_id is required when mode is 'transfer'"
+
+[1x] KEY: cannot transfer cylinders to the same customer
+    e.g. (cylinder_returns.py:105, 400): 'Cannot transfer cylinders to the same customer'
+
+[1x] KEY: destination customer not found
+    e.g. (cylinder_returns.py:108, 404): 'Destination customer not found'
+
+[1x] KEY: cylinder return failed, nothing was saved: <X>
+    e.g. (cylinder_returns.py:212, 500): 'Cylinder return failed, nothing was saved: {}'
+
+[1x] KEY: amount is required and must be greater than <N> when mode is <X>
+    e.g. (cylinder_returns.py:112, 400): "amount is required and must be greater than 0 when mode is 'cash'"
+
+[1x] KEY: home expense (<X>) + owner drawings (<X>) = <X> exceeds the cylinder cash amount (<X>).
+    e.g. (cylinder_returns.py:115, 400): 'Home expense ({}) + owner drawings ({}) = {} exceeds the cylinder cash amount ({}).'
+
+[1x] KEY: cylinder transaction not found
+    e.g. (cylinder_transactions.py:82, 404): 'Cylinder transaction not found'
+
+[1x] KEY: this entry was created by a sale — cancel the sale instead
+    e.g. (cylinder_transactions.py:86, 400): 'This entry was created by a sale — cancel the sale instead'
+
+[1x] KEY: emergency transfer is for a real customer — for a shop's own retail sale, use record shop sale instead
+    e.g. (emergency_transfers.py:34, 400): "Emergency Transfer is for a real customer — for a shop's own retail sale, use Record Shop Sale instead"
+
+[1x] KEY: rate must be greater than <N>
+    e.g. (emergency_transfers.py:46, 400): 'Rate must be greater than 0'
+
+[1x] KEY: amount collected now cannot exceed the transfer total
+    e.g. (emergency_transfers.py:65, 400): 'Amount collected now cannot exceed the transfer total'
+
+[1x] KEY: category not found
+    e.g. (expense_categories.py:34, 404): 'Category not found'
+
+[1x] KEY: target_plant_id is required when destination_type is <X>
+    e.g. (owner_capital.py:80, 400): "target_plant_id is required when destination_type is 'plant'"
+
+[1x] KEY: owner capital entry not found
+    e.g. (owner_capital.py:146, 404): 'Owner Capital entry not found'
+
+[1x] KEY: owner capital entry is already cancelled
+    e.g. (owner_capital.py:148, 400): 'Owner Capital entry is already cancelled'
+
+[1x] KEY: owner capital re-investment failed, nothing was saved: <X>
+    e.g. (owner_capital.py:136, 500): 'Owner Capital re-investment failed, nothing was saved: {}'
+
+[1x] KEY: sale does not belong to this customer
+    e.g. (payments.py:49, 400): 'Sale does not belong to this customer'
+
+[1x] KEY: account already exists
+    e.g. (payment_accounts.py:21, 400): 'Account already exists'
+
+[1x] KEY: source and destination accounts must be different
+    e.g. (payment_accounts.py:43, 400): 'Source and destination accounts must be different'
+
+[1x] KEY: insufficient balance in source account
+    e.g. (payment_accounts.py:55, 400): 'Insufficient balance in source account'
+
+[1x] KEY: home expense (<X>) + owner drawings (<X>) = <X> exceeds amount received (<X>).
+    e.g. (payment_receipts.py:56, 400): 'Home expense ({}) + owner drawings ({}) = {} exceeds amount received ({}).'
+
+[1x] KEY: payment receipt not found
+    e.g. (payment_receipts.py:127, 404): 'Payment receipt not found'
+
+[1x] KEY: payment receipt is already cancelled
+    e.g. (payment_receipts.py:129, 400): 'Payment receipt is already cancelled'
+
+[1x] KEY: payment receipt failed, nothing was saved: <X>
+    e.g. (payment_receipts.py:117, 500): 'Payment receipt failed, nothing was saved: {}'
+
+[1x] KEY: product already exists
+    e.g. (products.py:20, 400): 'Product already exists'
+
+[1x] KEY: purchase is already cancelled
+    e.g. (purchases.py:105, 400): 'Purchase is already cancelled'
+
+[1x] KEY: only an active purchase can be corrected
+    e.g. (purchases.py:133, 400): 'Only an active purchase can be corrected'
+
+[1x] KEY: party does not belong to the given company
+    e.g. (rates.py:63, 400): 'Party does not belong to the given company'
+
+[1x] KEY: insufficient stock at this shop for this product — only <X> cylinder(s) available, <X> requested
+    e.g. (sales.py:63, 400): 'Insufficient stock at this shop for this product — only {} cylinder(s) available, {} requested'
+
+[1x] KEY: sale is already cancelled
+    e.g. (sales.py:271, 400): 'Sale is already cancelled'
+
+[1x] KEY: only an active sale can be corrected
+    e.g. (sales.py:302, 400): 'Only an active sale can be corrected'
+
+[1x] KEY: this load's stock has already been partially or fully sold — correct/cancel the related shop sale(s) first before cancelling or correcting this load
+    e.g. (sales.py:233, 400): "This Load's stock has already been partially or fully sold — correct/cancel the related Shop Sale(s) first before cancelling or correcting this Load"
+
+[1x] KEY: quantity must be positive
+    e.g. (shops.py:274, 400): 'Quantity must be positive'
+
+[1x] KEY: a credit sale requires a supply_customer_id
+    e.g. (shops.py:285, 400): 'A credit sale requires a supply_customer_id'
+
+[1x] KEY: insufficient stock for this product — only <X> cylinder(s) (~<X> kg) available, <X> cylinder(s) requested
+    e.g. (shops.py:350, 400): 'Insufficient stock for this product — only {} cylinder(s) (~{} kg) available, {} cylinder(s) requested'
+
+[1x] KEY: shop sale is already cancelled
+    e.g. (shops.py:706, 400): 'Shop sale is already cancelled'
+
+[1x] KEY: only an active shop sale can be corrected
+    e.g. (shops.py:733, 400): 'Only an active shop sale can be corrected'
+
+[1x] KEY: at least one expense line is required
+    e.g. (shops.py:1050, 400): 'At least one expense line is required'
+
+[1x] KEY: expense transaction not found
+    e.g. (shops.py:1136, 404): 'Expense transaction not found'
+
+[1x] KEY: expense transaction is already cancelled
+    e.g. (shops.py:1138, 400): 'Expense transaction is already cancelled'
+
+[1x] KEY: this product has no saleable weight to sell by kg
+    e.g. (shops.py:303, 400): 'This product has no saleable weight to sell by KG'
+
+[1x] KEY: amount_received must be between <N> and the sale total (<X>)
+    e.g. (shops.py:323, 400): 'amount_received must be between 0 and the sale total ({})'
+
+[1x] KEY: linked shop sale not found for this shop
+    e.g. (shops.py:930, 404): 'Linked shop sale not found for this shop'
+
+[1x] KEY: every line amount must be positive
+    e.g. (shops.py:1053, 400): 'Every line amount must be positive'
+
+[1x] KEY: shop sale not found for this shop
+    e.g. (shops.py:1082, 404): 'Shop sale not found for this shop'
+
+[1x] KEY: category_id is required for an expense line
+    e.g. (shops.py:1059, 400): 'category_id is required for an expense line'
+
+[1x] KEY: expense category <X> not found
+    e.g. (shops.py:1061, 404): 'Expense category {} not found'
+
+[1x] KEY: home expense (<X>) + owner drawings (<X>) = <X> exceeds total credit received (<X>) — nothing would be left to settle with the plant.
+    e.g. (unified_sale.py:73, 400): 'Home expense ({}) + owner drawings ({}) = {} exceeds total credit received ({}) — nothing would be left to settle with the plant.'
+
+[1x] KEY: cannot edit — sale or payment has already been approved/cancelled
+    e.g. (unified_sale.py:351, 400): 'Cannot edit — sale or payment has already been approved/cancelled'
+
+[1x] KEY: cannot approve sale — already <X>
+    e.g. (unified_sale.py:414, 400): 'Cannot approve sale — already {}'
+
+[1x] KEY: cannot approve payment — already <X>
+    e.g. (unified_sale.py:548, 400): 'Cannot approve payment — already {}'
+
+[1x] KEY: cannot cancel — sale or payment has already been approved/cancelled
+    e.g. (unified_sale.py:619, 400): 'Cannot cancel — sale or payment has already been approved/cancelled'
+
+[1x] KEY: target plant not found
+    e.g. (unified_sale.py:39, 404): 'Target plant not found'
+
+[1x] KEY: unified sale failed, nothing was saved: <X>
+    e.g. (unified_sale.py:335, 500): 'Unified sale failed, nothing was saved: {}'
+
+[1x] KEY: edit failed, nothing was changed: <X>
+    e.g. (unified_sale.py:393, 500): 'Edit failed, nothing was changed: {}'
+
+[1x] KEY: sale approval failed, nothing was changed: <X>
+    e.g. (unified_sale.py:526, 500): 'Sale approval failed, nothing was changed: {}'
+
+[1x] KEY: payment approval failed, nothing was changed: <X>
+    e.g. (unified_sale.py:600, 500): 'Payment approval failed, nothing was changed: {}'
+
+[1x] KEY: product <X> not found
+    e.g. (unified_sale.py:67, 404): 'Product {} not found'
+
+[1x] KEY: cannot approve a user with status=<X>
+    e.g. (users.py:52, 400): 'Cannot approve a user with status={}'
+
+[1x] KEY: cannot reject a user with status=<X>
+    e.g. (users.py:74, 400): 'Cannot reject a user with status={}'
+
+[1x] KEY: cannot suspend a user with status=<X>
+    e.g. (users.py:93, 400): 'Cannot suspend a user with status={}'
+
+[1x] KEY: cannot reactivate a user with status=<X>
+    e.g. (users.py:122, 400): 'Cannot reactivate a user with status={}'

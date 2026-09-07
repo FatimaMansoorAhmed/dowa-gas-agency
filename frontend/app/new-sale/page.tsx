@@ -48,6 +48,11 @@ function NewSaleBody() {
   const [returned118, setReturned118] = useState("");
   const [returned454, setReturned454] = useState("");
 
+  // GST (optional, locked at entry — § GST on Sale) — free-text rate,
+  // applied to both cylinder-size lines of this same entry.
+  const [gstEnabled, setGstEnabled] = useState(false);
+  const [gstRate, setGstRate] = useState("");
+
   // Payment
   const [recordPayment, setRecordPayment] = useState(false);
   const [payMethod, setPayMethod] = useState<"cash" | "bank_transfer" | "cheque" | "online" | "other">("cash");
@@ -138,6 +143,12 @@ function NewSaleBody() {
     const matchingRates = rates
       .filter((r) => {
         const companyMatch = String(r.company_id) === String(companyId);
+        // TODO: pre-existing bug, unrelated to Party being optional — this
+        // compares a RateEntry's party_id against customerId, a Customer id
+        // from a completely different table. They're never equal in
+        // practice, so partyMatch is effectively always false whenever a
+        // customer is selected, and matchingRates falls through to the
+        // rates.find(...) fallback below instead. Flagged, not fixed here.
         const partyMatch = customerId ? String((r as any).party_id) === String(customerId) : true;
         return companyMatch && partyMatch;
       })
@@ -175,8 +186,12 @@ function NewSaleBody() {
   const total454 = (parseFloat(qty454) || 0) * (parseFloat(rate454) || 0);
   const grandTotal = total118 + total454;
 
+  const effectiveGstRate = gstEnabled ? parseFloat(gstRate) || 0 : 0;
+  const gstAmount = grandTotal * (effectiveGstRate / 100);
+  const grandTotalWithGst = grandTotal + gstAmount;
+
   const projectedBalance = selectedCustomer
-    ? parseFloat(selectedCustomer.current_balance || "0") + grandTotal - (recordPayment ? parseFloat(payAmount) || 0 : 0)
+    ? parseFloat(selectedCustomer.current_balance || "0") + grandTotalWithGst - (recordPayment ? parseFloat(payAmount) || 0 : 0)
     : null;
 
   const handleAddCompany = async () => {
@@ -232,6 +247,11 @@ function NewSaleBody() {
       return;
     }
 
+    if (gstEnabled && (!gstRate || parseFloat(gstRate) <= 0)) {
+      setToast({ type: "error", msg: "Enter a GST rate, or turn GST off." });
+      return;
+    }
+
     setSaving(true);
     try {
       const now = new Date();
@@ -262,6 +282,8 @@ function NewSaleBody() {
           entered_by: user?.name || "fatima",
           status: "active",
           cylinders_returned: Math.min(parseFloat(returned118) || 0, q118),
+          gst_enabled: gstEnabled,
+          gst_rate: gstEnabled ? parseFloat(gstRate) : undefined,
         };
 
         const res118 = await api.sales.create(payload118);
@@ -290,6 +312,8 @@ function NewSaleBody() {
           entered_by: user?.name || "fatima",
           status: "active",
           cylinders_returned: Math.min(parseFloat(returned454) || 0, q454),
+          gst_enabled: gstEnabled,
+          gst_rate: gstEnabled ? parseFloat(gstRate) : undefined,
         };
 
         const res454 = await api.sales.create(payload454);
@@ -318,6 +342,8 @@ function NewSaleBody() {
         setReturned118("");
         setReturned454("");
         setGatePass("");
+        setGstEnabled(false);
+        setGstRate("");
         setRecordPayment(false);
         setPayAmount("");
         await load();
@@ -540,10 +566,53 @@ function NewSaleBody() {
               </div>
             </div>
 
-            <div className="flex justify-between items-center px-3 py-2.5 bg-ink rounded-lg">
-              <span className="font-mono text-[11px] text-[#9FD8D8] tracking-wide">TOTAL SALE AMOUNT</span>
-              <span className="font-display font-bold text-lg text-white">{pkr(grandTotal)}</span>
+            <div className="flex items-center gap-3 px-3 py-2 bg-paper rounded-lg border border-hairline">
+              <button
+                type="button"
+                onClick={() => setGstEnabled((v) => !v)}
+                className={`font-body text-[12px] font-semibold px-2.5 py-1 rounded border cursor-pointer ${
+                  gstEnabled ? "bg-teal text-white border-teal" : "bg-white text-steel border-hairline"
+                }`}
+              >
+                {gstEnabled ? "GST: ON" : "+ Apply GST"}
+              </button>
+              {gstEnabled && (
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={gstRate}
+                    onChange={(e) => setGstRate(e.target.value)}
+                    placeholder="Rate %"
+                    className={`${inputClass} w-24`}
+                  />
+                  <span className="font-body text-[12px] text-steel">%</span>
+                </div>
+              )}
             </div>
+
+            {gstEnabled && parseFloat(gstRate) > 0 ? (
+              <div className="flex flex-col gap-1 px-3 py-2.5 bg-ink rounded-lg">
+                <div className="flex justify-between items-center">
+                  <span className="font-mono text-[10.5px] text-[#9FD8D8] tracking-wide">VALUE EXCL. TAX</span>
+                  <span className="font-display font-semibold text-sm text-white">{pkr(grandTotal)}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="font-mono text-[10.5px] text-[#9FD8D8] tracking-wide">GST @ {gstRate}%</span>
+                  <span className="font-display font-semibold text-sm text-white">{pkr(gstAmount)}</span>
+                </div>
+                <div className="flex justify-between items-center border-t border-white/20 pt-1 mt-0.5">
+                  <span className="font-mono text-[11px] text-[#9FD8D8] tracking-wide">GRAND TOTAL</span>
+                  <span className="font-display font-bold text-lg text-white">{pkr(grandTotalWithGst)}</span>
+                </div>
+              </div>
+            ) : (
+              <div className="flex justify-between items-center px-3 py-2.5 bg-ink rounded-lg">
+                <span className="font-mono text-[11px] text-[#9FD8D8] tracking-wide">TOTAL SALE AMOUNT</span>
+                <span className="font-display font-bold text-lg text-white">{pkr(grandTotal)}</span>
+              </div>
+            )}
 
             <div className="border-t border-hairline pt-3.5">
               <button
@@ -681,7 +750,7 @@ function NewSaleBody() {
                     <Td right mono>{q118 || "—"}</Td>
                     <Td right mono>{q454 || "—"}</Td>
                     <Td right mono color="#0F8B8D">
-                      {pkr(s.total_amount)}
+                      {pkr(s.grand_total ?? s.total_amount)}
                     </Td>
                     <Td right mono>
                       {fmtTime(s.date || (s as any).created_at)}

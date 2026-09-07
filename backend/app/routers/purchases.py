@@ -116,6 +116,38 @@ def cancel_purchase(purchase_id: UUID, by: str = Query(...), db: Session = Depen
     return purchase
 
 
+def _correct_purchase_internal(
+    db: Session, original: models.Purchase, payload: schemas.PurchaseCorrect, by: str
+) -> models.Purchase:
+    """Shared reverse+repost logic for a Purchase correction — used by both
+    the public /purchases/{id}/correct endpoint below and correct_sale's
+    Unified-Sale-linked Purchase cascade (routers/sales.py::correct_sale).
+
+    Re-attaches unified_sale_id onto the replacement row: original has no
+    way to know it (PurchaseCreate/PurchaseCorrect carry no such field,
+    same as SaleCorrect), and without this the corrected Purchase silently
+    detaches from its batch — invisible to purchaseRateFor() on the
+    frontend (matches by unified_sale_id + product_id), to
+    routers/unified_sale.py._load_children's purchases list, and to this
+    very cascade on any subsequent correction (§ correct_purchase
+    unified_sale_id gap)."""
+    _reverse_purchase(db, original)
+
+    original.status = "corrected"
+    original.corrected_by = by
+    original.corrected_at = datetime.utcnow()
+    original.correction_reason = payload.correction_reason
+    db.add(original)
+    db.flush()
+
+    corrected = _apply_purchase(db, payload, by)
+    corrected.corrected_from_id = original.id
+    corrected.unified_sale_id = original.unified_sale_id
+    db.add(corrected)
+    db.flush()
+    return corrected
+
+
 @router.patch("/{purchase_id}/correct", response_model=schemas.PurchaseOut)
 def correct_purchase(
     purchase_id: UUID, payload: schemas.PurchaseCorrect, db: Session = Depends(get_db),
@@ -132,18 +164,7 @@ def correct_purchase(
     if original.status != "active":
         raise HTTPException(400, "Only an active purchase can be corrected")
 
-    _reverse_purchase(db, original)
-
-    original.status = "corrected"
-    original.corrected_by = current_user.name
-    original.corrected_at = datetime.utcnow()
-    original.correction_reason = payload.correction_reason
-    db.add(original)
-    db.flush()
-
-    corrected = _apply_purchase(db, payload, current_user.name)
-    corrected.corrected_from_id = original.id
-    db.add(corrected)
+    corrected = _correct_purchase_internal(db, original, payload, current_user.name)
 
     db.commit()
     db.refresh(corrected)

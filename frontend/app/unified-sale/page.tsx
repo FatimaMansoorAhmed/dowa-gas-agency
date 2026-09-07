@@ -1,6 +1,7 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { PlusCircle, Check, X, AlertTriangle, CheckCircle2, Pencil, Ban, ThumbsUp, Building2, Wallet, ArrowRight, Printer } from "lucide-react";
+import { Trans, useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, Th, Td } from "@/components/ui";
 import NewPlantModal from "@/components/NewPlantModal";
@@ -34,6 +35,7 @@ function matchesDateFilter(isoDate: string, f: DateFilter): boolean {
   return true;
 }
 function DateFilterToolbar({ value, onChange }: { value: DateFilter; onChange: (f: DateFilter) => void }) {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-wrap items-center gap-2">
       <select
@@ -41,10 +43,10 @@ function DateFilterToolbar({ value, onChange }: { value: DateFilter; onChange: (
         onChange={(e) => onChange({ ...value, type: e.target.value as DateFilter["type"] })}
         className="px-2.5 py-1 bg-paper border border-hairline rounded-md text-xs font-semibold text-ink focus:outline-none"
       >
-        <option value="24h">Last 24 Hours</option>
-        <option value="day">By Specific Day</option>
-        <option value="month">By Month</option>
-        <option value="year">By Year</option>
+        <option value="24h">{t("unifiedSale.dateLast24Hours")}</option>
+        <option value="day">{t("unifiedSale.dateBySpecificDay")}</option>
+        <option value="month">{t("unifiedSale.dateByMonth")}</option>
+        <option value="year">{t("unifiedSale.dateByYear")}</option>
       </select>
       {value.type === "day" && (
         <input type="date" value={value.date} onChange={(e) => onChange({ ...value, date: e.target.value })} className="px-2 py-1 bg-white border border-hairline rounded-md text-xs font-mono text-ink" />
@@ -70,14 +72,17 @@ const STATUS_STYLES: Record<string, string> = {
 };
 
 function StatusBadge({ status }: { status: string }) {
+  const { t } = useTranslation();
+  const key = status === "pending" ? "unifiedSale.statusPending" : status === "approved" ? "unifiedSale.statusApproved" : status === "cancelled" ? "unifiedSale.statusCancelled" : null;
   return (
     <span className={`inline-block px-2.5 py-0.5 rounded-full border font-mono text-[10px] uppercase font-medium ${STATUS_STYLES[status] || ""}`}>
-      {status}
+      {key ? t(key) : status}
     </span>
   );
 }
 
 function UnifiedSaleBody() {
+  const { t } = useTranslation();
   const { user } = useAuth();
 
   const [companies, setCompanies] = useState<Company[]>([]);
@@ -136,6 +141,11 @@ function UnifiedSaleBody() {
 
   const [items, setItems] = useState<Record<string, ItemRow>>({});
   const [deliveryCharges, setDeliveryCharges] = useState("");
+
+  // GST on Sale, extended to Unified Sale (optional, locked at entry) —
+  // applies to the whole batch's total_selling_amount, not per item.
+  const [gstEnabled, setGstEnabled] = useState(false);
+  const [gstRate, setGstRate] = useState("");
 
   // Payment Format & Settlement Amounts
   const [totalCreditReceived, setTotalCreditReceived] = useState("");
@@ -255,6 +265,14 @@ function UnifiedSaleBody() {
   const totalPurchase = activeItems.reduce((s, x) => s + (parseFloat(x.row!.qty) || 0) * (parseFloat(x.row!.purchaseRate) || 0), 0);
   const margin = totalSelling - totalPurchase;
 
+  // GST on Sale, extended to Unified Sale (§ GST on Sale) — gst_amount is
+  // total_selling_amount (totalSelling, incl. delivery charges) × rate,
+  // never touching totalPurchase/margin above. grand_total is what the
+  // customer is actually charged; total_selling_amount stays excl.-GST.
+  const effectiveGstRate = gstEnabled ? parseFloat(gstRate) || 0 : 0;
+  const gstAmount = totalSelling * (effectiveGstRate / 100);
+  const grandTotalWithGst = totalSelling + gstAmount;
+
   const totalCreditNum = parseFloat(totalCreditReceived) || 0;
   const homeExpenseNum = parseFloat(homeExpenseAmount) || 0;
   const ownerDrawingsNum = parseFloat(ownerDrawingsAmount) || 0;
@@ -263,7 +281,7 @@ function UnifiedSaleBody() {
   const netPlantPayment = totalCreditNum - homeExpenseNum - ownerDrawingsNum;
 
   const projectedCustomerBalance = selectedCustomer
-    ? parseFloat(selectedCustomer.current_balance) + totalSelling - totalCreditNum
+    ? parseFloat(selectedCustomer.current_balance) + grandTotalWithGst - totalCreditNum
     : null;
 
   // Settlement only nets off the purchase plant's payable when it's actually
@@ -277,6 +295,9 @@ function UnifiedSaleBody() {
   const projectedPlantBalance = selectedCompany
     ? parseFloat(selectedCompany.current_balance) + totalPurchase - purchasePlantSettlement
     : null;
+
+  const accountCategoryLabel = (cat: AccountType): string =>
+    cat === "office_cash" ? t("payments.officeCash") : cat === "dowa_account" ? t("payments.dowaAccount") : cat === "owner_home" ? t("payments.ownerHome") : ACCOUNT_TYPE_LABELS[cat];
 
   const targetPlant =
     destinationType === "plant" && targetPlantId && targetPlantId !== companyId
@@ -305,11 +326,13 @@ function UnifiedSaleBody() {
     (!vehicleRequired || !!vehicleNo.trim()) &&
     (activeItems.length > 0 || totalCreditNum > 0 || deliveryChargesNum > 0) &&
     settlementValid &&
-    (homeExpenseNum <= 0 || !!homeExpenseCategoryId);
+    (homeExpenseNum <= 0 || !!homeExpenseCategoryId) &&
+    (!gstEnabled || parseFloat(gstRate) > 0);
 
   const resetForm = () => {
     setItems({});
     setDeliveryCharges("");
+    setGstEnabled(false); setGstRate("");
     setTotalCreditReceived(""); setPaymentMethod("cash");
     setHomeExpenseAmount(""); setHomeExpenseCategoryId(""); setOwnerDrawingsAmount("");
     setGatePassNo(""); setVehicleNo(""); setNotes("");
@@ -327,7 +350,7 @@ function UnifiedSaleBody() {
       const result = await api.unifiedSale.get(id);
       setSelectedTransaction(result);
     } catch (e) {
-      setTransactionError(e instanceof Error ? e.message : "Could not load transaction.");
+      setTransactionError(e instanceof Error ? e.message : t("unifiedSale.couldNotLoadTransaction"));
     } finally {
       setLoadingTransaction(false);
     }
@@ -366,6 +389,8 @@ function UnifiedSaleBody() {
       });
       setItems(nextItems);
       setDeliveryCharges(full.delivery_charges && Number(full.delivery_charges) > 0 ? String(full.delivery_charges) : "");
+      setGstEnabled(!!full.gst_enabled);
+      setGstRate(full.gst_rate ? String(full.gst_rate) : "");
       setTotalCreditReceived(String(full.total_credit_received));
       setHomeExpenseAmount(String(full.home_expense_amount || ""));
       setHomeExpenseCategoryId(full.expense?.category_id || "");
@@ -376,7 +401,7 @@ function UnifiedSaleBody() {
       setNotes(full.sales[0]?.notes || "");
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load this order for editing.");
+      setError(e instanceof Error ? e.message : t("unifiedSale.couldNotLoadForEditing"));
     }
   };
 
@@ -392,7 +417,7 @@ function UnifiedSaleBody() {
       setLastResult((prev) => (prev?.id === id ? result : prev));
       await load();
     } catch (e) {
-      setTransactionError(e instanceof Error ? e.message : "Sale approval failed.");
+      setTransactionError(e instanceof Error ? e.message : t("unifiedSale.saleApprovalFailed"));
       await load();
     } finally {
       setActionBusyId(null);
@@ -409,7 +434,7 @@ function UnifiedSaleBody() {
       setLastResult((prev) => (prev?.id === id ? result : prev));
       await load();
     } catch (e) {
-      setTransactionError(e instanceof Error ? e.message : "Payment approval failed.");
+      setTransactionError(e instanceof Error ? e.message : t("unifiedSale.paymentApprovalFailed"));
       await load();
     } finally {
       setActionBusyId(null);
@@ -418,7 +443,7 @@ function UnifiedSaleBody() {
 
   const handleCancel = async (id: string) => {
     if (!user || actionBusyId) return;
-    if (!window.confirm("Cancel this pending unified sale? This cannot be undone.")) return;
+    if (!window.confirm(t("unifiedSale.confirmCancelOrder"))) return;
     setActionBusyId(id);
     try {
       const result = await api.unifiedSale.cancel(id, user.name);
@@ -426,7 +451,7 @@ function UnifiedSaleBody() {
       setLastResult((prev) => (prev?.id === id ? result : prev));
       await load();
     } catch (e) {
-      setTransactionError(e instanceof Error ? e.message : "Cancel failed.");
+      setTransactionError(e instanceof Error ? e.message : t("unifiedSale.cancelFailed"));
     } finally {
       setActionBusyId(null);
     }
@@ -452,6 +477,10 @@ function UnifiedSaleBody() {
           purchase_rate: parseFloat(x.row!.purchaseRate) || 0, selling_rate: parseFloat(x.row!.sellingRate) || 0,
         })),
         delivery_charges: deliveryChargesNum,
+        gst_enabled: gstEnabled,
+        gst_rate: gstEnabled ? effectiveGstRate : undefined,
+        gst_amount: gstEnabled ? gstAmount : undefined,
+        grand_total: gstEnabled ? grandTotalWithGst : undefined,
         settlement: {
           total_credit_received: totalCreditNum,
           cash_received: 0,
@@ -475,7 +504,7 @@ function UnifiedSaleBody() {
       resetForm();
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not save — check the fields and try again.");
+      setError(e instanceof Error ? e.message : t("unifiedSale.couldNotSave"));
     } finally {
       setSaving(false);
     }
@@ -492,7 +521,7 @@ function UnifiedSaleBody() {
       return resolveAccountLabel(r.account_id, accounts);
     }
     const plant = companies.find((c) => c.id === (r.target_plant_id || r.company_id));
-    return plant ? plant.name : "Plant";
+    return plant ? plant.name : t("unifiedSale.plantFallback");
   };
 
   // Approved Sale / Approved Payments (§3/§4) — active only, newest first,
@@ -503,6 +532,40 @@ function UnifiedSaleBody() {
       .sort((a, b) => (a.date < b.date ? 1 : -1)),
     [allSales, saleDateFilter]
   );
+  // One Invoice & One Transaction for Multi-Item Sales (§ One Invoice) —
+  // several child Sale rows created by the SAME Unified Sale batch (one
+  // per product/cylinder size) must appear as ONE row here, not as
+  // disconnected separate sales — mirrors how the Customer Ledger already
+  // aggregates a batch into a single "unified_sale" row. A plain Sale
+  // (unified_sale_id null, from the ordinary New Sale form) still renders
+  // on its own. The underlying per-product Sale rows are untouched —
+  // FIFO/cylinder-balance/tonnage tracking still keys off them
+  // individually; only this list's presentation is grouped.
+  type ApprovedSaleRow =
+    | { key: string; kind: "plain"; date: string; sale: Sale }
+    | { key: string; kind: "batch"; date: string; batch: UnifiedSaleBatch | undefined; batchId: string; children: Sale[] };
+  const approvedSaleRows = useMemo<ApprovedSaleRow[]>(() => {
+    const batchChildren = new Map<string, Sale[]>();
+    const rows: ApprovedSaleRow[] = [];
+    for (const s of approvedSales) {
+      if (s.unified_sale_id) {
+        const arr = batchChildren.get(s.unified_sale_id) || [];
+        arr.push(s);
+        batchChildren.set(s.unified_sale_id, arr);
+      } else {
+        rows.push({ key: s.id, kind: "plain", date: s.date, sale: s });
+      }
+    }
+    for (const [batchId, children] of batchChildren) {
+      const batch = recent.find((r) => r.id === batchId);
+      rows.push({
+        key: batchId, kind: "batch", batchId, children,
+        date: batch?.sale_approved_at || children[0].date,
+        batch,
+      });
+    }
+    return rows.sort((a, b) => (a.date < b.date ? 1 : -1));
+  }, [approvedSales, recent]);
   const approvedPayments = useMemo(
     () => allPayments
       .filter((p) => p.status === "active" && matchesDateFilter(p.date, paymentDateFilter))
@@ -528,9 +591,9 @@ function UnifiedSaleBody() {
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Unified Sale"
-        title="Sale & settlement, entered together, approved independently"
-        caption="The customer sale/load and the plant payment/settlement are two separate real-world events. Each is approved on its own — approving the sale never posts the plant payment, and approving the payment never re-posts the sale."
+        eyebrow={t("unifiedSale.eyebrow")}
+        title={t("unifiedSale.title")}
+        caption={t("unifiedSale.caption")}
       />
 
       <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4">
@@ -543,10 +606,10 @@ function UnifiedSaleBody() {
             <div className="h-10 w-10 rounded-lg bg-teal text-white flex items-center justify-center">
               <PlusCircle size={19} />
             </div>
-            <span className="font-mono text-[10px] uppercase tracking-wide text-teal font-semibold">Create</span>
+            <span className="font-mono text-[10px] uppercase tracking-wide text-teal font-semibold">{t("unifiedSale.createBadge")}</span>
           </div>
-          <div className="mt-4 font-display text-lg font-bold text-ink">New Sale</div>
-          <div className="mt-1 font-body text-xs text-steel">Create a sale and settlement in one entry.</div>
+          <div className="mt-4 font-display text-lg font-bold text-ink">{t("unifiedSale.newSale")}</div>
+          <div className="mt-1 font-body text-xs text-steel">{t("unifiedSale.newSaleCaption")}</div>
         </button>
 
         <button
@@ -558,22 +621,22 @@ function UnifiedSaleBody() {
             <div className="h-10 w-10 rounded-lg bg-teal text-white flex items-center justify-center">
               <Wallet size={19} />
             </div>
-            <span className="font-mono text-[10px] uppercase tracking-wide text-teal font-semibold">Create</span>
+            <span className="font-mono text-[10px] uppercase tracking-wide text-teal font-semibold">{t("unifiedSale.createBadge")}</span>
           </div>
-          <div className="mt-4 font-display text-lg font-bold text-ink">Record Payment</div>
-          <div className="mt-1 font-body text-xs text-steel">Just a payment, no sale — routes to an account, plant, or owner drawing.</div>
+          <div className="mt-4 font-display text-lg font-bold text-ink">{t("unifiedSale.recordPayment")}</div>
+          <div className="mt-1 font-body text-xs text-steel">{t("unifiedSale.recordPaymentCaption")}</div>
         </button>
 
         <Panel className="!p-5">
-          <div className="font-mono text-[10px] uppercase text-steel">Sale / Load</div>
+          <div className="font-mono text-[10px] uppercase text-steel">{t("unifiedSale.saleLoad")}</div>
           <div className="mt-2 font-display text-2xl font-bold text-[#8A6D00]">{salePendingOrders.length}</div>
-          <div className="mt-1 font-body text-xs text-steel">Pending sale/load approvals</div>
+          <div className="mt-1 font-body text-xs text-steel">{t("unifiedSale.pendingSaleLoadApprovals")}</div>
         </Panel>
 
         <Panel className="!p-5">
-          <div className="font-mono text-[10px] uppercase text-steel">Plant Payments</div>
+          <div className="font-mono text-[10px] uppercase text-steel">{t("unifiedSale.plantPayments")}</div>
           <div className="mt-2 font-display text-2xl font-bold text-[#8A6D00]">{paymentPendingOrders.length}</div>
-          <div className="mt-1 font-body text-xs text-steel">Pending settlement approvals</div>
+          <div className="mt-1 font-body text-xs text-steel">{t("unifiedSale.pendingSettlementApprovals")}</div>
         </Panel>
 
         <button
@@ -583,11 +646,11 @@ function UnifiedSaleBody() {
         >
           <div className="flex items-center gap-2">
             <CheckCircle2 size={15} className="text-[#1E8A5F]" />
-            <span className="font-mono text-[10px] uppercase tracking-wide text-steel font-semibold">Approved Sale</span>
+            <span className="font-mono text-[10px] uppercase tracking-wide text-steel font-semibold">{t("unifiedSale.approvedSale")}</span>
           </div>
           <div className="mt-2 font-display text-2xl font-bold text-[#1E8A5F]">{allSales.filter((s) => s.status === "active").length}</div>
           <div className="mt-1 font-body text-xs text-teal flex items-center gap-1">
-            View all sales <ArrowRight size={12} />
+            {t("unifiedSale.viewAllSales")} <ArrowRight size={12} />
           </div>
         </button>
 
@@ -598,11 +661,11 @@ function UnifiedSaleBody() {
         >
           <div className="flex items-center gap-2">
             <CheckCircle2 size={15} className="text-[#1E8A5F]" />
-            <span className="font-mono text-[10px] uppercase tracking-wide text-steel font-semibold">Approved Payments</span>
+            <span className="font-mono text-[10px] uppercase tracking-wide text-steel font-semibold">{t("unifiedSale.approvedPayments")}</span>
           </div>
           <div className="mt-2 font-display text-2xl font-bold text-[#1E8A5F]">{allPayments.filter((p) => p.status === "active").length}</div>
           <div className="mt-1 font-body text-xs text-teal flex items-center gap-1">
-            View all payments <ArrowRight size={12} />
+            {t("unifiedSale.viewAllPayments")} <ArrowRight size={12} />
           </div>
         </button>
       </div>
@@ -624,16 +687,16 @@ function UnifiedSaleBody() {
             <div className="w-full max-w-5xl max-h-[94vh] overflow-hidden bg-white rounded-xl shadow-2xl flex flex-col">
               <div className="flex items-center justify-between px-5 py-4 border-b border-hairline shrink-0">
                 <div>
-                  <Eyebrow>{editingId ? "Edit Pending Sale" : "New Unified Sale"}</Eyebrow>
+                  <Eyebrow>{editingId ? t("unifiedSale.editPendingSale") : t("unifiedSale.newUnifiedSale")}</Eyebrow>
                   <div className="font-body text-xs text-steel mt-1">
-                    {editingId ? `Editing ${editingDisplayId}` : "Create the sale, settlement and routing in one entry."}
+                    {editingId ? t("unifiedSale.editingId", { id: editingDisplayId }) : t("unifiedSale.createSaleSettlementRouting")}
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={resetForm}
                   className="p-2 rounded-md hover:bg-paper text-steel hover:text-ink"
-                  title="Close"
+                  title={t("unifiedSale.close")}
                 >
                   <X size={18} />
                 </button>
@@ -643,24 +706,24 @@ function UnifiedSaleBody() {
             <div className="flex flex-col gap-4">
               {editingId && (
                 <div className="flex items-center justify-between px-3 py-2 bg-[#FFF6E0] border border-[#F0DFA0] rounded-lg">
-                  <span className="font-body text-xs text-[#8A6D00]">Editing pending order {editingDisplayId}</span>
+                  <span className="font-body text-xs text-[#8A6D00]">{t("unifiedSale.editingPendingOrder", { id: editingDisplayId })}</span>
                   <button type="button" onClick={resetForm} className="font-body text-xs text-[#8A6D00] underline">
-                    Cancel edit
+                    {t("unifiedSale.cancelEdit")}
                   </button>
                 </div>
               )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Field label="Date">
+                <Field label={t("unifiedSale.date")}>
                   <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} />
                 </Field>
-                <Field label="Purchase Plant">
+                <Field label={t("unifiedSale.purchasePlant")}>
                   <div className="relative">
                     <div className="flex gap-1.5">
                       <input
                         value={selectedCompany ? selectedCompany.name : companySearch}
                         onChange={(e) => { setCompanyId(""); setCompanySearch(e.target.value); }}
-                        placeholder="Type to search or add a plant"
+                        placeholder={t("unifiedSale.searchOrAddPlant")}
                         className={`${inputClass} flex-1`}
                       />
                       <Button variant="outline" onClick={() => setShowNewPlant(true)}><PlusCircle size={14} /></Button>
@@ -681,7 +744,7 @@ function UnifiedSaleBody() {
                             onClick={() => setShowNewPlant(true)}
                             className="w-full text-left px-3 py-2 hover:bg-paper font-body text-[13px] text-teal"
                           >
-                            + Add "{companySearch.trim()}" as a new plant
+                            {t("unifiedSale.addAsNewPlant", { name: companySearch.trim() })}
                           </button>
                         )}
                       </div>
@@ -690,12 +753,12 @@ function UnifiedSaleBody() {
                 </Field>
               </div>
 
-              <Field label="Customer">
+              <Field label={t("unifiedSale.customer")}>
                 <div className="relative">
                   <input
                     value={selectedCustomer ? `${selectedCustomer.name} · ${selectedCustomer.display_id}` : customerSearch}
                     onChange={(e) => { setCustomerId(""); setCustomerSearch(e.target.value); }}
-                    placeholder="Search by name, mobile, or customer ID"
+                    placeholder={t("unifiedSale.searchCustomer")}
                     className={inputClass}
                   />
                   {!customerId && customerSearch.trim() && (
@@ -705,7 +768,7 @@ function UnifiedSaleBody() {
                           <span className="font-semibold text-ink">{c.name}</span> <span className="text-steel">· {c.display_id} · {c.mobile}</span>
                         </button>
                       ))}
-                      {!filteredCustomers.length && <div className="px-3 py-2 font-body text-[13px] text-steel">No match.</div>}
+                      {!filteredCustomers.length && <div className="px-3 py-2 font-body text-[13px] text-steel">{t("unifiedSale.noMatch")}</div>}
                     </div>
                   )}
                 </div>
@@ -713,7 +776,7 @@ function UnifiedSaleBody() {
 
               {/* Items Section */}
               <div className="border-t border-hairline pt-4">
-                <Eyebrow>Items (optional — leave all at 0 for a pure settlement)</Eyebrow>
+                <Eyebrow>{t("unifiedSale.itemsOptional")}</Eyebrow>
                 <div className="flex flex-col gap-2.5 mt-2.5">
                   {products.map((p) => {
                     const row = items[p.id] || { qty: "", purchaseRate: "", sellingRate: "" };
@@ -726,9 +789,9 @@ function UnifiedSaleBody() {
                           </span>
                         </div>
                         <div className="grid grid-cols-3 gap-2">
-                          <input type="number" value={row.qty} onChange={(e) => setItemField(p.id, "qty", e.target.value)} placeholder="Qty" className={inputClass} />
-                          <AmountInput value={row.purchaseRate} onChange={(v) => setItemField(p.id, "purchaseRate", v)} placeholder="Purchase" className={inputClass} />
-                          <AmountInput value={row.sellingRate} onChange={(v) => setItemField(p.id, "sellingRate", v)} placeholder="Selling" className={inputClass} />
+                          <input type="number" value={row.qty} onChange={(e) => setItemField(p.id, "qty", e.target.value)} placeholder={t("unifiedSale.qtyPlaceholder")} className={inputClass} />
+                          <AmountInput value={row.purchaseRate} onChange={(v) => setItemField(p.id, "purchaseRate", v)} placeholder={t("unifiedSale.purchasePlaceholder")} className={inputClass} />
+                          <AmountInput value={row.sellingRate} onChange={(v) => setItemField(p.id, "sellingRate", v)} placeholder={t("unifiedSale.sellingPlaceholder")} className={inputClass} />
                         </div>
                       </div>
                     );
@@ -738,15 +801,15 @@ function UnifiedSaleBody() {
                 {(activeItems.length > 0 || deliveryChargesNum > 0) && (
                   <div className="grid grid-cols-3 gap-2 mt-3">
                     <div className="px-3 py-2 bg-ink rounded-md">
-                      <div className="font-mono text-[9.5px] text-[#9FD8D8]">SELLING TOTAL</div>
+                      <div className="font-mono text-[9.5px] text-[#9FD8D8] uppercase">{t("unifiedSale.sellingTotal")}</div>
                       <div className="font-display font-bold text-xs sm:text-sm text-white mt-0.5">{pkr(totalSelling)}</div>
                     </div>
                     <div className="px-3 py-2 bg-ink rounded-md">
-                      <div className="font-mono text-[9.5px] text-[#9FD8D8]">PURCHASE TOTAL</div>
+                      <div className="font-mono text-[9.5px] text-[#9FD8D8] uppercase">{t("unifiedSale.purchaseTotal")}</div>
                       <div className="font-display font-bold text-xs sm:text-sm text-white mt-0.5">{pkr(totalPurchase)}</div>
                     </div>
                     <div className="px-3 py-2 bg-ink rounded-md">
-                      <div className="font-mono text-[9.5px] text-[#9FD8D8]">MARGIN</div>
+                      <div className="font-mono text-[9.5px] text-[#9FD8D8] uppercase">{t("unifiedSale.margin")}</div>
                       <div className="font-display font-bold text-xs sm:text-sm text-white mt-0.5">{pkr(margin)}</div>
                     </div>
                   </div>
@@ -755,63 +818,110 @@ function UnifiedSaleBody() {
 
               {/* Delivery Details */}
               <div className="border-t border-hairline pt-4">
-                <Eyebrow>Delivery Details</Eyebrow>
+                <Eyebrow>{t("unifiedSale.deliveryDetails")}</Eyebrow>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
-                  <Field label={vehicleRequired ? "Vehicle No *" : "Vehicle No (optional — no cylinders on this transaction)"}>
+                  <Field label={vehicleRequired ? t("unifiedSale.vehicleNoRequired") : t("unifiedSale.vehicleNoOptional")}>
                     <input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} required={vehicleRequired} className={inputClass} />
                   </Field>
-                  <Field label="Gate Pass No">
+                  <Field label={t("unifiedSale.gatePassNo")}>
                     <input value={gatePassNo} onChange={(e) => setGatePassNo(e.target.value)} className={inputClass} />
                   </Field>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
-                  <Field label="Delivery Charges (Rs)">
+                  <Field label={t("unifiedSale.deliveryChargesRs")}>
                     <AmountInput value={deliveryCharges} onChange={setDeliveryCharges} placeholder="0" className={inputClass} />
                   </Field>
-                  <Field label="Notes">
-                    <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Remarks" className={inputClass} />
+                  <Field label={t("unifiedSale.notes")}>
+                    <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t("unifiedSale.remarksPlaceholder")} className={inputClass} />
                   </Field>
                 </div>
               </div>
 
+              {/* GST Section (§ GST on Sale) — optional, applies to the
+                  whole batch's total_selling_amount; frozen server-side
+                  at create/edit time. */}
+              <div className="border-t border-hairline pt-4">
+                <Eyebrow>{t("unifiedSale.gstSectionTitle")}</Eyebrow>
+                <div className="flex items-center gap-3 mt-2">
+                  <label className="flex items-center gap-1.5 font-body text-[13px] text-ink cursor-pointer">
+                    <input type="checkbox" checked={gstEnabled} onChange={(e) => setGstEnabled(e.target.checked)} />
+                    {t("unifiedSale.applyGst")}
+                  </label>
+                  {gstEnabled && (
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={gstRate}
+                      onChange={(e) => setGstRate(e.target.value)}
+                      placeholder="Rate %"
+                      className={`${inputClass} w-24`}
+                    />
+                  )}
+                </div>
+
+                {gstEnabled && effectiveGstRate > 0 && (
+                  <div className="flex flex-col gap-1 px-3 py-2.5 bg-ink rounded-lg mt-3">
+                    <div className="flex justify-between items-center">
+                      <span className="font-mono text-[10.5px] text-[#9FD8D8] tracking-wide uppercase">
+                        {t("unifiedSale.valueExclTax")}
+                      </span>
+                      <span className="font-display font-semibold text-sm text-white">{pkr(totalSelling)}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="font-mono text-[10.5px] text-[#9FD8D8] tracking-wide uppercase">
+                        GST @ {gstRate}%
+                      </span>
+                      <span className="font-display font-semibold text-sm text-white">{pkr(gstAmount)}</span>
+                    </div>
+                    <div className="flex justify-between items-center border-t border-white/20 pt-1 mt-0.5">
+                      <span className="font-mono text-[11px] text-[#9FD8D8] tracking-wide uppercase">
+                        {t("unifiedSale.grandTotal")}
+                      </span>
+                      <span className="font-display font-bold text-lg text-white">{pkr(grandTotalWithGst)}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Settlement Section */}
               <div className="border-t border-hairline pt-4 space-y-3">
-                <Eyebrow>Payment & Settlement Routing</Eyebrow>
+                <Eyebrow>{t("unifiedSale.paymentSettlementRouting")}</Eyebrow>
                 <SectionCaption>
-                  Select format and amount received, deduct home expenses/drawings, and route the balance.
+                  {t("unifiedSale.paymentSettlementCaption")}
                 </SectionCaption>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <Field label="Payment Format">
+                  <Field label={t("unifiedSale.paymentFormat")}>
                     <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as any)} className={inputClass}>
-                      <option value="cash">Cash</option>
-                      <option value="online">Online Transfer</option>
-                      <option value="cheque">Cheque</option>
-                      <option value="deposit">Check Deposit</option>
+                      <option value="cash">{t("unifiedSale.methodCash")}</option>
+                      <option value="online">{t("unifiedSale.methodOnline")}</option>
+                      <option value="cheque">{t("unifiedSale.methodCheque")}</option>
+                      <option value="deposit">{t("unifiedSale.methodDeposit")}</option>
                     </select>
                   </Field>
 
-                  <Field label="Total Received (PKR)">
+                  <Field label={t("unifiedSale.totalReceivedPkr")}>
                     <AmountInput value={totalCreditReceived} onChange={setTotalCreditReceived} placeholder="0" className={`${inputClass} font-mono font-bold text-teal`} />
                   </Field>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <Field label="Home Expense">
+                  <Field label={t("unifiedSale.homeExpense")}>
                     <AmountInput value={homeExpenseAmount} onChange={setHomeExpenseAmount} placeholder="0" className={inputClass} />
                   </Field>
-                  <Field label="Expense Category">
+                  <Field label={t("unifiedSale.expenseCategory")}>
                     {!addingCategory ? (
                       <div className="flex gap-1.5">
                         <select value={homeExpenseCategoryId} onChange={(e) => setHomeExpenseCategoryId(e.target.value)} className={`${inputClass} flex-1`}>
-                          <option value="">Select category</option>
+                          <option value="">{t("unifiedSale.selectCategory")}</option>
                           {categories.filter((c) => c.active === "active").map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                         </select>
                         <Button variant="outline" onClick={() => setAddingCategory(true)}><PlusCircle size={14} /></Button>
                       </div>
                     ) : (
                       <div className="flex gap-1.5">
-                        <input autoFocus value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)} placeholder="New category" className={`${inputClass} flex-1`} />
+                        <input autoFocus value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)} placeholder={t("unifiedSale.newCategoryPlaceholder")} className={`${inputClass} flex-1`} />
                         <Button variant="teal" onClick={handleAddCategory}><Check size={14} /></Button>
                         <Button variant="outline" onClick={() => { setAddingCategory(false); setNewCategoryName(""); }}><X size={14} /></Button>
                       </div>
@@ -819,13 +929,13 @@ function UnifiedSaleBody() {
                   </Field>
                 </div>
 
-                <Field label="Owner Drawings">
+                <Field label={t("unifiedSale.ownerDrawings")}>
                   <AmountInput value={ownerDrawingsAmount} onChange={setOwnerDrawingsAmount} placeholder="0" className={inputClass} />
                 </Field>
 
                 {/* Destination Routing Selector */}
                 <div className="p-3 bg-paper rounded-lg border border-hairline space-y-3">
-                  <div className="font-mono text-[10px] text-steel uppercase font-semibold">Route Remaining Balance ({pkr(Math.max(netPlantPayment, 0))}) To</div>
+                  <div className="font-mono text-[10px] text-steel uppercase font-semibold">{t("unifiedSale.routeRemainingBalanceTo", { amount: pkr(Math.max(netPlantPayment, 0)) })}</div>
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       type="button"
@@ -836,7 +946,7 @@ function UnifiedSaleBody() {
                           : "border-hairline bg-white text-steel hover:bg-paper"
                       }`}
                     >
-                      <Building2 size={14} /> Plant Settlement
+                      <Building2 size={14} /> {t("unifiedSale.plantSettlementOption")}
                     </button>
                     <button
                       type="button"
@@ -847,16 +957,16 @@ function UnifiedSaleBody() {
                           : "border-hairline bg-white text-steel hover:bg-paper"
                       }`}
                     >
-                      <Wallet size={14} /> Account Deposit
+                      <Wallet size={14} /> {t("unifiedSale.accountDepositOption")}
                     </button>
 
-                    
+
                   </div>
 
                   {destinationType === "plant" ? (
-                    <Field label="Target Plant (Defaults to purchase plant)">
+                    <Field label={t("unifiedSale.targetPlantDefault")}>
                       <select value={targetPlantId} onChange={(e) => setTargetPlantId(e.target.value)} className={inputClass}>
-                        <option value="">Same as Purchase Plant ({selectedCompany?.name || "Selected"})</option>
+                        <option value="">{t("unifiedSale.sameAsPurchasePlant", { name: selectedCompany?.name || t("unifiedSale.selectedFallback") })}</option>
                         {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                       </select>
                     </Field>
@@ -864,22 +974,22 @@ function UnifiedSaleBody() {
                     <div className="space-y-2">
                       {/* Fixed to exactly these 4 buckets — never a dynamic
                           bank/cash PaymentAccount row (§ Settlement Routing). */}
-                      <Field label="Target Account">
+                      <Field label={t("unifiedSale.targetAccount")}>
 <select value={accountCategory} onChange={(e) => setAccountCategory(e.target.value as AccountType)} className={inputClass}>
-  <option value="office_cash">{ACCOUNT_TYPE_LABELS.office_cash}</option>
-  <option value="dowa_account">{ACCOUNT_TYPE_LABELS.dowa_account}</option>
-  <option value="owner_home">{ACCOUNT_TYPE_LABELS.owner_home}</option>
+  <option value="office_cash">{t("payments.officeCash")}</option>
+  <option value="dowa_account">{t("payments.dowaAccount")}</option>
+  <option value="owner_home">{t("payments.ownerHome")}</option>
 </select>
                       </Field>
                     </div>
                   )}
                 </div>
 
-                <Field label="Settlement Reference (optional)">
+                <Field label={t("unifiedSale.settlementReferenceOptional")}>
                   <input
                     value={paymentReference}
                     onChange={(e) => setPaymentReference(e.target.value)}
-                    placeholder="Bank transfer / cheque no. — can be filled in later"
+                    placeholder={t("unifiedSale.settlementReferencePlaceholder")}
                     className={inputClass}
                   />
                 </Field>
@@ -890,8 +1000,12 @@ function UnifiedSaleBody() {
                     <span className="font-body text-xs">
                       {pkr(homeExpenseAmount || 0)} + {pkr(ownerDrawingsAmount || 0)} = <b>{pkr(bypassSum)}</b>
                       {" "}{settlementValid
-                        ? <>leaves <b>{pkr(Math.max(netPlantPayment, 0))}</b> to route to <b>{destinationType === "plant" ? (companies.find(c => c.id === (targetPlantId || companyId))?.name || "Plant") : ACCOUNT_TYPE_LABELS[accountCategory]}</b></>
-                        : <>exceeds total credit received ({pkr(totalCreditNum)})</>}
+                        ? <Trans
+                            i18nKey="unifiedSale.settlementLeavesTo"
+                            values={{ remaining: pkr(Math.max(netPlantPayment, 0)), destination: destinationType === "plant" ? (companies.find(c => c.id === (targetPlantId || companyId))?.name || t("unifiedSale.plantFallback")) : accountCategoryLabel(accountCategory) }}
+                            components={{ 1: <b />, 2: <b /> }}
+                          />
+                        : t("unifiedSale.settlementExceeds", { total: pkr(totalCreditNum) })}
                     </span>
                   </div>
                 )}
@@ -899,17 +1013,17 @@ function UnifiedSaleBody() {
 
               {(selectedCustomer || selectedCompany) && (
                 <div className="font-body text-xs text-steel border-t border-hairline pt-3">
-                  <div className="text-[10px] uppercase text-steel/70 mb-1">Projected on approval, not immediately</div>
-                  {selectedCustomer && <div>Customer balance {pkr(selectedCustomer.current_balance)} → after: <b className="text-ink">{pkr(projectedCustomerBalance!)}</b></div>}
+                  <div className="text-[10px] uppercase text-steel/70 mb-1">{t("unifiedSale.projectedOnApproval")}</div>
+                  {selectedCustomer && <div>{t("unifiedSale.customerBalanceAfter", { before: pkr(selectedCustomer.current_balance), after: "" })}<b className="text-ink">{pkr(projectedCustomerBalance!)}</b></div>}
                   {selectedCompany && (
                     <div className="mt-1">
-                      Plant payable ({selectedCompany.name}) {pkr(selectedCompany.current_balance)} → after:{" "}
+                      {t("unifiedSale.plantPayableAfter", { name: selectedCompany.name, before: pkr(selectedCompany.current_balance), after: "" })}
                       <b className="text-ink">{pkr(projectedPlantBalance!)}</b>
                     </div>
                   )}
                   {targetPlant && (
                     <div className="mt-1">
-                      Settlement plant payable ({targetPlant.name}) {pkr(targetPlant.current_balance)} → after:{" "}
+                      {t("unifiedSale.settlementPlantPayableAfter", { name: targetPlant.name, before: pkr(targetPlant.current_balance), after: "" })}
                       <b className="text-ink">{pkr(projectedTargetPlantBalance!)}</b>
                     </div>
                   )}
@@ -919,7 +1033,7 @@ function UnifiedSaleBody() {
               {error && <div className="font-body text-xs text-brand-red">{error}</div>}
 
               <Button variant="primary" onClick={handleSubmit} disabled={!canSubmit || saving}>
-                {saving ? "Saving…" : editingId ? "Save Changes" : "Save Unified Sale (Pending)"}
+                {saving ? t("unifiedSale.saving") : editingId ? t("unifiedSale.saveChanges") : t("unifiedSale.saveUnifiedSalePending")}
               </Button>
             </div>
                 </Panel>
@@ -937,24 +1051,24 @@ function UnifiedSaleBody() {
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <CheckCircle2 size={16} className="text-teal" />
-                  <Eyebrow>{lastResult.display_id} saved</Eyebrow>
+                  <Eyebrow>{t("unifiedSale.savedBadge", { id: lastResult.display_id })}</Eyebrow>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <span className="font-mono text-[9px] uppercase text-steel">Sale</span>
+                  <span className="font-mono text-[9px] uppercase text-steel">{t("unifiedSale.colSale")}</span>
                   <StatusBadge status={lastResult.sale_status} />
-                  <span className="font-mono text-[9px] uppercase text-steel ml-1.5">Payment</span>
+                  <span className="font-mono text-[9px] uppercase text-steel ml-1.5">{t("customerLedger.colPayment")}</span>
                   <StatusBadge status={lastResult.payment_status} />
                 </div>
               </div>
               <div className="flex flex-col gap-1 font-body text-xs text-steel">
                 {lastResult.sales.length > 0 && (
                   <div className="mt-2">
-                    <div className="font-semibold text-ink mb-1">Sale items</div>
+                    <div className="font-semibold text-ink mb-1">{t("unifiedSale.saleItems")}</div>
                     {lastResult.sales.map((sale) => {
                       const product = products.find((p) => p.id === sale.product_id);
                       return (
                         <div key={sale.id} className="flex justify-between text-xs">
-                          <span>{product?.name || "Product"} × {fmtNumber(sale.quantity, 2)}</span>
+                          <span>{product?.name || t("unifiedSale.colProduct")} × {fmtNumber(sale.quantity, 2)}</span>
                           <span>{pkr(sale.total_amount)}</span>
                         </div>
                       );
@@ -963,27 +1077,33 @@ function UnifiedSaleBody() {
                 )}
                 {Number(lastResult.delivery_charges) > 0 && (
                   <div className="flex justify-between text-xs">
-                    <span>Delivery Charges</span>
+                    <span>{t("unifiedSale.deliveryChargesLabel")}</span>
                     <span>{pkr(lastResult.delivery_charges)}</span>
                   </div>
                 )}
                 {Number(lastResult.net_plant_payment) > 0 && (
-                  <div>Settlement of {pkr(lastResult.net_plant_payment)} routed to <b>{getDestinationLabel(lastResult)}</b></div>
+                  <div>
+                    <Trans
+                      i18nKey="unifiedSale.settlementRoutedTo"
+                      values={{ amount: pkr(lastResult.net_plant_payment), destination: getDestinationLabel(lastResult) }}
+                      components={{ 1: <b /> }}
+                    />
+                  </div>
                 )}
                 <div className="mt-3 flex flex-wrap gap-2">
                   {lastResult.sale_status === "pending" && (
                     <Button variant="teal" onClick={() => handleApproveSale(lastResult.id)} disabled={actionBusyId === lastResult.id}>
-                      <ThumbsUp size={13} className="mr-1" /> Approve Sale
+                      <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approveSale")}
                     </Button>
                   )}
                   {lastResult.payment_status === "pending" && (
                     <Button variant="teal" onClick={() => handleApprovePayment(lastResult.id)} disabled={actionBusyId === lastResult.id}>
-                      <ThumbsUp size={13} className="mr-1" /> Approve Payment
+                      <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approvePayment")}
                     </Button>
                   )}
                   {lastResult.sale_status === "pending" && lastResult.payment_status === "pending" && (
                     <Button variant="outline" onClick={() => handleCancel(lastResult.id)} disabled={actionBusyId === lastResult.id}>
-                      <Ban size={13} className="mr-1" /> Cancel
+                      <Ban size={13} className="mr-1" /> {t("unifiedSale.cancel")}
                     </Button>
                   )}
                 </div>
@@ -995,27 +1115,27 @@ function UnifiedSaleBody() {
           <Panel>
             <div className="flex items-center justify-between">
               <div>
-                <Eyebrow>Sale / Load — Pending Approval</Eyebrow>
-                <SectionCaption>Has the customer sale/load actually happened? Approving here posts the sale, cylinder movement, and customer/plant ledger — it never touches the plant payment.</SectionCaption>
+                <Eyebrow>{t("unifiedSale.saleLoadPendingApproval")}</Eyebrow>
+                <SectionCaption>{t("unifiedSale.saleLoadPendingCaption")}</SectionCaption>
               </div>
               <span className="px-2.5 py-1 rounded-md bg-[#FFF6E0] text-[#8A6D00] font-mono text-xs font-semibold border border-[#FFE7A3]">
-                {salePendingOrders.length} Pending
+                {t("unifiedSale.pendingCount", { count: salePendingOrders.length })}
               </span>
             </div>
             <div className="overflow-x-auto mt-3 -mx-1 px-1">
               <table className="w-full min-w-[1150px] border-collapse">
                 <thead>
                   <tr className="border-b border-hairline text-left">
-                    <Th>ID</Th>
-                    <Th>CUSTOMER</Th>
-                    <Th right>11.8 KG</Th>
-                    <Th right>45.4 KG</Th>
-                    <Th>PLANT</Th>
-                    <Th right>SALE</Th>
-                    <Th>GATE PASS</Th>
-                    <Th>VEHICLE</Th>
-                    <Th>NOTES</Th>
-                    <Th right>ACTIONS</Th>
+                    <Th>{t("unifiedSale.colId")}</Th>
+                    <Th>{t("unifiedSale.colCustomer")}</Th>
+                    <Th right>{t("unifiedSale.col118")}</Th>
+                    <Th right>{t("unifiedSale.col454")}</Th>
+                    <Th>{t("unifiedSale.colPlant")}</Th>
+                    <Th right>{t("unifiedSale.colSale")}</Th>
+                    <Th>{t("unifiedSale.colGatePass")}</Th>
+                    <Th>{t("unifiedSale.colVehicle")}</Th>
+                    <Th>{t("unifiedSale.colNotes")}</Th>
+                    <Th right>{t("unifiedSale.colActions")}</Th>
                   </tr>
                 </thead>
 
@@ -1058,7 +1178,7 @@ function UnifiedSaleBody() {
                             {canEditOrCancel && (
                               <button
                                 type="button"
-                                title="Edit Transaction"
+                                title={t("unifiedSale.editTransaction")}
                                 disabled={busy}
                                 onClick={() => handleEditTransaction(r)}
                                 className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-steel hover:text-ink hover:bg-slate-200/60 border border-hairline transition-colors disabled:opacity-50"
@@ -1069,19 +1189,19 @@ function UnifiedSaleBody() {
 
                             <button
                               type="button"
-                              title="Approve Sale"
+                              title={t("unifiedSale.approveSale")}
                               disabled={busy}
                               onClick={() => handleApproveSale(r.id)}
                               className="h-8 shrink-0 inline-flex items-center justify-center gap-1 px-2.5 rounded-md bg-teal/10 hover:bg-teal/20 text-teal border border-teal/30 font-medium text-xs transition-colors disabled:opacity-50"
                             >
                               <CheckCircle2 size={13} />
-                              <span>Approve Sale</span>
+                              <span>{t("unifiedSale.approveSale")}</span>
                             </button>
 
                             {canEditOrCancel && (
                               <button
                                 type="button"
-                                title="Cancel Order"
+                                title={t("unifiedSale.cancelOrder")}
                                 disabled={busy}
                                 onClick={() => handleCancel(r.id)}
                                 className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-brand-red hover:bg-red-50 border border-transparent hover:border-red-200 transition-colors disabled:opacity-50"
@@ -1098,7 +1218,7 @@ function UnifiedSaleBody() {
                   {!salePendingOrders.length && (
                     <tr>
                       <td colSpan={10} className="text-steel font-body text-[13px] py-6 text-center">
-                        No sales/loads awaiting approval.
+                        {t("unifiedSale.noSalesAwaitingApproval")}
                       </td>
                     </tr>
                   )}
@@ -1111,25 +1231,25 @@ function UnifiedSaleBody() {
           <Panel>
             <div className="flex items-center justify-between">
               <div>
-                <Eyebrow>Plant Payment / Settlement — Pending Approval</Eyebrow>
-                <SectionCaption>Has the plant payment/settlement actually happened? Approving here posts the settlement routing and plant/account ledger — it never re-approves the sale.</SectionCaption>
+                <Eyebrow>{t("unifiedSale.plantPaymentSettlementPendingApproval")}</Eyebrow>
+                <SectionCaption>{t("unifiedSale.plantPaymentPendingCaption")}</SectionCaption>
               </div>
               <span className="px-2.5 py-1 rounded-md bg-[#FFF6E0] text-[#8A6D00] font-mono text-xs font-semibold border border-[#FFE7A3]">
-                {paymentPendingOrders.length} Pending
+                {t("unifiedSale.pendingCount", { count: paymentPendingOrders.length })}
               </span>
             </div>
             <div className="overflow-x-auto mt-3 -mx-1 px-1">
               <table className="w-full min-w-[1050px] border-collapse">
                 <thead>
                   <tr className="border-b border-hairline text-left">
-                    <Th>ID</Th>
-                    <Th>PLANT</Th>
-                    <Th>SALE</Th>
-                    <Th right>SETTLED</Th>
-                    <Th>DESTINATION</Th>
-                    <Th>REFERENCE</Th>
-                    <Th>NOTES</Th>
-                    <Th right>ACTIONS</Th>
+                    <Th>{t("unifiedSale.colId")}</Th>
+                    <Th>{t("unifiedSale.colPlant")}</Th>
+                    <Th>{t("unifiedSale.colSale")}</Th>
+                    <Th right>{t("unifiedSale.colSettled")}</Th>
+                    <Th>{t("unifiedSale.colDestination")}</Th>
+                    <Th>{t("unifiedSale.colReference")}</Th>
+                    <Th>{t("unifiedSale.colNotes")}</Th>
+                    <Th right>{t("unifiedSale.colActions")}</Th>
                   </tr>
                 </thead>
 
@@ -1172,7 +1292,7 @@ function UnifiedSaleBody() {
                           <input
                             value={paymentReferenceDrafts[r.id] ?? (r.payment_reference || "")}
                             onChange={(e) => setPaymentReferenceDrafts((prev) => ({ ...prev, [r.id]: e.target.value }))}
-                            placeholder="Bank / cheque ref."
+                            placeholder={t("unifiedSale.referencePlaceholder")}
                             className="font-body text-xs px-2 py-1 rounded-md border border-hairline outline-none text-ink bg-white w-32 focus:border-teal"
                           />
                         </Td>
@@ -1182,7 +1302,7 @@ function UnifiedSaleBody() {
                             {canEditOrCancel && (
                               <button
                                 type="button"
-                                title="Edit Transaction"
+                                title={t("unifiedSale.editTransaction")}
                                 disabled={busy}
                                 onClick={() => handleEditTransaction(r)}
                                 className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-steel hover:text-ink hover:bg-slate-200/60 border border-hairline transition-colors disabled:opacity-50"
@@ -1193,19 +1313,19 @@ function UnifiedSaleBody() {
 
                             <button
                               type="button"
-                              title="Approve Payment"
+                              title={t("unifiedSale.approvePayment")}
                               disabled={busy}
                               onClick={() => handleApprovePayment(r.id)}
                               className="h-8 shrink-0 inline-flex items-center justify-center gap-1 px-2.5 rounded-md bg-teal/10 hover:bg-teal/20 text-teal border border-teal/30 font-medium text-xs transition-colors disabled:opacity-50"
                             >
                               <CheckCircle2 size={13} />
-                              <span>Approve Payment</span>
+                              <span>{t("unifiedSale.approvePayment")}</span>
                             </button>
 
                             {canEditOrCancel && (
                               <button
                                 type="button"
-                                title="Cancel Order"
+                                title={t("unifiedSale.cancelOrder")}
                                 disabled={busy}
                                 onClick={() => handleCancel(r.id)}
                                 className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-brand-red hover:bg-red-50 border border-transparent hover:border-red-200 transition-colors disabled:opacity-50"
@@ -1222,7 +1342,7 @@ function UnifiedSaleBody() {
                   {!paymentPendingOrders.length && (
                     <tr>
                       <td colSpan={8} className="text-steel font-body text-[13px] py-6 text-center">
-                        No plant payments/settlements awaiting approval.
+                        {t("unifiedSale.noPlantPaymentsAwaitingApproval")}
                       </td>
                     </tr>
                   )}
@@ -1240,10 +1360,10 @@ function UnifiedSaleBody() {
               <div className="w-full max-w-6xl max-h-[90vh] overflow-hidden bg-white rounded-xl shadow-2xl flex flex-col">
                 <div className="flex items-center justify-between px-5 py-4 border-b border-hairline shrink-0">
                   <div>
-                    <Eyebrow>Approved Sale</Eyebrow>
-                    <div className="font-body text-xs text-steel mt-1">Every active Sale record — Edit reverses the original and reposts the corrected transaction.</div>
+                    <Eyebrow>{t("unifiedSale.approvedSale")}</Eyebrow>
+                    <div className="font-body text-xs text-steel mt-1">{t("unifiedSale.approvedSaleCaption")}</div>
                   </div>
-                  <button type="button" onClick={() => setShowApprovedSaleModal(false)} className="p-2 rounded-md hover:bg-paper text-steel hover:text-ink" title="Close">
+                  <button type="button" onClick={() => setShowApprovedSaleModal(false)} className="p-2 rounded-md hover:bg-paper text-steel hover:text-ink" title={t("unifiedSale.close")}>
                     <X size={18} />
                   </button>
                 </div>
@@ -1251,52 +1371,130 @@ function UnifiedSaleBody() {
                   <Panel>
                     <div className="mt-1"><DateFilterToolbar value={saleDateFilter} onChange={setSaleDateFilter} /></div>
                     <div className="mt-3 overflow-x-auto">
-                      <table className="w-full min-w-[1050px] border-collapse">
+                      <table className="w-full min-w-[1450px] border-collapse">
                         <thead>
                           <tr className="border-b border-hairline text-left">
-                            <Th>ID</Th>
-                            <Th>DATE</Th>
-                            <Th>CUSTOMER</Th>
-                            <Th>PRODUCT</Th>
-                            <Th right>QTY</Th>
-                            <Th right>SELLING RATE</Th>
-                            <Th right>PURCHASE RATE</Th>
-                            <Th right>AMOUNT</Th>
-                            <Th>ENTERED BY</Th>
-                            <Th center>EDIT</Th>
+                            <Th>{t("unifiedSale.colId")}</Th>
+                            <Th>{t("unifiedSale.colDate")}</Th>
+                            <Th>{t("unifiedSale.colCustomer")}</Th>
+                            <Th>{t("unifiedSale.colProduct")}</Th>
+                            <Th right>{t("unifiedSale.colQty")}</Th>
+                            <Th right>{t("unifiedSale.colSellingRate")}</Th>
+                            <Th right>{t("unifiedSale.colPurchaseRate")}</Th>
+                            <Th right>{t("unifiedSale.colValueExclTax")}</Th>
+                            <Th right>{t("unifiedSale.colGstRate")}</Th>
+                            <Th right>{t("unifiedSale.colGstAmount")}</Th>
+                            <Th right>{t("unifiedSale.colDeliveryCharges")}</Th>
+                            <Th right>{t("unifiedSale.colGrandTotal")}</Th>
+                            <Th>{t("unifiedSale.colEnteredBy")}</Th>
+                            <Th center>{t("unifiedSale.colEdit")}</Th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-hairline">
-                          {approvedSales.map((s) => {
-                            const c = customers.find((x) => x.id === s.customer_id);
-                            const product = products.find((x) => x.id === s.product_id);
-                            const purchaseRate = purchaseRateFor(s);
+                          {approvedSaleRows.map((row) => {
+                            if (row.kind === "plain") {
+                              const s = row.sale;
+                              const c = customers.find((x) => x.id === s.customer_id);
+                              const product = products.find((x) => x.id === s.product_id);
+                              const purchaseRate = purchaseRateFor(s);
+                              return (
+                                <tr key={row.key} className="hover:bg-paper/60 transition-colors">
+                                  <Td mono>{s.display_id}</Td>
+                                  <Td mono>{fmtTime(s.date)}</Td>
+                                  <Td bold>{c?.name || "—"}</Td>
+                                  <Td>{product?.name || "—"}</Td>
+                                  <Td right mono>{fmtNumber(s.quantity, 2)}</Td>
+                                  <Td right mono>{s.rate_per_cylinder ? pkr(s.rate_per_cylinder) : "—"}</Td>
+                                  <Td right mono color="#8E8E93">{purchaseRate ? pkr(purchaseRate) : "—"}</Td>
+                                  <Td right mono>{pkr(s.total_amount)}</Td>
+                                  <Td right mono>{s.gst_rate ? `${s.gst_rate}%` : "—"}</Td>
+                                  <Td right mono>{s.gst_amount && parseFloat(s.gst_amount) > 0 ? pkr(s.gst_amount) : "—"}</Td>
+                                  <Td right mono>—</Td>
+                                  <Td right mono bold>{pkr(s.grand_total ?? s.total_amount)}</Td>
+                                  <Td mono>{s.entered_by}</Td>
+                                  <Td center>
+                                    <div className="flex items-center justify-center gap-1">
+                                      <button type="button" onClick={() => setCorrectTarget({ kind: "sale", transaction: s })} className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title={t("unifiedSale.correctThisSale")}>
+                                        <Pencil size={13} />
+                                      </button>
+                                      <a href={api.sales.invoiceUrl(s.id)} target="_blank" rel="noreferrer" className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title={t("unifiedSale.viewPrintInvoice")}>
+                                        <Printer size={13} />
+                                      </a>
+                                    </div>
+                                  </Td>
+                                </tr>
+                              );
+                            }
+
+                            // One Invoice & One Transaction for Multi-Item
+                            // Sales (§ One Invoice) — a bold parent summary
+                            // row for the whole batch (one combined invoice
+                            // button), followed by its individual line
+                            // items indented underneath so each product can
+                            // still be corrected on its own.
+                            const { batch, batchId, children } = row;
+                            const c = customers.find((x) => x.id === children[0].customer_id);
+                            const productNames = children
+                              .map((s) => products.find((x) => x.id === s.product_id)?.name || "—")
+                              .join(", ");
+                            const sellingRates = children.map((s) => (s.rate_per_cylinder ? pkr(s.rate_per_cylinder) : "—")).join(", ");
+                            const purchaseRates = children.map((s) => { const r = purchaseRateFor(s); return r ? pkr(r) : "—"; }).join(", ");
+                            const totalQty = children.reduce((sum, s) => sum + (parseFloat(s.quantity) || 0), 0);
+                            const valueExclTax = batch ? batch.total_selling_amount : children.reduce((sum, s) => sum + (parseFloat(s.total_amount) || 0), 0);
+                            const grandTotal = (batch?.grand_total) ?? valueExclTax;
                             return (
-                              <tr key={s.id} className="hover:bg-paper/60 transition-colors">
-                                <Td mono>{s.display_id}</Td>
-                                <Td mono>{fmtTime(s.date)}</Td>
-                                <Td bold>{c?.name || "—"}</Td>
-                                <Td>{product?.name || "—"}</Td>
-                                <Td right mono>{fmtNumber(s.quantity, 2)}</Td>
-                                <Td right mono>{s.rate_per_cylinder ? pkr(s.rate_per_cylinder) : "—"}</Td>
-                                <Td right mono color="#8E8E93">{purchaseRate ? pkr(purchaseRate) : "—"}</Td>
-                                <Td right mono bold>{pkr(s.total_amount)}</Td>
-                                <Td mono>{s.entered_by}</Td>
-                                <Td center>
-                                  <div className="flex items-center justify-center gap-1">
-                                    <button type="button" onClick={() => setCorrectTarget({ kind: "sale", transaction: s })} className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title="Correct this sale">
-                                      <Pencil size={13} />
-                                    </button>
-                                    <a href={api.sales.invoiceUrl(s.id)} target="_blank" rel="noreferrer" className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title="View/print invoice">
+                              <Fragment key={row.key}>
+                                <tr className="bg-teal/5 hover:bg-teal/10 transition-colors">
+                                  <Td mono bold>{batch?.display_id || t("unifiedSale.unifiedSaleFallback")}</Td>
+                                  <Td mono>{fmtTime(row.date)}</Td>
+                                  <Td bold>{c?.name || "—"}</Td>
+                                  <Td>{productNames}</Td>
+                                  <Td right mono>{fmtNumber(totalQty, 2)}</Td>
+                                  <Td right mono>{sellingRates}</Td>
+                                  <Td right mono color="#8E8E93">{purchaseRates}</Td>
+                                  <Td right mono>{pkr(valueExclTax)}</Td>
+                                  <Td right mono>{batch?.gst_rate ? `${batch.gst_rate}%` : "—"}</Td>
+                                  <Td right mono>{batch?.gst_amount && parseFloat(batch.gst_amount) > 0 ? pkr(batch.gst_amount) : "—"}</Td>
+                                  <Td right mono>{batch?.delivery_charges && parseFloat(batch.delivery_charges) > 0 ? pkr(batch.delivery_charges) : "—"}</Td>
+                                  <Td right mono bold>{pkr(grandTotal)}</Td>
+                                  <Td mono>{batch?.entered_by || children[0].entered_by}</Td>
+                                  <Td center>
+                                    <a href={api.unifiedSale.invoiceUrl(batchId)} target="_blank" rel="noreferrer" className="inline-flex p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title={t("unifiedSale.viewPrintCombinedInvoice")}>
                                       <Printer size={13} />
                                     </a>
-                                  </div>
-                                </Td>
-                              </tr>
+                                  </Td>
+                                </tr>
+                                {children.map((s) => {
+                                  const product = products.find((x) => x.id === s.product_id);
+                                  const purchaseRate = purchaseRateFor(s);
+                                  return (
+                                    <tr key={s.id} className="hover:bg-paper/60 transition-colors text-steel">
+                                      <Td mono><span className="pl-4 inline-block">↳ {s.display_id}</span></Td>
+                                      <Td mono>{fmtTime(s.date)}</Td>
+                                      <Td>{null}</Td>
+                                      <Td>{product?.name || "—"}</Td>
+                                      <Td right mono>{fmtNumber(s.quantity, 2)}</Td>
+                                      <Td right mono>{s.rate_per_cylinder ? pkr(s.rate_per_cylinder) : "—"}</Td>
+                                      <Td right mono color="#8E8E93">{purchaseRate ? pkr(purchaseRate) : "—"}</Td>
+                                      <Td right mono>{pkr(s.total_amount)}</Td>
+                                      <Td right mono>—</Td>
+                                      <Td right mono>—</Td>
+                                      <Td right mono>—</Td>
+                                      <Td right mono>{pkr(s.total_amount)}</Td>
+                                      <Td mono>{s.entered_by}</Td>
+                                      <Td center>
+                                        <button type="button" onClick={() => setCorrectTarget({ kind: "sale", transaction: s })} className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title={t("unifiedSale.correctThisSale")}>
+                                          <Pencil size={13} />
+                                        </button>
+                                      </Td>
+                                    </tr>
+                                  );
+                                })}
+                              </Fragment>
                             );
                           })}
-                          {!approvedSales.length && (
-                            <tr><td colSpan={10} className="text-steel font-body text-[13px] py-6 text-center">No sales found for this filter.</td></tr>
+                          {!approvedSaleRows.length && (
+                            <tr><td colSpan={14} className="text-steel font-body text-[13px] py-6 text-center">{t("unifiedSale.noSalesFoundFilter")}</td></tr>
                           )}
                         </tbody>
                       </table>
@@ -1316,10 +1514,10 @@ function UnifiedSaleBody() {
               <div className="w-full max-w-6xl max-h-[90vh] overflow-hidden bg-white rounded-xl shadow-2xl flex flex-col">
                 <div className="flex items-center justify-between px-5 py-4 border-b border-hairline shrink-0">
                   <div>
-                    <Eyebrow>Approved Payments</Eyebrow>
-                    <div className="font-body text-xs text-steel mt-1">Every active Payment record — Edit reverses the original and reposts the corrected transaction.</div>
+                    <Eyebrow>{t("unifiedSale.approvedPayments")}</Eyebrow>
+                    <div className="font-body text-xs text-steel mt-1">{t("unifiedSale.approvedPaymentsCaption")}</div>
                   </div>
-                  <button type="button" onClick={() => setShowApprovedPaymentsModal(false)} className="p-2 rounded-md hover:bg-paper text-steel hover:text-ink" title="Close">
+                  <button type="button" onClick={() => setShowApprovedPaymentsModal(false)} className="p-2 rounded-md hover:bg-paper text-steel hover:text-ink" title={t("unifiedSale.close")}>
                     <X size={18} />
                   </button>
                 </div>
@@ -1330,15 +1528,15 @@ function UnifiedSaleBody() {
                       <table className="w-full min-w-[950px] border-collapse">
                         <thead>
                           <tr className="border-b border-hairline text-left">
-                            <Th>ID</Th>
-                            <Th>DATE</Th>
-                            <Th>CUSTOMER</Th>
-                            <Th right>AMOUNT</Th>
-                            <Th>METHOD</Th>
-                            <Th>ACCOUNT</Th>
-                            <Th right>RATE</Th>
-                            <Th>ENTERED BY</Th>
-                            <Th center>EDIT</Th>
+                            <Th>{t("unifiedSale.colId")}</Th>
+                            <Th>{t("unifiedSale.colDate")}</Th>
+                            <Th>{t("unifiedSale.colCustomer")}</Th>
+                            <Th right>{t("unifiedSale.colAmount")}</Th>
+                            <Th>{t("unifiedSale.colMethod")}</Th>
+                            <Th>{t("unifiedSale.colAccount")}</Th>
+                            <Th right>{t("unifiedSale.colRate")}</Th>
+                            <Th>{t("unifiedSale.colEnteredBy")}</Th>
+                            <Th center>{t("unifiedSale.colEdit")}</Th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-hairline">
@@ -1357,10 +1555,10 @@ function UnifiedSaleBody() {
                                 <Td mono>{p.entered_by}</Td>
                                 <Td center>
                                   <div className="flex items-center justify-center gap-1">
-                                    <button type="button" onClick={() => setCorrectTarget({ kind: "payment", transaction: p })} className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title="Correct this payment">
+                                    <button type="button" onClick={() => setCorrectTarget({ kind: "payment", transaction: p })} className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title={t("unifiedSale.correctThisPayment")}>
                                       <Pencil size={13} />
                                     </button>
-                                    <a href={api.payments.invoiceUrl(p.id)} target="_blank" rel="noreferrer" className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title="View/print invoice">
+                                    <a href={api.payments.invoiceUrl(p.id)} target="_blank" rel="noreferrer" className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title={t("unifiedSale.viewPrintInvoice")}>
                                       <Printer size={13} />
                                     </a>
                                   </div>
@@ -1369,7 +1567,7 @@ function UnifiedSaleBody() {
                             );
                           })}
                           {!approvedPayments.length && (
-                            <tr><td colSpan={9} className="text-steel font-body text-[13px] py-6 text-center">No payments found for this filter.</td></tr>
+                            <tr><td colSpan={9} className="text-steel font-body text-[13px] py-6 text-center">{t("unifiedSale.noPaymentsFoundFilter")}</td></tr>
                           )}
                         </tbody>
                       </table>
@@ -1401,7 +1599,7 @@ function UnifiedSaleBody() {
             className="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-white rounded-xl shadow-2xl"
             onMouseDown={(e) => e.stopPropagation()}
           >
-            {loadingTransaction && <div className="p-6 font-body text-sm text-steel">Loading…</div>}
+            {loadingTransaction && <div className="p-6 font-body text-sm text-steel">{t("common.loading")}</div>}
             {transactionError && !loadingTransaction && (
               <div className="p-6 font-body text-sm text-brand-red">{transactionError}</div>
             )}
@@ -1412,18 +1610,22 @@ function UnifiedSaleBody() {
                     <div className="flex items-center gap-2">
                       <CheckCircle2 size={16} className="text-teal" />
                       <div className="font-mono text-xs text-teal font-semibold">{selectedTransaction.display_id}</div>
-                      <span className="font-mono text-[9px] uppercase text-steel">Sale</span>
+                      <span className="font-mono text-[9px] uppercase text-steel">{t("unifiedSale.colSale")}</span>
                       <StatusBadge status={selectedTransaction.sale_status} />
-                      <span className="font-mono text-[9px] uppercase text-steel">Payment</span>
+                      <span className="font-mono text-[9px] uppercase text-steel">{t("customerLedger.colPayment")}</span>
                       <StatusBadge status={selectedTransaction.payment_status} />
                     </div>
                     <div className="font-body text-xs text-steel mt-1">
                       {fmtTime(selectedTransaction.date)}
                       {selectedTransaction.sale_approved_at && (
-                        <> · sale approved {fmtTime(selectedTransaction.sale_approved_at)}{selectedTransaction.sale_approved_by ? ` by ${selectedTransaction.sale_approved_by}` : ""}</>
+                        <> · {selectedTransaction.sale_approved_by
+                          ? t("unifiedSale.saleApprovedBy", { time: fmtTime(selectedTransaction.sale_approved_at), name: selectedTransaction.sale_approved_by })
+                          : t("unifiedSale.saleApprovedAt", { time: fmtTime(selectedTransaction.sale_approved_at) })}</>
                       )}
                       {selectedTransaction.payment_approved_at && (
-                        <> · payment approved {fmtTime(selectedTransaction.payment_approved_at)}{selectedTransaction.payment_approved_by ? ` by ${selectedTransaction.payment_approved_by}` : ""}</>
+                        <> · {selectedTransaction.payment_approved_by
+                          ? t("unifiedSale.paymentApprovedBy", { time: fmtTime(selectedTransaction.payment_approved_at), name: selectedTransaction.payment_approved_by })
+                          : t("unifiedSale.paymentApprovedAt", { time: fmtTime(selectedTransaction.payment_approved_at) })}</>
                       )}
                     </div>
                   </div>
@@ -1439,13 +1641,13 @@ function UnifiedSaleBody() {
                 <div className="px-5 py-4 flex flex-col gap-4">
                   <div className="grid grid-cols-2 gap-3">
                     <div className="bg-paper rounded-lg p-3">
-                      <div className="font-mono text-[9px] text-steel uppercase">Customer</div>
+                      <div className="font-mono text-[9px] text-steel uppercase">{t("unifiedSale.customer")}</div>
                       <div className="font-body text-sm font-semibold text-ink mt-1">
                         {customers.find((c) => c.id === selectedTransaction.customer_id)?.name || "—"}
                       </div>
                     </div>
                     <div className="bg-paper rounded-lg p-3">
-                      <div className="font-mono text-[9px] text-steel uppercase">Purchase Plant</div>
+                      <div className="font-mono text-[9px] text-steel uppercase">{t("unifiedSale.purchasePlant")}</div>
                       <div className="font-body text-sm font-semibold text-ink mt-1">
                         {companies.find((c) => c.id === selectedTransaction.company_id)?.name || "—"}
                       </div>
@@ -1453,33 +1655,33 @@ function UnifiedSaleBody() {
                   </div>
 
                   <div>
-                    <div className="font-mono text-[10px] text-steel uppercase mb-2">Settlement Details</div>
+                    <div className="font-mono text-[10px] text-steel uppercase mb-2">{t("unifiedSale.settlementDetails")}</div>
                     <div className="border border-hairline rounded-lg divide-y divide-hairline">
                       <div className="flex justify-between px-3 py-2.5">
-                        <span className="font-body text-xs text-steel">Total Credit Received</span>
+                        <span className="font-body text-xs text-steel">{t("unifiedSale.totalCreditReceived")}</span>
                         <span className="font-mono text-xs font-semibold">{pkr(selectedTransaction.total_credit_received)}</span>
                       </div>
                       {Number(selectedTransaction.delivery_charges) > 0 && (
                         <div className="flex justify-between px-3 py-2.5">
-                          <span className="font-body text-xs text-steel">Delivery Charges (incl. in Sale)</span>
+                          <span className="font-body text-xs text-steel">{t("unifiedSale.deliveryChargesInclSale")}</span>
                           <span className="font-mono text-xs">{pkr(selectedTransaction.delivery_charges)}</span>
                         </div>
                       )}
                       {Number(selectedTransaction.net_plant_payment) > 0 && (
                         <div className="flex justify-between px-3 py-2.5">
-                          <span className="font-body text-xs text-steel">Routed Settlement ({getDestinationLabel(selectedTransaction)})</span>
+                          <span className="font-body text-xs text-steel">{t("unifiedSale.routedSettlement", { destination: getDestinationLabel(selectedTransaction) })}</span>
                           <span className="font-mono text-xs text-green-700 font-semibold">{pkr(selectedTransaction.net_plant_payment)}</span>
                         </div>
                       )}
                       {Number(selectedTransaction.home_expense_amount) > 0 && (
                         <div className="flex justify-between px-3 py-2.5">
-                          <span className="font-body text-xs text-steel">Home Expense</span>
+                          <span className="font-body text-xs text-steel">{t("unifiedSale.homeExpense")}</span>
                           <span className="font-mono text-xs">{pkr(selectedTransaction.home_expense_amount)}</span>
                         </div>
                       )}
                       {Number(selectedTransaction.owner_drawings_amount) > 0 && (
                         <div className="flex justify-between px-3 py-2.5">
-                          <span className="font-body text-xs text-steel">Owner Drawings</span>
+                          <span className="font-body text-xs text-steel">{t("unifiedSale.ownerDrawings")}</span>
                           <span className="font-mono text-xs">{pkr(selectedTransaction.owner_drawings_amount)}</span>
                         </div>
                       )}
@@ -1493,26 +1695,26 @@ function UnifiedSaleBody() {
                           variant="outline"
                           onClick={() => { const row = recent.find((r) => r.id === selectedTransaction.id); if (row) handleEditTransaction(row); setSelectedTransaction(null); }}
                         >
-                          <Pencil size={13} className="mr-1" /> Edit
+                          <Pencil size={13} className="mr-1" /> {t("unifiedSale.edit")}
                         </Button>
                       )}
                       {selectedTransaction.sale_status === "pending" && (
                         <Button variant="teal" onClick={() => handleApproveSale(selectedTransaction.id)} disabled={actionBusyId === selectedTransaction.id}>
-                          <ThumbsUp size={13} className="mr-1" /> Approve Sale
+                          <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approveSale")}
                         </Button>
                       )}
                       {selectedTransaction.payment_status === "pending" && (
                         <Button variant="teal" onClick={() => handleApprovePayment(selectedTransaction.id)} disabled={actionBusyId === selectedTransaction.id}>
-                          <ThumbsUp size={13} className="mr-1" /> Approve Payment
+                          <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approvePayment")}
                         </Button>
                       )}
                       {selectedTransaction.sale_status === "pending" && selectedTransaction.payment_status === "pending" && (
                         <Button variant="outline" onClick={() => handleCancel(selectedTransaction.id)} disabled={actionBusyId === selectedTransaction.id}>
-                          <Ban size={13} className="mr-1" /> Cancel
+                          <Ban size={13} className="mr-1" /> {t("unifiedSale.cancel")}
                         </Button>
                       )}
                     </div>
-                    <Button variant="outline" onClick={() => setSelectedTransaction(null)}>Close</Button>
+                    <Button variant="outline" onClick={() => setSelectedTransaction(null)}>{t("unifiedSale.close")}</Button>
                   </div>
                 </div>
               </>

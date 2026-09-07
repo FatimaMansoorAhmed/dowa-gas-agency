@@ -1,0 +1,658 @@
+./auth.py:58:        raise HTTPException(400, "A valid email is required")
+./auth.py-59-    if len(payload.password) < 8:
+./auth.py:60:        raise HTTPException(400, "Password must be at least 8 characters")
+./auth.py-61-    if db.query(models.User).filter(models.User.email == email).first():
+./auth.py:62:        raise HTTPException(400, "An account with this email already exists")
+./auth.py-63-
+./auth.py-64-    user = models.User(
+--
+./auth.py:82:    generic_error = HTTPException(401, "Invalid email or password")
+./auth.py-83-
+./auth.py-84-    # Per-IP rate limit — DB-backed (not slowapi's in-memory default) so it
+--
+./auth.py:97:        raise HTTPException(429, "Too many login attempts — try again shortly")
+./auth.py-98-
+./auth.py-99-    email = payload.email.strip().lower()
+--
+./board_rates.py:25:        raise HTTPException(400, "No Board Rate has been set on or before this date yet")
+./board_rates.py-26-    return rate
+./board_rates.py-27-
+--
+./companies.py:42:        raise HTTPException(404, "Company not found")
+./companies.py-43-    return _roll_month_if_needed(company, db)
+./companies.py-44-
+--
+./companies.py:50:        raise HTTPException(400, "Company already exists")
+./companies.py-51-    company = models.Company(
+./companies.py-52-        name=payload.name,
+--
+./company_payments.py:37:        raise HTTPException(404, "Company not found")
+./company_payments.py-38-
+./company_payments.py-39-    account = None
+--
+./company_payments.py:43:            raise HTTPException(404, "Payment account not found")
+./company_payments.py-44-
+./company_payments.py-45-    if payload.purchase_id:
+--
+./company_payments.py:48:            raise HTTPException(400, "Purchase does not belong to this company")
+./company_payments.py-49-
+./company_payments.py-50-    # Same advance/overpayment convention as the customer side, mirrored:
+--
+./company_payments.py:121:        raise HTTPException(404, "Payment not found")
+./company_payments.py-122-    if payment.status != "active":
+./company_payments.py:123:        raise HTTPException(400, "Payment is already cancelled")
+./company_payments.py-124-
+./company_payments.py-125-    _reverse_company_payment(db, payment)
+--
+./company_payments.py:145:        raise HTTPException(400, "correction_reason is required")
+./company_payments.py-146-
+./company_payments.py-147-    original = db.query(models.CompanyPayment).get(payment_id)
+--
+./company_payments.py:149:        raise HTTPException(404, "Payment not found")
+./company_payments.py-150-    if original.status != "active":
+./company_payments.py:151:        raise HTTPException(400, "Only an active payment can be corrected")
+./company_payments.py-152-
+./company_payments.py-153-    _reverse_company_payment(db, original)
+--
+./company_payments.py:181:        raise HTTPException(404, "Payment not found")
+./company_payments.py-182-    generated_at = datetime.now(KARACHI_TZ).strftime("%Y-%m-%d %H:%M")
+./company_payments.py-183-    pdf_bytes = render_company_payment_invoice_pdf(cp, current_user.name, generated_at)
+--
+./customers.py:114:        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+./customers.py-115-
+./customers.py-116-
+--
+./customers.py:122:        raise HTTPException(404, "Customer not found")
+./customers.py-123-    return customer
+./customers.py-124-
+--
+./customers.py:151:        raise HTTPException(status_code=500, detail=str(e))
+./customers.py-152-
+./customers.py-153-
+--
+./customers.py:159:        raise HTTPException(404, "Customer not found")
+./customers.py-160-
+./customers.py-161-    amount = payload.amount
+--
+./customers.py:185:        raise HTTPException(404, "Customer not found")
+./customers.py-186-    customer.status = status
+./customers.py-187-    db.add(customer)
+--
+./customers.py:202:        raise HTTPException(404, "Customer not found")
+./customers.py-203-
+./customers.py-204-    # Same validation as the standalone /cylinder-transactions endpoint
+--
+./customers.py:208:        raise HTTPException(400, "Quantities cannot be negative")
+./customers.py-209-    if payload.qty_out == 0 and payload.qty_in == 0:
+./customers.py:210:        raise HTTPException(400, "Enter a quantity out or in")
+./customers.py-211-
+./customers.py-212-    disp_id = f"CYL-{db.query(models.CylinderTransaction).count() + 1:06d}"
+--
+./customers.py:254:        raise HTTPException(404, "Customer not found")
+./customers.py-255-
+./customers.py-256-    if payload.quantity <= 0:
+./customers.py:257:        raise HTTPException(400, "Quantity must be greater than 0")
+./customers.py-258-    if payload.amount <= 0:
+./customers.py:259:        raise HTTPException(400, "Amount must be greater than 0")
+./customers.py-260-
+./customers.py-261-    is_454 = payload.cylinder_size == "454"
+--
+./customers.py:274:            raise HTTPException(
+./customers.py-275-                400,
+./customers.py-276-                f"Quantity exceeds the customer's available {size_label} KG {payload.cylinder_type.upper()} empty cylinder balance",
+--
+./customers.py:280:        raise HTTPException(
+./customers.py-281-            400,
+./customers.py-282-            f"Quantity exceeds the customer's available {size_label} KG empty cylinder balance",
+--
+./customers.py:320:        raise HTTPException(404, "Customer not found")
+./customers.py-321-
+./customers.py-322-    # 1. Fetch Sales (Debit Money / Credit Cylinder)
+--
+./cylinder_returns.py:80:        raise HTTPException(404, "Customer not found")
+./cylinder_returns.py-81-    if payload.quantity <= 0:
+./cylinder_returns.py:82:        raise HTTPException(400, "Quantity must be greater than 0")
+./cylinder_returns.py-83-
+./cylinder_returns.py-84-    date = payload.date or datetime.utcnow()
+--
+./cylinder_returns.py:92:            raise HTTPException(
+./cylinder_returns.py-93-                400,
+./cylinder_returns.py-94-                f"Quantity exceeds the customer's available {size_label} KG{type_label} empty cylinder balance",
+--
+./cylinder_returns.py:103:            raise HTTPException(400, "to_customer_id is required when mode is 'transfer'")
+./cylinder_returns.py-104-        if payload.to_customer_id == payload.customer_id:
+./cylinder_returns.py:105:            raise HTTPException(400, "Cannot transfer cylinders to the same customer")
+./cylinder_returns.py-106-        to_customer = db.query(models.Customer).get(payload.to_customer_id)
+./cylinder_returns.py-107-        if not to_customer:
+./cylinder_returns.py:108:            raise HTTPException(404, "Destination customer not found")
+./cylinder_returns.py-109-
+./cylinder_returns.py-110-    elif payload.mode == "cash":
+--
+./cylinder_returns.py:112:            raise HTTPException(400, "amount is required and must be greater than 0 when mode is 'cash'")
+./cylinder_returns.py-113-        bypass_sum = payload.home_expense_amount + payload.owner_drawings_amount
+./cylinder_returns.py-114-        if bypass_sum > payload.amount + EPSILON:
+./cylinder_returns.py:115:            raise HTTPException(
+./cylinder_returns.py-116-                400,
+./cylinder_returns.py-117-                f"Home expense ({payload.home_expense_amount}) + owner drawings ({payload.owner_drawings_amount}) "
+--
+./cylinder_returns.py:121:            raise HTTPException(400, "home_expense_category_id is required when home_expense_amount > 0")
+./cylinder_returns.py-122-        if payload.home_expense_category_id and not db.query(models.ExpenseCategory).get(payload.home_expense_category_id):
+./cylinder_returns.py:123:            raise HTTPException(404, "Expense category not found")
+./cylinder_returns.py-124-
+./cylinder_returns.py-125-        net_settlement_amount = payload.amount - payload.home_expense_amount - payload.owner_drawings_amount
+--
+./cylinder_returns.py:212:        raise HTTPException(500, f"Cylinder return failed, nothing was saved: {e}")
+./cylinder_returns.py-213-
+./cylinder_returns.py-214-    db.refresh(cyl_return)
+--
+./cylinder_returns.py:222:        raise HTTPException(404, "Cylinder return not found")
+./cylinder_returns.py-223-    if cyl_return.status != "active":
+./cylinder_returns.py:224:        raise HTTPException(400, "Already cancelled")
+./cylinder_returns.py-225-
+./cylinder_returns.py-226-    customer = db.query(models.Customer).get(cyl_return.customer_id)
+--
+./cylinder_returns.py:260:        raise HTTPException(500, f"Cancel failed, nothing was changed: {e}")
+./cylinder_returns.py-261-
+./cylinder_returns.py-262-    db.refresh(cyl_return)
+--
+./cylinder_transactions.py:50:        raise HTTPException(404, "Customer not found")
+./cylinder_transactions.py-51-    product = db.query(models.Product).get(payload.product_id)
+./cylinder_transactions.py-52-    if not product:
+./cylinder_transactions.py:53:        raise HTTPException(404, "Product not found")
+./cylinder_transactions.py-54-    if payload.qty_out < 0 or payload.qty_in < 0:
+./cylinder_transactions.py:55:        raise HTTPException(400, "Quantities cannot be negative")
+./cylinder_transactions.py-56-    if payload.qty_out == 0 and payload.qty_in == 0:
+./cylinder_transactions.py:57:        raise HTTPException(400, "Enter a quantity out or in")
+./cylinder_transactions.py-58-
+./cylinder_transactions.py-59-    txn = models.CylinderTransaction(
+--
+./cylinder_transactions.py:82:        raise HTTPException(404, "Cylinder transaction not found")
+./cylinder_transactions.py-83-    if txn.status != "active":
+./cylinder_transactions.py:84:        raise HTTPException(400, "Already cancelled")
+./cylinder_transactions.py-85-    if txn.sale_id:
+./cylinder_transactions.py:86:        raise HTTPException(400, "This entry was created by a sale — cancel the sale instead")
+./cylinder_transactions.py-87-
+./cylinder_transactions.py-88-    adjust_cylinder_balance(db, txn.customer_id, txn.product_id, -(txn.qty_out - txn.qty_in))
+--
+./emergency_transfers.py:32:        raise HTTPException(404, "Customer not found")
+./emergency_transfers.py-33-    if customer.customer_type == "shop":
+./emergency_transfers.py:34:        raise HTTPException(
+./emergency_transfers.py-35-            400,
+./emergency_transfers.py-36-            "Emergency Transfer is for a real customer — for a shop's own retail sale, use Record Shop Sale instead",
+--
+./emergency_transfers.py:41:        raise HTTPException(404, "Shop not found")
+./emergency_transfers.py-42-
+./emergency_transfers.py-43-    if payload.quantity <= 0:
+./emergency_transfers.py:44:        raise HTTPException(400, "Quantity must be greater than 0")
+./emergency_transfers.py-45-    if payload.rate_per_cylinder <= 0:
+./emergency_transfers.py:46:        raise HTTPException(400, "Rate must be greater than 0")
+./emergency_transfers.py-47-
+./emergency_transfers.py-48-    sale_payload = schemas.SaleCreate(
+--
+./emergency_transfers.py:65:            raise HTTPException(400, "Amount collected now cannot exceed the transfer total")
+./emergency_transfers.py-66-        account = (
+./emergency_transfers.py-67-            db.query(models.PaymentAccount).get(payload.destination_account_id)
+--
+./emergency_transfers.py:72:            raise HTTPException(404, "Destination account not found")
+./emergency_transfers.py-73-        payment_payload = schemas.PaymentCreate(
+./emergency_transfers.py-74-            date=payload.date,
+--
+./expenses.py:122:        raise HTTPException(404, "Expense category not found")
+./expenses.py-123-
+./expenses.py-124-    account = None
+--
+./expenses.py:128:            raise HTTPException(404, "Payment account not found")
+./expenses.py-129-
+./expenses.py-130-    expense = models.Expense(
+--
+./expense_categories.py:34:        raise HTTPException(404, "Category not found")
+./expense_categories.py-35-    category.active = "inactive"
+./expense_categories.py-36-    db.add(category)
+--
+./ledger.py:139:        raise HTTPException(404, "Customer not found")
+./ledger.py-140-
+./ledger.py-141-    month_start = datetime.strptime(month, "%Y-%m")
+--
+./ledger.py:541:        raise HTTPException(404, "Company not found")
+./ledger.py-542-
+./ledger.py-543-    month_start = datetime.strptime(month, "%Y-%m")
+--
+./owner_capital.py:46:        raise HTTPException(400, "Amount must be greater than 0")
+./owner_capital.py-47-
+./owner_capital.py-48-    if payload.destination_type == "account":
+--
+./owner_capital.py:50:            raise HTTPException(400, "account_id is required when destination_type is 'account'")
+./owner_capital.py-51-        account = resolve_account_or_bucket(db, payload.account_id)
+./owner_capital.py-52-        if not account:
+./owner_capital.py:53:            raise HTTPException(404, "Payment account not found")
+./owner_capital.py-54-
+./owner_capital.py-55-        capital = models.OwnerCapital(
+--
+./owner_capital.py:80:        raise HTTPException(400, "target_plant_id is required when destination_type is 'plant'")
+./owner_capital.py-81-    company = db.query(models.Company).get(payload.target_plant_id)
+./owner_capital.py-82-    if not company:
+./owner_capital.py:83:        raise HTTPException(404, "Plant not found")
+./owner_capital.py-84-
+./owner_capital.py-85-    try:
+--
+./owner_capital.py:136:        raise HTTPException(500, f"Owner Capital re-investment failed, nothing was saved: {e}")
+./owner_capital.py-137-
+./owner_capital.py-138-    db.refresh(capital)
+--
+./owner_capital.py:146:        raise HTTPException(404, "Owner Capital entry not found")
+./owner_capital.py-147-    if capital.status != "active":
+./owner_capital.py:148:        raise HTTPException(400, "Owner Capital entry is already cancelled")
+./owner_capital.py-149-
+./owner_capital.py-150-    if capital.destination_type == "account":
+--
+./owner_drawings.py:116:            raise HTTPException(404, "Payment account not found")
+./owner_drawings.py-117-
+./owner_drawings.py-118-    drawing = models.OwnerDrawings(
+--
+./parties.py:24:        raise HTTPException(404, "Company not found")
+./parties.py-25-    existing = (
+./parties.py-26-        db.query(models.Party)
+--
+./payments.py:37:        raise HTTPException(404, "Customer not found")
+./payments.py-38-    account = db.query(models.PaymentAccount).get(payload.account_id)
+./payments.py-39-    if not account:
+./payments.py:40:        raise HTTPException(404, "Payment account not found")
+./payments.py-41-    source_account = None
+./payments.py-42-    if payload.source_account_id:
+--
+./payments.py:45:            raise HTTPException(404, "Source account not found")
+./payments.py-46-    if payload.sale_id:
+./payments.py-47-        sale = db.query(models.Sale).get(payload.sale_id)
+--
+./payments.py:49:            raise HTTPException(400, "Sale does not belong to this customer")
+./payments.py-50-
+./payments.py-51-    # Overpayment / advance convention (§18, and the same rule used on the
+--
+./payments.py:145:        raise HTTPException(404, "Payment not found")
+./payments.py-146-    if payment.status != "active":
+./payments.py:147:        raise HTTPException(400, "Payment is already cancelled")
+./payments.py-148-
+./payments.py-149-    _reverse_payment(db, payment)
+--
+./payments.py:169:        raise HTTPException(400, "correction_reason is required")
+./payments.py-170-
+./payments.py-171-    original = db.query(models.Payment).get(payment_id)
+--
+./payments.py:173:        raise HTTPException(404, "Payment not found")
+./payments.py-174-    if original.status != "active":
+./payments.py:175:        raise HTTPException(400, "Only an active payment can be corrected")
+./payments.py-176-
+./payments.py-177-    _reverse_payment(db, original)
+--
+./payments.py:211:        raise HTTPException(404, "Payment not found")
+./payments.py-212-    generated_at = datetime.now(KARACHI_TZ).strftime("%Y-%m-%d %H:%M")
+./payments.py-213-    pdf_bytes = render_payment_invoice_pdf(payment, current_user.name, generated_at)
+--
+./payment_accounts.py:21:        raise HTTPException(400, "Account already exists")
+./payment_accounts.py-22-    account = models.PaymentAccount(
+./payment_accounts.py-23-        name=payload.name, kind=payload.kind, account_type=payload.account_type, shop_id=payload.shop_id,
+--
+./payment_accounts.py:43:        raise HTTPException(400, "Source and destination accounts must be different")
+./payment_accounts.py-44-    if payload.amount <= 0:
+./payment_accounts.py:45:        raise HTTPException(400, "Amount must be positive")
+./payment_accounts.py-46-
+./payment_accounts.py-47-    from_account = db.query(models.PaymentAccount).get(payload.from_account_id)
+--
+./payment_accounts.py:49:        raise HTTPException(404, "Source account not found")
+./payment_accounts.py-50-    to_account = db.query(models.PaymentAccount).get(payload.to_account_id)
+./payment_accounts.py-51-    if not to_account:
+./payment_accounts.py:52:        raise HTTPException(404, "Destination account not found")
+./payment_accounts.py-53-
+./payment_accounts.py-54-    if from_account.current_balance < payload.amount:
+./payment_accounts.py:55:        raise HTTPException(400, "Insufficient balance in source account")
+./payment_accounts.py-56-
+./payment_accounts.py-57-    from_account.current_balance = from_account.current_balance - payload.amount
+--
+./payment_accounts.py:95:        raise HTTPException(404, "Account not found")
+./payment_accounts.py-96-    account.active = "inactive"
+./payment_accounts.py-97-    db.add(account)
+--
+./payment_receipts.py:52:        raise HTTPException(404, "Customer not found")
+./payment_receipts.py-53-
+./payment_receipts.py-54-    bypass_sum = payload.home_expense_amount + payload.owner_drawings_amount
+--
+./payment_receipts.py:56:        raise HTTPException(
+./payment_receipts.py-57-            400,
+./payment_receipts.py-58-            f"Home expense ({payload.home_expense_amount}) + owner drawings ({payload.owner_drawings_amount}) "
+--
+./payment_receipts.py:62:        raise HTTPException(400, "home_expense_category_id is required when home_expense_amount > 0")
+./payment_receipts.py-63-    if payload.home_expense_category_id and not db.query(models.ExpenseCategory).get(payload.home_expense_category_id):
+./payment_receipts.py:64:        raise HTTPException(404, "Expense category not found")
+./payment_receipts.py-65-
+./payment_receipts.py-66-    net_settlement_amount = payload.amount - payload.home_expense_amount - payload.owner_drawings_amount
+--
+./payment_receipts.py:117:        raise HTTPException(500, f"Payment receipt failed, nothing was saved: {e}")
+./payment_receipts.py-118-
+./payment_receipts.py-119-    db.refresh(payment)
+--
+./payment_receipts.py:127:        raise HTTPException(404, "Payment receipt not found")
+./payment_receipts.py-128-    if payment.status != "active":
+./payment_receipts.py:129:        raise HTTPException(400, "Payment receipt is already cancelled")
+./payment_receipts.py-130-
+./payment_receipts.py-131-    reverse_payment_receipt(db, payment)
+--
+./products.py:20:        raise HTTPException(400, "Product already exists")
+./products.py-21-    product = models.Product(
+./products.py-22-        name=payload.name,
+--
+./purchases.py:37:        raise HTTPException(404, "Company not found")
+./purchases.py-38-    product = db.query(models.Product).get(payload.product_id)
+./purchases.py-39-    if not product:
+./purchases.py:40:        raise HTTPException(404, "Product not found")
+./purchases.py-41-
+./purchases.py-42-    total_kg = payload.quantity * product.weight_kg
+--
+./purchases.py:103:        raise HTTPException(404, "Purchase not found")
+./purchases.py-104-    if purchase.status != "active":
+./purchases.py:105:        raise HTTPException(400, "Purchase is already cancelled")
+./purchases.py-106-
+./purchases.py-107-    _reverse_purchase(db, purchase)
+--
+./purchases.py:127:        raise HTTPException(400, "correction_reason is required")
+./purchases.py-128-
+./purchases.py-129-    original = db.query(models.Purchase).get(purchase_id)
+--
+./purchases.py:131:        raise HTTPException(404, "Purchase not found")
+./purchases.py-132-    if original.status != "active":
+./purchases.py:133:        raise HTTPException(400, "Only an active purchase can be corrected")
+./purchases.py-134-
+./purchases.py-135-    _reverse_purchase(db, original)
+--
+./purchases.py:163:        raise HTTPException(404, "Purchase not found")
+./purchases.py-164-    generated_at = datetime.now(KARACHI_TZ).strftime("%Y-%m-%d %H:%M")
+./purchases.py-165-    pdf_bytes = render_purchase_invoice_pdf(purchase, current_user.name, generated_at)
+--
+./rates.py:63:        raise HTTPException(400, "Party does not belong to the given company")
+./rates.py-64-
+./rates.py-65-    rate_454 = round(float(payload.rate_118) * models.RateEntry.RATIO, 2)
+--
+./reports.py:45:        raise HTTPException(400, "business_date must be YYYY-MM-DD")
+./reports.py-46-    return get_daily_report_data(db, business_date)
+./reports.py-47-
+--
+./reports.py:53:        raise HTTPException(404, "Report not found")
+./reports.py-54-    return report
+./reports.py-55-
+--
+./reports.py:61:        raise HTTPException(404, "Report not found")
+./reports.py-62-    if not os.path.exists(report.file_path):
+./reports.py:63:        raise HTTPException(404, "Report file is no longer on disk")
+./reports.py-64-    filename = f"daily-report-{report.business_date}.pdf"
+./reports.py-65-    return FileResponse(report.file_path, media_type="application/pdf", filename=filename)
+--
+./reports.py:110:        raise HTTPException(400, "business_date must be YYYY-MM-DD")
+./reports.py-111-
+./reports.py-112-    return _generate_daily_report(db, business_date, generated_by)
+--
+./reports.py:122:        raise HTTPException(404, "Report not found")
+./reports.py-123-
+./reports.py-124-    if not whatsapp.is_configured():
+--
+./reports.py:133:        raise HTTPException(404, "Report file is no longer on disk")
+./reports.py-134-
+./reports.py-135-    filename = f"daily-report-{report.business_date}.pdf"
+--
+./sales.py:63:        raise HTTPException(
+./sales.py-64-            400,
+./sales.py-65-            f"Insufficient stock at this shop for this product — only {available} cylinder(s) available, {quantity} requested",
+--
+./sales.py:113:        raise HTTPException(404, "Customer not found")
+./sales.py-114-    product = db.query(models.Product).get(payload.product_id)
+./sales.py-115-    if not product:
+./sales.py:116:        raise HTTPException(404, "Product not found")
+./sales.py-117-    if payload.company_id:
+./sales.py-118-        company = db.query(models.Company).get(payload.company_id)
+--
+./sales.py:120:            raise HTTPException(404, "Company not found")
+./sales.py-121-
+./sales.py-122-    total_kg = payload.quantity * product.weight_kg
+--
+./sales.py:233:            raise HTTPException(
+./sales.py-234-                400,
+./sales.py-235-                "This Load's stock has already been partially or fully sold — "
+--
+./sales.py:269:        raise HTTPException(404, "Sale not found")
+./sales.py-270-    if sale.status != "active":
+./sales.py:271:        raise HTTPException(400, "Sale is already cancelled")
+./sales.py-272-
+./sales.py-273-    _reverse_sale(db, sale, by)
+--
+./sales.py:296:        raise HTTPException(400, "correction_reason is required")
+./sales.py-297-
+./sales.py-298-    original = db.query(models.Sale).get(sale_id)
+--
+./sales.py:300:        raise HTTPException(404, "Sale not found")
+./sales.py-301-    if original.status != "active":
+./sales.py:302:        raise HTTPException(400, "Only an active sale can be corrected")
+./sales.py-303-
+./sales.py-304-    _reverse_sale(db, original, current_user.name)
+--
+./sales.py:348:        raise HTTPException(404, "Sale not found")
+./sales.py-349-    generated_at = datetime.now(KARACHI_TZ).strftime("%Y-%m-%d %H:%M")
+./sales.py-350-    pdf_bytes = render_sale_invoice_pdf(sale, current_user.name, generated_at)
+--
+./shops.py:41:        raise HTTPException(404, "Shop not found")
+./shops.py-42-    return shop
+./shops.py-43-
+--
+./shops.py:272:        raise HTTPException(404, "Product not found")
+./shops.py-273-    if payload.quantity <= 0:
+./shops.py:274:        raise HTTPException(400, "Quantity must be positive")
+./shops.py-275-
+./shops.py-276-    # Supply Customers (§25) — a credit sale must name whose receivable it
+--
+./shops.py:283:            raise HTTPException(404, "Supply customer not found for this shop")
+./shops.py-284-    if payload.payment_type == "credit" and not supply_customer:
+./shops.py:285:        raise HTTPException(400, "A credit sale requires a supply_customer_id")
+./shops.py-286-
+./shops.py-287-    # Board Rate is resolved here, server-side, from the SALE DATE — never
+--
+./shops.py:303:            raise HTTPException(400, "This product has no saleable weight to sell by KG")
+./shops.py-304-        quantity_kg = payload.quantity
+./shops.py-305-        cylinders_equivalent = quantity_kg / saleable_kg
+--
+./shops.py:323:            raise HTTPException(400, f"amount_received must be between 0 and the sale total ({total_amount})")
+./shops.py-324-
+./shops.py-325-    destination_account = None
+--
+./shops.py:330:                raise HTTPException(404, "Destination account not found")
+./shops.py-331-        else:
+./shops.py-332-            destination_account = get_or_create_shop_account(db, shop)
+--
+./shops.py:350:        raise HTTPException(
+./shops.py-351-            400,
+./shops.py-352-            f"Insufficient stock for this product — only {available} cylinder(s) "
+--
+./shops.py:665:        raise HTTPException(404, "Shop sale not found")
+./shops.py-666-    return sale
+./shops.py-667-
+--
+./shops.py:679:        raise HTTPException(404, "Shop sale not found")
+./shops.py-680-    generated_at = datetime.now(KARACHI_TZ).strftime("%Y-%m-%d %H:%M")
+./shops.py-681-    pdf_bytes = render_shop_sale_invoice_pdf(sale, current_user.name, generated_at)
+--
+./shops.py:704:        raise HTTPException(404, "Shop sale not found")
+./shops.py-705-    if sale.status != "active":
+./shops.py:706:        raise HTTPException(400, "Shop sale is already cancelled")
+./shops.py-707-    _reverse_shop_sale(db, sale)
+./shops.py-708-    sale.status = "cancelled"
+--
+./shops.py:727:        raise HTTPException(400, "correction_reason is required")
+./shops.py-728-
+./shops.py-729-    original = db.query(models.ShopSale).get(sale_id)
+--
+./shops.py:731:        raise HTTPException(404, "Shop sale not found")
+./shops.py-732-    if original.status != "active":
+./shops.py:733:        raise HTTPException(400, "Only an active shop sale can be corrected")
+./shops.py-734-
+./shops.py-735-    shop = db.query(models.Customer).get(original.customer_id)
+--
+./shops.py:799:        raise HTTPException(404, "Supply customer not found")
+./shops.py-800-    return customer
+./shops.py-801-
+--
+./shops.py:815:        raise HTTPException(404, "Supply customer not found")
+./shops.py-816-
+./shops.py-817-    sales = (
+--
+./shops.py:924:        raise HTTPException(404, "Supply customer not found for this shop")
+./shops.py-925-    if payload.amount <= 0:
+./shops.py:926:        raise HTTPException(400, "Amount must be positive")
+./shops.py-927-    if payload.shop_sale_id:
+./shops.py-928-        linked_sale = db.query(models.ShopSale).get(payload.shop_sale_id)
+--
+./shops.py:930:            raise HTTPException(404, "Linked shop sale not found for this shop")
+./shops.py-931-
+./shops.py-932-    # Shop Cash Money Routing (§1) — defaults to the shop's own account,
+--
+./shops.py:937:            raise HTTPException(404, "Account not found")
+./shops.py-938-    else:
+./shops.py-939-        account = get_or_create_shop_account(db, shop)
+--
+./shops.py:975:        raise HTTPException(404, "Payment not found")
+./shops.py-976-    if payment.status != "active":
+./shops.py:977:        raise HTTPException(400, "Payment is already cancelled")
+./shops.py-978-    customer = db.query(models.ShopSupplyCustomer).get(payment.supply_customer_id)
+./shops.py-979-    if customer:
+--
+./shops.py:1050:        raise HTTPException(400, "At least one expense line is required")
+./shops.py-1051-    for line in payload.lines:
+./shops.py-1052-        if line.amount <= 0:
+./shops.py:1053:            raise HTTPException(400, "Every line amount must be positive")
+./shops.py-1054-        # A Category classifies an EXPENSE — an Owner Withdrawal isn't a
+./shops.py-1055-        # category of expense, so it's never required/validated here, even
+--
+./shops.py:1059:                raise HTTPException(400, "category_id is required for an expense line")
+./shops.py-1060-            if not db.query(models.ExpenseCategory).get(line.category_id):
+./shops.py:1061:                raise HTTPException(404, f"Expense category {line.category_id} not found")
+./shops.py-1062-
+./shops.py-1063-    # Shop Cash Money Routing (§1) — defaults to the shop's own account,
+--
+./shops.py:1068:            raise HTTPException(404, "Account not found")
+./shops.py-1069-    else:
+./shops.py-1070-        account = get_or_create_shop_account(db, shop)
+--
+./shops.py:1078:            raise HTTPException(404, "Supply customer not found for this shop")
+./shops.py-1079-    if payload.shop_sale_id:
+./shops.py-1080-        sale = db.query(models.ShopSale).get(payload.shop_sale_id)
+--
+./shops.py:1082:            raise HTTPException(404, "Shop sale not found for this shop")
+./shops.py-1083-
+./shops.py-1084-    total = sum((l.amount for l in payload.lines), Decimal("0"))
+--
+./shops.py:1136:        raise HTTPException(404, "Expense transaction not found")
+./shops.py-1137-    if txn.status != "active":
+./shops.py:1138:        raise HTTPException(400, "Expense transaction is already cancelled")
+./shops.py-1139-    if txn.account_id:
+./shops.py-1140-        account = db.query(models.PaymentAccount).get(txn.account_id)
+--
+./unified_sale.py:39:            raise HTTPException(404, "Target plant not found")
+./unified_sale.py-40-        return destination_type, target_plant_id, None
+./unified_sale.py-41-
+--
+./unified_sale.py:43:        raise HTTPException(400, "account_id is required when destination_type is 'account'")
+./unified_sale.py-44-    account_uuid = _try_uuid(settlement.account_id)
+./unified_sale.py-45-    if account_uuid and not db.query(models.PaymentAccount).get(account_uuid):
+./unified_sale.py:46:        raise HTTPException(404, "Payment account not found")
+./unified_sale.py-47-    return destination_type, None, str(settlement.account_id)
+./unified_sale.py-48-
+--
+./unified_sale.py:57:        raise HTTPException(404, "Customer not found")
+./unified_sale.py-58-    company = db.query(models.Company).get(payload.plant_id)
+./unified_sale.py-59-    if not company:
+./unified_sale.py:60:        raise HTTPException(404, "Plant not found")
+./unified_sale.py-61-
+./unified_sale.py-62-    products_by_id = {}
+--
+./unified_sale.py:67:                raise HTTPException(404, f"Product {item.product_id} not found")
+./unified_sale.py-68-            products_by_id[item.product_id] = product
+./unified_sale.py-69-
+--
+./unified_sale.py:73:        raise HTTPException(
+./unified_sale.py-74-            400,
+./unified_sale.py-75-            f"Home expense ({s.home_expense_amount}) + owner drawings ({s.owner_drawings_amount}) "
+--
+./unified_sale.py:80:        raise HTTPException(400, "home_expense_category_id is required when home_expense_amount > 0")
+./unified_sale.py-81-
+./unified_sale.py-82-    if s.home_expense_category_id:
+--
+./unified_sale.py:84:            raise HTTPException(404, "Expense category not found")
+./unified_sale.py-85-
+./unified_sale.py-86-    destination_type, target_plant_id, account_id = _resolve_destination(db, s, payload.plant_id)
+--
+./unified_sale.py:275:        raise HTTPException(404, "Unified sale not found")
+./unified_sale.py-276-    sales, purchases, payment, expense, owner_drawing = _load_children(db, batch.id)
+./unified_sale.py-277-    return _batch_to_out(batch, sales, purchases, payment, expense, owner_drawing)
+--
+./unified_sale.py:335:        raise HTTPException(500, f"Unified sale failed, nothing was saved: {e}")
+./unified_sale.py-336-
+./unified_sale.py-337-    db.refresh(batch)
+--
+./unified_sale.py:349:        raise HTTPException(404, "Unified sale not found")
+./unified_sale.py-350-    if batch.sale_status != "pending" or batch.payment_status != "pending":
+./unified_sale.py:351:        raise HTTPException(400, "Cannot edit — sale or payment has already been approved/cancelled")
+./unified_sale.py-352-
+./unified_sale.py-353-    customer, company, products_by_id, destination_type, target_plant_id, account_id = _validate_and_load(db, payload)
+--
+./unified_sale.py:393:        raise HTTPException(500, f"Edit failed, nothing was changed: {e}")
+./unified_sale.py-394-
+./unified_sale.py-395-    db.refresh(batch)
+--
+./unified_sale.py:412:        raise HTTPException(404, "Unified sale not found")
+./unified_sale.py-413-    if batch.sale_status != "pending":
+./unified_sale.py:414:        raise HTTPException(400, f"Cannot approve sale — already {batch.sale_status}")
+./unified_sale.py-415-
+./unified_sale.py-416-    customer = db.query(models.Customer).get(batch.customer_id)
+--
+./unified_sale.py:526:        raise HTTPException(500, f"Sale approval failed, nothing was changed: {e}")
+./unified_sale.py-527-
+./unified_sale.py-528-    db.refresh(batch)
+--
+./unified_sale.py:546:        raise HTTPException(404, "Unified sale not found")
+./unified_sale.py-547-    if batch.payment_status != "pending":
+./unified_sale.py:548:        raise HTTPException(400, f"Cannot approve payment — already {batch.payment_status}")
+./unified_sale.py-549-
+./unified_sale.py-550-    sales, purchases, payment, expense, owner_drawing = _load_children(db, batch.id)
+--
+./unified_sale.py:600:        raise HTTPException(500, f"Payment approval failed, nothing was changed: {e}")
+./unified_sale.py-601-
+./unified_sale.py-602-    db.refresh(batch)
+--
+./unified_sale.py:617:        raise HTTPException(404, "Unified sale not found")
+./unified_sale.py-618-    if batch.sale_status != "pending" or batch.payment_status != "pending":
+./unified_sale.py:619:        raise HTTPException(400, "Cannot cancel — sale or payment has already been approved/cancelled")
+./unified_sale.py-620-
+./unified_sale.py-621-    sales, purchases, payment, expense, owner_drawing = _load_children(db, batch.id)
+--
+./unified_sale.py:646:        raise HTTPException(500, f"Cancel failed, nothing was changed: {e}")
+./unified_sale.py-647-
+./unified_sale.py-648-    db.refresh(batch)
+--
+./users.py:50:        raise HTTPException(404, "User not found")
+./users.py-51-    if user.status not in ("pending", "rejected"):
+./users.py:52:        raise HTTPException(400, f"Cannot approve a user with status={user.status}")
+./users.py-53-
+./users.py-54-    user.status = "active"
+--
+./users.py:72:        raise HTTPException(404, "User not found")
+./users.py-73-    if user.status != "pending":
+./users.py:74:        raise HTTPException(400, f"Cannot reject a user with status={user.status}")
+./users.py-75-
+./users.py-76-    user.status = "rejected"
+--
+./users.py:91:        raise HTTPException(404, "User not found")
+./users.py-92-    if user.status != "active":
+./users.py:93:        raise HTTPException(400, f"Cannot suspend a user with status={user.status}")
+./users.py-94-
+./users.py-95-    user.status = "suspended"
+--
+./users.py:120:        raise HTTPException(404, "User not found")
+./users.py-121-    if user.status != "suspended":
+./users.py:122:        raise HTTPException(400, f"Cannot reactivate a user with status={user.status}")
+./users.py-123-
+./users.py-124-    user.status = "active"

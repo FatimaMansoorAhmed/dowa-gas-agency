@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { X, Check, AlertTriangle } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Field, inputClass, Button, BalanceTag } from "./ui";
 import { api } from "@/lib/api";
 import { pkr, todayLocalInput } from "@/lib/format";
@@ -16,6 +17,7 @@ export default function RecordPlantPaymentModal({
   onSaved: () => void;
   initialCompanyId?: string;
 }) {
+  const { t } = useTranslation();
   const { user } = useAuth();
 
   const [companies, setCompanies] = useState<Company[]>([]);
@@ -76,7 +78,7 @@ export default function RecordPlantPaymentModal({
       });
       onSaved();
     } catch (e) {
-      setError("Could not save payment — check the fields and try again.");
+      setError(t("modals.couldNotSavePaymentGeneric"));
     } finally {
       setSaving(false);
     }
@@ -87,7 +89,7 @@ export default function RecordPlantPaymentModal({
       <div className="bg-white rounded-xl px-6 py-6 w-full max-w-[420px] max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-4">
           <div className="font-display font-bold text-[17px] text-ink">
-            Record Plant Payment
+            {t("modals.recordPlantPayment")}
           </div>
           <button
             onClick={onClose}
@@ -98,13 +100,13 @@ export default function RecordPlantPaymentModal({
         </div>
 
         <div className="flex flex-col gap-3.5">
-          <Field label="Plant / Party Name">
+          <Field label={t("modals.plantPartyName")}>
             <select
               value={companyId}
               onChange={(e) => setCompanyId(e.target.value)}
               className={inputClass}
             >
-              <option value="">Select plant</option>
+              <option value="">{t("ownerCapital.selectPlant")}</option>
               {companies.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
@@ -115,12 +117,12 @@ export default function RecordPlantPaymentModal({
 
           {selectedCompany && (
             <div className="font-mono text-xs text-steel">
-              Current payable:{" "}
+              {t("modals.currentPayableInline")}{" "}
               <BalanceTag amount={selectedCompany.current_balance} />
             </div>
           )}
 
-          <Field label="Date">
+          <Field label={t("unifiedSale.date")}>
             <input
               type="date"
               value={date}
@@ -129,27 +131,27 @@ export default function RecordPlantPaymentModal({
             />
           </Field>
 
-          <Field label="Payment Method">
+          <Field label={t("expenses.paymentMethod")}>
             <select
               value={method}
               onChange={(e) => setMethod(e.target.value as typeof method)}
               className={inputClass}
             >
-              <option value="cash">Cash</option>
-              <option value="bank_transfer">Bank Transfer</option>
-              <option value="cheque">Cheque</option>
-              <option value="online">Online Payment</option>
-              <option value="other">Other</option>
+              <option value="cash">{t("unifiedSale.methodCash")}</option>
+              <option value="bank_transfer">{t("expenses.methodBankTransfer")}</option>
+              <option value="cheque">{t("unifiedSale.methodCheque")}</option>
+              <option value="online">{t("expenses.methodOnlinePayment")}</option>
+              <option value="other">{t("expenses.methodOther")}</option>
             </select>
           </Field>
 
-          <Field label="Pay From (Account)">
+          <Field label={t("modals.payFromAccount")}>
             <select
               value={accountId}
               onChange={(e) => setAccountId(e.target.value)}
               className={inputClass}
             >
-              <option value="">Select account</option>
+              <option value="">{t("expenses.selectAccount")}</option>
               {accounts
                 .filter((a) => a.active === "active")
                 .map((a) => (
@@ -160,7 +162,7 @@ export default function RecordPlantPaymentModal({
             </select>
           </Field>
 
-          <Field label="Amount">
+          <Field label={t("modals.amountField")}>
             <input
               type="number"
               autoFocus
@@ -174,20 +176,19 @@ export default function RecordPlantPaymentModal({
             <div className="px-2.5 py-2 bg-[#FBEAEA] rounded-md font-body text-xs text-brand-red flex gap-1.5 items-start">
               <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
               <span>
-                Excess of {pkr(excess)} will be recorded as credit-in-hand (advance
-                to this plant).
+                {t("modals.excessCreditWarning", { amount: pkr(excess) })}
               </span>
             </div>
           )}
 
-          <Field label="Reference Number (optional)">
+          <Field label={t("modals.referenceNumberOptional")}>
             <input
               value={referenceNo}
               onChange={(e) => setReferenceNo(e.target.value)}
               className={inputClass}
             />
           </Field>
-          <Field label="Notes (optional)">
+          <Field label={t("modals.notesOptional")}>
             <input
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
@@ -204,7 +205,7 @@ export default function RecordPlantPaymentModal({
             onClick={handleSubmit}
             disabled={!canSubmit || saving}
           >
-            <Check size={14} /> {saving ? "Saving…" : "Save Payment"}
+            <Check size={14} /> {saving ? t("unifiedSale.saving") : t("modals.savePayment")}
           </Button>
         </div>
       </div>

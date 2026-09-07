@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { X, PackagePlus } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Field, inputClass, Button } from "@/components/ui";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -22,6 +23,7 @@ interface Props {
 }
 
 export default function AddEmptyCylinderModal({ isOpen, onClose, onSuccess, customer }: Props) {
+  const { t } = useTranslation();
   const { user } = useAuth();
 
   const [cylSize, setCylSize] = useState<"118" | "454">("118");
@@ -62,7 +64,7 @@ export default function AddEmptyCylinderModal({ isOpen, onClose, onSuccess, cust
       onSuccess();
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to add the cylinders.");
+      setError(e instanceof Error ? e.message : t("modals.failedAddCylinders"));
     } finally {
       setSaving(false);
     }
@@ -74,7 +76,7 @@ export default function AddEmptyCylinderModal({ isOpen, onClose, onSuccess, cust
         <div className="flex justify-between items-center px-5 py-4 border-b border-hairline bg-paper">
           <div className="flex items-center gap-2">
             <PackagePlus className="text-teal" size={20} />
-            <h3 className="font-display font-semibold text-lg text-ink">Add Empty Cylinder — {customer.name}</h3>
+            <h3 className="font-display font-semibold text-lg text-ink">{t("modals.addEmptyCylinderTitle", { name: customer.name })}</h3>
           </div>
           <button onClick={onClose} className="text-steel hover:text-ink cursor-pointer">
             <X size={20} />
@@ -83,22 +85,22 @@ export default function AddEmptyCylinderModal({ isOpen, onClose, onSuccess, cust
 
         <div className="p-5 flex flex-col gap-4">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Cylinder Size">
+            <Field label={t("modals.cylinderSize")}>
               <select value={cylSize} onChange={(e) => setCylSize(e.target.value as "118" | "454")} className={inputClass}>
-                <option value="118">11.8 KG</option>
-                <option value="454">45.4 KG</option>
+                <option value="118">{t("unifiedSale.col118")}</option>
+                <option value="454">{t("unifiedSale.col454")}</option>
               </select>
             </Field>
-            <Field label="Cylinder Type">
+            <Field label={t("modals.cylinderType")}>
               <select value={cylType} onChange={(e) => setCylType(e.target.value as "cross" | "pso" | "")} className={inputClass}>
                 <option value="cross">Cross</option>
                 <option value="pso">PSO</option>
-                <option value="">Unclassified (legacy)</option>
+                <option value="">{t("modals.unclassifiedLegacy")}</option>
               </select>
             </Field>
           </div>
 
-          <Field label="Quantity">
+          <Field label={t("modals.quantityLabel")}>
             <input
               type="number"
               min="0"
@@ -109,11 +111,11 @@ export default function AddEmptyCylinderModal({ isOpen, onClose, onSuccess, cust
             />
           </Field>
 
-          <Field label="Reason / Notes">
+          <Field label={t("modals.reasonNotes")}>
             <input
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="e.g. correcting a missed entry"
+              placeholder={t("modals.reasonNotesPlaceholder")}
               className={inputClass}
             />
           </Field>
@@ -123,10 +125,10 @@ export default function AddEmptyCylinderModal({ isOpen, onClose, onSuccess, cust
 
         <div className="flex justify-end gap-2 px-5 py-3 border-t border-hairline bg-paper">
           <Button variant="outline" onClick={onClose} disabled={saving}>
-            Cancel
+            {t("unifiedSale.cancel")}
           </Button>
           <Button variant="teal" onClick={handleSubmit} disabled={!canSubmit || saving}>
-            {saving ? "Saving…" : "Add Cylinders"}
+            {saving ? t("unifiedSale.saving") : t("modals.addCylinders")}
           </Button>
         </div>
       </div>

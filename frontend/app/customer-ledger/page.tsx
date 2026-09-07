@@ -2,6 +2,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Search, PlusCircle, Pencil, Printer } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Th, Td, inputClass, BalanceTag, Button } from "@/components/ui";
 import { api } from "@/lib/api";
@@ -19,6 +20,7 @@ function currentMonth() {
 }
 
 function CustomerLedgerBody() {
+  const { t } = useTranslation();
   const searchParams = useSearchParams();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [search, setSearch] = useState("");
@@ -107,21 +109,21 @@ function CustomerLedgerBody() {
   return (
     <div>
       <PageHeader
-        eyebrow="Customer Ledger"
-        title="Monthly statement, running balance"
-        caption="Opening balance is derived from the ledger — select a customer to view cash & cylinder balances."
+        eyebrow={t("nav.customerLedger")}
+        title={t("customerLedger.title")}
+        caption={t("customerLedger.caption")}
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-[0.65fr_1.5fr] gap-4">
         {/* Customer Sidebar */}
         <Panel>
-          <Eyebrow>Customers</Eyebrow>
+          <Eyebrow>{t("nav.customers")}</Eyebrow>
           <div className="flex items-center gap-1.5 border border-hairline rounded-md px-2.5 mb-3">
             <Search size={13} className="text-steel" />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search"
+              placeholder={t("customerLedger.searchPlaceholder")}
               className="border-none outline-none font-body text-xs py-1.5 w-full"
             />
           </div>
@@ -136,7 +138,7 @@ function CustomerLedgerBody() {
               >
                 <div className="font-body text-[13px] font-semibold text-ink flex items-center gap-1">
                   {c.name}
-                  {flaggedIds.has(c.id) && <span title="Flagged this month">🚩</span>}
+                  {flaggedIds.has(c.id) && <span title={t("customerLedger.flaggedThisMonth")}>🚩</span>}
                 </div>
                 <div className="font-mono text-[10.5px] text-steel">
                   {c.display_id ?? ""} · {c.mobile}
@@ -159,7 +161,7 @@ function CustomerLedgerBody() {
           {!customerId && (
             <Panel>
               <div className="font-body text-[13px] text-steel py-10 text-center">
-                Select a customer to view their statement.
+                {t("customerLedger.selectCustomerPrompt")}
               </div>
             </Panel>
           )}
@@ -176,10 +178,10 @@ function CustomerLedgerBody() {
                       {summary?.customer.name}
                       {summary?.flagged && (
                         <span
-                          title="Flagged — this month's closing balance is above its opening balance"
+                          title={t("customerLedger.flaggedBadgeTitle")}
                           className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[#FBEAEA] text-brand-red border border-[#EFC3C3] print:hidden"
                         >
-                          🚩 Flagged
+                          🚩 {t("customerLedger.flaggedBadge")}
                         </span>
                       )}
                     </div>
@@ -188,28 +190,28 @@ function CustomerLedgerBody() {
                       {summary?.customer.shop_name ? `· ${summary.customer.shop_name}` : ""}
                     </div>
                     <div className="hidden print:block font-mono text-xs text-steel mt-1">
-                      Period: {mo}/{year}
+                      {t("customerLedger.periodLabel", { mo, year })}
                     </div>
                   </div>
 
                   <div className="flex items-center gap-2 flex-wrap print:hidden">
                     <Button variant="teal" onClick={() => setIsPayModalOpen(true)}>
-                      <PlusCircle size={15} /> Receive Payment
+                      <PlusCircle size={15} /> {t("customerLedger.receivePayment")}
                     </Button>
                     <Button variant="outline" onClick={() => setShowReturnCylinder(true)}>
-                      Return Cylinder
+                      {t("customerLedger.returnCylinder")}
                     </Button>
                     <Button variant="outline" onClick={() => setShowAddCylinder(true)}>
-                      Add Empty Cylinder
+                      {t("customerLedger.addEmptyCylinder")}
                     </Button>
                     <a
                       href={api.ledger.customerStatementUrl(customerId, month)}
                       target="_blank"
                       rel="noreferrer"
-                      title="Download statement PDF"
+                      title={t("customerLedger.downloadStatementTitle")}
                       className="inline-flex items-center gap-2 font-body text-[13px] font-medium px-4 py-2.5 rounded-md bg-transparent text-ink border border-hairline cursor-pointer"
                     >
-                      <Printer size={14} /> Download Statement
+                      <Printer size={14} /> {t("customerLedger.downloadStatement")}
                     </a>
 
                     <div className="flex gap-1.5 ml-1">
@@ -242,7 +244,7 @@ function CustomerLedgerBody() {
 
               {loading && (
                 <Panel>
-                  <div className="font-body text-steel p-6">Loading…</div>
+                  <div className="font-body text-steel p-6">{t("common.loading")}</div>
                 </Panel>
               )}
 
@@ -251,21 +253,21 @@ function CustomerLedgerBody() {
                   {/* Financial Stats */}
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
                     <Panel>
-                      <Eyebrow>Opening Balance</Eyebrow>
+                      <Eyebrow>{t("customerLedger.openingBalance")}</Eyebrow>
                       <div className="font-display font-bold text-lg text-ink">{pkr(summary.opening_balance)}</div>
                     </Panel>
                     <Panel>
-                      <Eyebrow>Total Sales</Eyebrow>
+                      <Eyebrow>{t("customerLedger.totalSales")}</Eyebrow>
                       <div className="font-display font-bold text-lg text-ink">{pkr(summary.total_sales)}</div>
                     </Panel>
                     <Panel>
-                      <Eyebrow>Total Payments</Eyebrow>
+                      <Eyebrow>{t("customerLedger.totalPayments")}</Eyebrow>
                       <div className="font-display font-bold text-lg text-brand-green">
                         {pkr(summary.total_payments)}
                       </div>
                     </Panel>
                     <Panel>
-                      <Eyebrow>Closing Cash Balance</Eyebrow>
+                      <Eyebrow>{t("customerLedger.closingCashBalance")}</Eyebrow>
                       <div className="font-display font-bold text-lg text-ink">{pkr(summary.closing_balance)}</div>
                     </Panel>
                   </div>
@@ -273,29 +275,29 @@ function CustomerLedgerBody() {
                   {/* Cylinder Inventory Stats */}
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
                     <Panel>
-                      <Eyebrow>11.8 KG Sold</Eyebrow>
+                      <Eyebrow>{t("customerLedger.kg118Sold")}</Eyebrow>
                       <div className="font-mono font-semibold text-base text-amber-600">
                         {fmtNumber(summary.total_118 || 0)}
                       </div>
                     </Panel>
                     <Panel>
-                      <Eyebrow>45.4 KG Sold</Eyebrow>
+                      <Eyebrow>{t("customerLedger.kg454Sold")}</Eyebrow>
                       <div className="font-mono font-semibold text-base text-purple-600">
                         {fmtNumber(summary.total_454 || 0)}
                       </div>
                     </Panel>
                     <Panel>
-                      <Eyebrow>Total KG Sold</Eyebrow>
+                      <Eyebrow>{t("customerLedger.totalKgSold")}</Eyebrow>
                       <div className="font-mono font-semibold text-base text-ink">{fmtNumber(summary.total_kg)}</div>
                     </Panel>
                     <Panel>
-                      <Eyebrow>Total Ton</Eyebrow>
+                      <Eyebrow>{t("customerLedger.totalTon")}</Eyebrow>
                       <div className="font-mono font-semibold text-base text-ink">
                         {parseFloat(summary.total_ton || "0").toFixed(2)}
                       </div>
                     </Panel>
                     <Panel>
-                      <Eyebrow>Empty Cylinders</Eyebrow>
+                      <Eyebrow>{t("nav.emptyCylinders")}</Eyebrow>
                       <div className="font-mono font-semibold text-base text-ink">
                         11.8k: {summary.customer.empty_cylinders_118 || 0} · 45.4k: {summary.customer.empty_cylinders_454 || 0}
                       </div>
@@ -304,30 +306,31 @@ function CustomerLedgerBody() {
 
                   {/* Combined Ledger Table */}
                   <Panel>
-                    <Eyebrow>Daily Running Balance</Eyebrow>
+                    <Eyebrow>{t("customerLedger.dailyRunningBalance")}</Eyebrow>
                     <SectionCaption>
-                      Tracks cash flow along with cylinder movements for this month.
+                      {t("customerLedger.dailyRunningBalanceCaption")}
                     </SectionCaption>
                     <div className="overflow-x-auto">
                     <table className="w-full border-collapse">
                       <thead>
                         <tr>
-                          <Th>Date</Th>
-                          <Th>ID</Th>
-                          <Th>Description</Th>
-                          <Th right>Rate</Th>
-                          <Th right>11.8 KG Sold</Th>
-                          <Th right>45.4 KG Sold</Th>
-                          <Th right>Sale</Th>
-                          <Th right>Payment</Th>
-                          <Th right>Balance</Th>
-                          <Th>Entered By</Th>
-                          <Th center><span className="print:hidden">Actions</span></Th>
+                          <Th>{t("customerLedger.colDate")}</Th>
+                          <Th>{t("customerLedger.colId")}</Th>
+                          <Th>{t("customerLedger.colDescription")}</Th>
+                          <Th right>{t("customerLedger.colRate")}</Th>
+                          <Th right>{t("customerLedger.kg118Sold")}</Th>
+                          <Th right>{t("customerLedger.kg454Sold")}</Th>
+                          <Th right>{t("customerLedger.colGst")}</Th>
+                          <Th right>{t("customerLedger.colSale")}</Th>
+                          <Th right>{t("customerLedger.colPayment")}</Th>
+                          <Th right>{t("customerLedger.colBalance")}</Th>
+                          <Th>{t("customerLedger.colEnteredBy")}</Th>
+                          <Th center><span className="print:hidden">{t("customerLedger.colActions")}</span></Th>
                         </tr>
                       </thead>
                       <tbody>
                         <tr>
-                          <Td colSpan={8}>Opening balance</Td>
+                          <Td colSpan={9}>{t("customerLedger.openingBalanceRow")}</Td>
                           <Td right mono bold>
                             {pkr(summary.opening_balance)}
                           </Td>
@@ -348,6 +351,15 @@ function CustomerLedgerBody() {
                             <Td right mono>{parseFloat(r.qty_118) ? r.qty_118 : "—"}</Td>
                             <Td right mono>{parseFloat(r.qty_454) ? r.qty_454 : "—"}</Td>
                             <Td right mono>
+                              {r.gst_rate && parseFloat(r.gst_rate) > 0 ? (
+                                <span title={`${t("customerLedger.colGst")}: ${r.gst_rate}%`}>
+                                  {r.gst_rate}% · {pkr(r.gst_amount || "0")}
+                                </span>
+                              ) : (
+                                "—"
+                              )}
+                            </Td>
+                            <Td right mono>
                               {parseFloat(r.sale_amount) ? pkr(r.sale_amount) : "—"}
                             </Td>
                             <Td right mono color="#1E8A5F">
@@ -362,7 +374,7 @@ function CustomerLedgerBody() {
                                 <button
                                   onClick={() => openCorrect(r)}
                                   disabled={correctLoading === r.ref_id}
-                                  title="Correct this transaction"
+                                  title={t("customerLedger.correctThisTransaction")}
                                   className="print:hidden bg-transparent border-none cursor-pointer text-steel hover:text-teal disabled:opacity-40"
                                 >
                                   <Pencil size={13} />
@@ -373,8 +385,8 @@ function CustomerLedgerBody() {
                         ))}
                         {!summary.rows.length && (
                           <tr>
-                            <td colSpan={11} className="text-steel font-body text-[13px] py-4 text-center">
-                              No transactions this month.
+                            <td colSpan={12} className="text-steel font-body text-[13px] py-4 text-center">
+                              {t("customerLedger.noTransactionsThisMonth")}
                             </td>
                           </tr>
                         )}
@@ -392,21 +404,21 @@ function CustomerLedgerBody() {
                         onClick={() => setShowCorrections((s) => !s)}
                         className="print:hidden bg-transparent border-none cursor-pointer flex items-center gap-1.5 w-full text-left"
                       >
-                        <Eyebrow>Correction History ({summary.corrections.length})</Eyebrow>
+                        <Eyebrow>{t("customerLedger.correctionHistory", { count: summary.corrections.length })}</Eyebrow>
                       </button>
                       {
                         <div className="overflow-x-auto">
                         <table className={`w-full border-collapse mt-2 ${showCorrections ? "" : "hidden print:table"}`}>
                           <thead>
                             <tr>
-                              <Th>Date</Th>
-                              <Th>Original ID</Th>
-                              <Th>Description</Th>
-                              <Th right>Original Amount</Th>
-                              <Th>Reason</Th>
-                              <Th>Corrected By</Th>
-                              <Th>Corrected At</Th>
-                              <Th>Replaced By</Th>
+                              <Th>{t("customerLedger.colDate")}</Th>
+                              <Th>{t("customerLedger.colOriginalId")}</Th>
+                              <Th>{t("customerLedger.colDescription")}</Th>
+                              <Th right>{t("customerLedger.colOriginalAmount")}</Th>
+                              <Th>{t("customerLedger.colReason")}</Th>
+                              <Th>{t("customerLedger.colCorrectedBy")}</Th>
+                              <Th>{t("customerLedger.colCorrectedAt")}</Th>
+                              <Th>{t("customerLedger.colReplacedBy")}</Th>
                             </tr>
                           </thead>
                           <tbody>

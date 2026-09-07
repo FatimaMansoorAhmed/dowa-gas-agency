@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { X, Check, AlertCircle, Wallet } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Field, inputClass, Button } from "@/components/ui";
 import AmountInput from "@/components/AmountInput";
 import { api } from "@/lib/api";
@@ -21,6 +22,7 @@ export default function ReceivePaymentModal({
   onSuccess,
   defaultCustomerId,
 }: Props) {
+  const { t } = useTranslation();
   const { user } = useAuth();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
@@ -98,15 +100,15 @@ export default function ReceivePaymentModal({
     setToast(null);
 
     if (!customerId) {
-      setToast({ type: "error", msg: "Please select a customer." });
+      setToast({ type: "error", msg: t("modals.pleaseSelectCustomer") });
       return;
     }
     if (payAmt <= 0) {
-      setToast({ type: "error", msg: "Please enter a valid payment amount." });
+      setToast({ type: "error", msg: t("modals.pleaseEnterValidAmount") });
       return;
     }
     if (!accountId) {
-      setToast({ type: "error", msg: "Please select a Payment Account." });
+      setToast({ type: "error", msg: t("modals.pleaseSelectPaymentAccount") });
       return;
     }
 
@@ -127,13 +129,13 @@ export default function ReceivePaymentModal({
         entered_by: user?.name || "fatima",
       });
 
-      setToast({ type: "success", msg: "Payment recorded successfully!" });
+      setToast({ type: "success", msg: t("modals.paymentRecordedSuccess") });
       setTimeout(() => {
         onSuccess();
         onClose();
       }, 800);
     } catch (err: any) {
-      setToast({ type: "error", msg: err?.message || "Failed to record payment." });
+      setToast({ type: "error", msg: err?.message || t("modals.failedRecordPayment") });
     } finally {
       setSaving(false);
     }
@@ -147,7 +149,7 @@ export default function ReceivePaymentModal({
         <div className="flex justify-between items-center px-5 py-4 border-b border-hairline bg-paper">
           <div className="flex items-center gap-2">
             <Wallet className="text-teal" size={20} />
-            <h3 className="font-display font-semibold text-lg text-ink">Receive Payment</h3>
+            <h3 className="font-display font-semibold text-lg text-ink">{t("customerLedger.receivePayment")}</h3>
           </div>
           <button onClick={onClose} className="text-steel hover:text-ink cursor-pointer">
             <X size={20} />
@@ -157,22 +159,22 @@ export default function ReceivePaymentModal({
         {/* Body */}
         <div className="p-5 flex flex-col gap-4">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Date">
+            <Field label={t("unifiedSale.date")}>
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} />
             </Field>
 
-            <Field label="Payment Method">
+            <Field label={t("expenses.paymentMethod")}>
               <select value={method} onChange={(e) => setMethod(e.target.value as any)} className={inputClass}>
-                <option value="cash">Cash</option>
-                <option value="bank_transfer">Bank Transfer</option>
-                <option value="cheque">Cheque</option>
-                <option value="online">Online Payment</option>
-                <option value="other">Other</option>
+                <option value="cash">{t("unifiedSale.methodCash")}</option>
+                <option value="bank_transfer">{t("expenses.methodBankTransfer")}</option>
+                <option value="cheque">{t("unifiedSale.methodCheque")}</option>
+                <option value="online">{t("expenses.methodOnlinePayment")}</option>
+                <option value="other">{t("expenses.methodOther")}</option>
               </select>
             </Field>
           </div>
 
-          <Field label="Customer">
+          <Field label={t("unifiedSale.customer")}>
             <div className="relative">
               <input
                 value={
@@ -184,7 +186,7 @@ export default function ReceivePaymentModal({
                   setCustomerId("");
                   setCustomerSearch(e.target.value);
                 }}
-                placeholder="Search customer by name or phone..."
+                placeholder={t("modals.searchCustomerByNameOrPhone")}
                 className={inputClass}
               />
               {!customerId && customerSearch.trim() && (
@@ -209,17 +211,17 @@ export default function ReceivePaymentModal({
           </Field>
 
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Deposit To Account">
+            <Field label={t("modals.depositToAccount")}>
               <select value={accountId} onChange={(e) => setAccountId(e.target.value)} className={inputClass}>
                 {accounts.map((a) => (
                   <option key={a.id} value={a.id}>
-                    {a.name || (a as any).title || `Account #${a.id}`}
+                    {a.name || (a as any).title || t("modals.accountHashFallback", { id: a.id })}
                   </option>
                 ))}
               </select>
             </Field>
 
-            <Field label="Amount Received (PKR)">
+            <Field label={t("modals.amountReceivedPkr")}>
               <AmountInput
                 value={amount}
                 onChange={setAmount}
@@ -232,9 +234,9 @@ export default function ReceivePaymentModal({
           {/* Shop Cash Money Routing (§3) — only shown when the payer is a
               shop paying down its Dowa payable out of its own tracked cash. */}
           {selectedCustomer?.customer_type === "shop" && (
-            <Field label="Source Account (which account this money came from)">
+            <Field label={t("modals.sourceAccountWhichLabel")}>
               <select value={sourceAccountId} onChange={(e) => setSourceAccountId(e.target.value)} className={inputClass}>
-                <option value="">None (untracked source)</option>
+                <option value="">{t("modals.noneUntrackedSource")}</option>
                 {accounts.map((a) => (
                   <option key={a.id} value={a.id}>{a.name}</option>
                 ))}
@@ -242,11 +244,11 @@ export default function ReceivePaymentModal({
             </Field>
           )}
 
-          <Field label="Notes / Reference (Optional)">
+          <Field label={t("modals.notesReferenceOptional")}>
             <input
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="Cheque # / Online Ref / Remarks"
+              placeholder={t("modals.notesReferencePlaceholder")}
               className={inputClass}
             />
           </Field>
@@ -255,13 +257,13 @@ export default function ReceivePaymentModal({
           {selectedCustomer && (
             <div className="p-3 bg-paper rounded-lg border border-hairline flex justify-between items-center text-xs font-body">
               <div>
-                <span className="text-steel">Current Balance:</span>{" "}
+                <span className="text-steel">{t("modals.currentBalanceLabel")}</span>{" "}
                 <b className="text-ink">{pkr(currentBal)}</b>
               </div>
               <div>
-                <span className="text-steel">New Balance:</span>{" "}
+                <span className="text-steel">{t("modals.newBalanceLabel")}</span>{" "}
                 <b className={projectedBal < 0 ? "text-emerald-600 font-bold" : "text-ink font-bold"}>
-                  {pkr(projectedBal)} {projectedBal < 0 && "(Advance)"}
+                  {pkr(projectedBal)} {projectedBal < 0 && t("modals.advanceParen")}
                 </b>
               </div>
             </div>
@@ -284,10 +286,10 @@ export default function ReceivePaymentModal({
         {/* Footer Actions */}
         <div className="flex justify-end gap-2 px-5 py-3 border-t border-hairline bg-paper">
           <Button variant="outline" onClick={onClose} disabled={saving}>
-            Cancel
+            {t("unifiedSale.cancel")}
           </Button>
           <Button variant="teal" onClick={handleSubmit} disabled={saving}>
-            {saving ? "Saving..." : "Record Payment"}
+            {saving ? t("unifiedSale.saving") : t("modals.recordPaymentTitle")}
           </Button>
         </div>
 

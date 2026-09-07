@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { PlusCircle, Search, Truck, Wallet, Pencil, Printer } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Th, Td, inputClass, BalanceTag, Button } from "@/components/ui";
 import NewPlantModal from "@/components/NewPlantModal";
@@ -19,6 +20,7 @@ function currentMonth() {
 }
 
 function PurchasesBody() {
+  const { t } = useTranslation();
   const [month, setMonth] = useState(currentMonth());
   const [search, setSearch] = useState("");
   const [summaryRows, setSummaryRows] = useState<PlantLedgerSummaryRow[]>([]);
@@ -77,7 +79,8 @@ function PurchasesBody() {
   );
 
   const [year, mo] = month.split("-");
-  const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const MONTH_KEYS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+  const monthNames = MONTH_KEYS.map((k) => t(`monthsFull.${k}`));
   const yearOptions = [2025, 2026, 2027];
 
   const totals = summaryRows.reduce(
@@ -109,33 +112,33 @@ function PurchasesBody() {
   return (
     <div>
       <PageHeader
-        eyebrow="Purchases"
-        title="Plants, purchases & payables"
-        caption="Every purchase and plant payment posts here automatically — this is the same data the drill-down below reads from, always in sync."
+        eyebrow={t("nav.purchases")}
+        title={t("purchases.title")}
+        caption={t("purchases.caption")}
         action={
           <div className="flex gap-2">
-            <Button variant="primary" onClick={() => setShowNewPlant(true)}><PlusCircle size={14} /> Add Plant</Button>
-            <Button variant="outline" onClick={() => setShowNewPurchase(true)}><Truck size={14} /> New Purchase</Button>
-            <Button variant="outline" onClick={() => setShowPlantPayment(true)}><Wallet size={14} /> Plant Payment</Button>
+            <Button variant="primary" onClick={() => setShowNewPlant(true)}><PlusCircle size={14} /> {t("purchases.addPlant")}</Button>
+            <Button variant="outline" onClick={() => setShowNewPurchase(true)}><Truck size={14} /> {t("purchases.newPurchase")}</Button>
+            <Button variant="outline" onClick={() => setShowPlantPayment(true)}><Wallet size={14} /> {t("purchases.plantPayment")}</Button>
           </div>
         }
       />
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5 mb-4">
-        <Panel><Eyebrow>Opening Payable</Eyebrow><div className="font-display font-bold text-2xl text-ink">{pkr(totals.opening)}</div></Panel>
-        <Panel><Eyebrow>Total Purchases</Eyebrow><div className="font-display font-bold text-2xl text-ink">{pkr(totals.purchases)}</div></Panel>
-        <Panel><Eyebrow>Total Payments</Eyebrow><div className="font-display font-bold text-2xl text-brand-green">{pkr(totals.payments)}</div></Panel>
-        <Panel><Eyebrow>Total Ton</Eyebrow><div className="font-display font-bold text-2xl text-ink">{totals.ton.toFixed(2)}</div></Panel>
-        <Panel><Eyebrow>Current Payable</Eyebrow><div className="font-display font-bold text-2xl text-ink">{pkr(totals.closing)}</div></Panel>
+        <Panel><Eyebrow>{t("purchases.openingPayable")}</Eyebrow><div className="font-display font-bold text-2xl text-ink">{pkr(totals.opening)}</div></Panel>
+        <Panel><Eyebrow>{t("purchases.totalPurchases")}</Eyebrow><div className="font-display font-bold text-2xl text-ink">{pkr(totals.purchases)}</div></Panel>
+        <Panel><Eyebrow>{t("customerLedger.totalPayments")}</Eyebrow><div className="font-display font-bold text-2xl text-brand-green">{pkr(totals.payments)}</div></Panel>
+        <Panel><Eyebrow>{t("customerLedger.totalTon")}</Eyebrow><div className="font-display font-bold text-2xl text-ink">{totals.ton.toFixed(2)}</div></Panel>
+        <Panel><Eyebrow>{t("purchases.currentPayable")}</Eyebrow><div className="font-display font-bold text-2xl text-ink">{pkr(totals.closing)}</div></Panel>
       </div>
 
       <Panel className="mb-4">
         <div className="flex items-center justify-between mb-1 flex-wrap gap-2.5">
-          <Eyebrow>Plant Summary</Eyebrow>
+          <Eyebrow>{t("purchases.plantSummary")}</Eyebrow>
           <div className="flex flex-wrap gap-2">
             <div className="flex items-center gap-1.5 border border-hairline rounded-md px-2.5">
               <Search size={13} className="text-steel" />
-              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search plant" className="border-none outline-none font-body text-xs py-1.5 w-[160px]" />
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t("purchases.searchPlantPlaceholder")} className="border-none outline-none font-body text-xs py-1.5 w-[160px]" />
             </div>
             <select value={mo} onChange={(e) => setMonth(`${year}-${e.target.value}`)} className={`${inputClass} w-[130px]`}>
               {monthNames.map((name, i) => <option key={name} value={String(i + 1).padStart(2, "0")}>{name}</option>)}
@@ -145,26 +148,26 @@ function PurchasesBody() {
             </select>
           </div>
         </div>
-        <SectionCaption>Click a row to see its full transaction-level ledger below.</SectionCaption>
+        <SectionCaption>{t("purchases.clickRowCaption")}</SectionCaption>
 
         {loadingSummary ? (
-          <div className="font-body text-steel py-6">Loading…</div>
+          <div className="font-body text-steel py-6">{t("common.loading")}</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full border-collapse">
               <thead>
                 <tr>
-                  <Th>#</Th>
-                  <Th>Plant / Company</Th>
-                  <Th>Mobile</Th>
-                  <Th right>Opening</Th>
-                  <Th right>11.8 KG</Th>
-                  <Th right>45.4 KG</Th>
-                  <Th right>Total KG</Th>
-                  <Th right>Total Ton</Th>
-                  <Th right>Purchases</Th>
-                  <Th right>Payments</Th>
-                  <Th right>Closing</Th>
+                  <Th>{t("purchases.colHash")}</Th>
+                  <Th>{t("purchases.colPlantCompany")}</Th>
+                  <Th>{t("purchases.colMobile")}</Th>
+                  <Th right>{t("purchases.colOpening")}</Th>
+                  <Th right>{t("unifiedSale.col118")}</Th>
+                  <Th right>{t("unifiedSale.col454")}</Th>
+                  <Th right>{t("purchases.colTotalKg")}</Th>
+                  <Th right>{t("purchases.colTotalTon")}</Th>
+                  <Th right>{t("purchases.colPurchases")}</Th>
+                  <Th right>{t("purchases.colPayments")}</Th>
+                  <Th right>{t("purchases.colClosing")}</Th>
                 </tr>
               </thead>
               <tbody>
@@ -192,11 +195,11 @@ function PurchasesBody() {
                   );
                 })}
                 {!filteredRows.length && (
-                  <tr><td colSpan={11} className="text-steel font-body text-[13px] py-4 text-center">No plants match.</td></tr>
+                  <tr><td colSpan={11} className="text-steel font-body text-[13px] py-4 text-center">{t("purchases.noPlantsMatch")}</td></tr>
                 )}
                 <tr className="bg-ink">
                   <Td bold color="#fff">—</Td>
-                  <Td bold color="#fff">Totals</Td>
+                  <Td bold color="#fff">{t("purchases.totalsRow")}</Td>
                   <Td color="#fff">—</Td>
                   <Td right mono bold color="#fff">{pkr(totals.opening)}</Td>
                   <Td right mono bold color="#fff">{fmtNumber(totals.t118)}</Td>
@@ -215,49 +218,49 @@ function PurchasesBody() {
 
       {selectedCompanyId && (
         <Panel className="print-area">
-          {loadingDetail && <div className="font-body text-steel py-6">Loading…</div>}
+          {loadingDetail && <div className="font-body text-steel py-6">{t("common.loading")}</div>}
           {!loadingDetail && detail && (
             <>
               <div className="flex justify-between items-start mb-4">
                 <div>
-                  <Eyebrow>{detail.company.name} — Detail</Eyebrow>
-                  <div className="font-mono text-xs text-steel">{detail.company.mobile || "No mobile on file"}</div>
-                  <div className="hidden print:block font-mono text-xs text-steel mt-1">Period: {mo}/{year}</div>
+                  <Eyebrow>{t("purchases.detailSuffix", { name: detail.company.name })}</Eyebrow>
+                  <div className="font-mono text-xs text-steel">{detail.company.mobile || t("purchases.noMobileOnFile")}</div>
+                  <div className="hidden print:block font-mono text-xs text-steel mt-1">{t("customerLedger.periodLabel", { mo, year })}</div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="print:hidden"><PrintButton label="Print Plant Ledger" /></span>
+                  <span className="print:hidden"><PrintButton label={t("purchases.printPlantLedger")} /></span>
                   <BalanceTag amount={detail.closing_balance} />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-                <Panel><Eyebrow>Opening</Eyebrow><div className="font-display font-bold text-base text-ink">{pkr(detail.opening_balance)}</div></Panel>
-                <Panel><Eyebrow>Purchases</Eyebrow><div className="font-display font-bold text-base text-ink">{pkr(detail.total_purchases)}</div></Panel>
-                <Panel><Eyebrow>Paid</Eyebrow><div className="font-display font-bold text-base text-brand-green">{pkr(detail.total_payments)}</div></Panel>
-                <Panel><Eyebrow>Closing</Eyebrow><div className="font-display font-bold text-base text-ink">{pkr(detail.closing_balance)}</div></Panel>
+                <Panel><Eyebrow>{t("purchases.panelOpening")}</Eyebrow><div className="font-display font-bold text-base text-ink">{pkr(detail.opening_balance)}</div></Panel>
+                <Panel><Eyebrow>{t("purchases.panelPurchases")}</Eyebrow><div className="font-display font-bold text-base text-ink">{pkr(detail.total_purchases)}</div></Panel>
+                <Panel><Eyebrow>{t("purchases.panelPaid")}</Eyebrow><div className="font-display font-bold text-base text-brand-green">{pkr(detail.total_payments)}</div></Panel>
+                <Panel><Eyebrow>{t("purchases.panelClosing")}</Eyebrow><div className="font-display font-bold text-base text-ink">{pkr(detail.closing_balance)}</div></Panel>
               </div>
 
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse">
                   <thead>
                     <tr>
-                      <Th>Date</Th>
-                      <Th>Time</Th>
-                      <Th>ID</Th>
-                      <Th>Description</Th>
-                      <Th>Vehicle</Th>
-                      <Th right>11.8 KG</Th>
-                      <Th right>45.4 KG</Th>
-                      <Th right>Purchase</Th>
-                      <Th right>Payment</Th>
-                      <Th right>Balance</Th>
-                      <Th>Entered By</Th>
-                      <Th center><span className="print:hidden">Actions</span></Th>
+                      <Th>{t("customerLedger.colDate")}</Th>
+                      <Th>{t("purchases.colTime")}</Th>
+                      <Th>{t("customerLedger.colId")}</Th>
+                      <Th>{t("customerLedger.colDescription")}</Th>
+                      <Th>{t("unifiedSale.colVehicle")}</Th>
+                      <Th right>{t("unifiedSale.col118")}</Th>
+                      <Th right>{t("unifiedSale.col454")}</Th>
+                      <Th right>{t("purchases.colPurchase")}</Th>
+                      <Th right>{t("customerLedger.colPayment")}</Th>
+                      <Th right>{t("customerLedger.colBalance")}</Th>
+                      <Th>{t("customerLedger.colEnteredBy")}</Th>
+                      <Th center><span className="print:hidden">{t("customerLedger.colActions")}</span></Th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr>
-                      <Td colSpan={9}>Opening balance</Td>
+                      <Td colSpan={9}>{t("customerLedger.openingBalanceRow")}</Td>
                       <Td right mono bold>{pkr(detail.opening_balance)}</Td>
                       <Td colSpan={2}>{null}</Td>
                     </tr>
@@ -288,12 +291,12 @@ function PurchasesBody() {
                                 <button
                                   onClick={() => openCorrect(r)}
                                   disabled={correctLoading === r.ref_id}
-                                  title="Correct this transaction"
+                                  title={t("customerLedger.correctThisTransaction")}
                                   className="inline-flex items-center gap-1 bg-[#EAF6F6] border border-teal/40 rounded-md px-2 py-1 cursor-pointer text-teal hover:bg-teal hover:text-white disabled:opacity-40"
                                 >
                                   <Pencil size={11} />
                                   <span className="font-mono text-[10.5px] font-semibold">
-                                    {correctLoading === r.ref_id ? "Loading…" : "Correct"}
+                                    {correctLoading === r.ref_id ? t("common.loading") : t("purchases.correctButtonLabel")}
                                   </span>
                                 </button>
                               )}
@@ -302,7 +305,7 @@ function PurchasesBody() {
                                   href={r.kind === "purchase" ? api.purchases.invoiceUrl(r.ref_id) : api.companyPayments.invoiceUrl(r.ref_id)}
                                   target="_blank"
                                   rel="noreferrer"
-                                  title="View/print invoice"
+                                  title={t("unifiedSale.viewPrintInvoice")}
                                   className="inline-flex items-center justify-center p-1.5 rounded-md text-steel hover:bg-paper hover:text-teal"
                                 >
                                   <Printer size={13} />
@@ -314,7 +317,7 @@ function PurchasesBody() {
                       );
                     })}
                     {!displayRows.length && (
-                      <tr><td colSpan={12} className="text-steel font-body text-[13px] py-4 text-center">No transactions this month.</td></tr>
+                      <tr><td colSpan={12} className="text-steel font-body text-[13px] py-4 text-center">{t("customerLedger.noTransactionsThisMonth")}</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -326,19 +329,19 @@ function PurchasesBody() {
                     onClick={() => setShowCorrections((s) => !s)}
                     className="print:hidden bg-transparent border-none cursor-pointer flex items-center gap-1.5 w-full text-left"
                   >
-                    <Eyebrow>Correction History ({detail.corrections.length})</Eyebrow>
+                    <Eyebrow>{t("customerLedger.correctionHistory", { count: detail.corrections.length })}</Eyebrow>
                   </button>
                   <table className={`w-full border-collapse mt-2 ${showCorrections ? "" : "hidden print:table"}`}>
                     <thead>
                       <tr>
-                        <Th>Date</Th>
-                        <Th>Original ID</Th>
-                        <Th>Description</Th>
-                        <Th right>Original Amount</Th>
-                        <Th>Reason</Th>
-                        <Th>Corrected By</Th>
-                        <Th>Corrected At</Th>
-                        <Th>Replaced By</Th>
+                        <Th>{t("customerLedger.colDate")}</Th>
+                        <Th>{t("customerLedger.colOriginalId")}</Th>
+                        <Th>{t("customerLedger.colDescription")}</Th>
+                        <Th right>{t("customerLedger.colOriginalAmount")}</Th>
+                        <Th>{t("customerLedger.colReason")}</Th>
+                        <Th>{t("customerLedger.colCorrectedBy")}</Th>
+                        <Th>{t("customerLedger.colCorrectedAt")}</Th>
+                        <Th>{t("customerLedger.colReplacedBy")}</Th>
                       </tr>
                     </thead>
                     <tbody>

@@ -9,6 +9,7 @@ import {
   PlusCircle,
   Check,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import AuthGate from "@/components/AuthGate";
 import {
@@ -34,6 +35,11 @@ import type {
 
 const RATIO = 45.4 / 11.8;
 
+// Sentinel select value for "this rate genuinely has no party" (§ Party
+// optional) — distinct from the disabled placeholder's "", which still
+// means "incomplete, don't submit" (see handleSaveRate's canSubmit guard).
+const NO_PARTY_VALUE = "__no_party__";
+
 // ---------------------------------------------------------
 // HELPER
 // Exact local datetime for <input type="datetime-local" />
@@ -55,6 +61,7 @@ type SellingRate = {
 };
 
 function RateDashboardBody() {
+  const { t } = useTranslation();
   const { user } = useAuth();
 
   // -------------------------------------------------------
@@ -89,6 +96,9 @@ function RateDashboardBody() {
   const [partyId, setPartyId] = useState("");
 
   const [newCompanyName, setNewCompanyName] =
+    useState("");
+
+  const [newCompanyOpeningBalance, setNewCompanyOpeningBalance] =
     useState("");
 
   const [addingCompany, setAddingCompany] =
@@ -146,13 +156,16 @@ function RateDashboardBody() {
   }, []);
 
   // -------------------------------------------------------
-  // LATEST RATE PER PARTY
+  // LATEST RATE PER (COMPANY, PARTY) — party_id alone would collapse every
+  // no-party company's rows into one "null" key (§ Party optional), hiding
+  // every no-party plant but the most recently updated one. Composite key
+  // matches the backend's own fix in routers/rates.latest_rates.
   // -------------------------------------------------------
   const latestByPartyId = useMemo(() => {
     const m: Record<string, RateEntry> = {};
 
     rates.forEach((r) => {
-      const key = String(r.party_id);
+      const key = `${r.company_id}::${r.party_id ?? "none"}`;
 
       if (
         !m[key] ||
@@ -338,13 +351,13 @@ function RateDashboardBody() {
   // -------------------------------------------------------
   const sendWhatsAppSellingRates = () => {
     let text =
-      `*DOWA GAS AGENCY — Today's Selling Rates*\n` +
-      `Date: ${new Date().toLocaleDateString(
+      `*DOWA GAS AGENCY — ${t("rateDashboard.waHeading")}*\n` +
+      `${t("rateDashboard.waDateLabel", { date: new Date().toLocaleDateString(
         "en-GB",
         {
           timeZone: "Asia/Karachi",
         }
-      )}\n\n`;
+      ) })}\n\n`;
 
     let hasEntries = false;
 
@@ -386,18 +399,13 @@ function RateDashboardBody() {
           hasEntries = true;
 
           text +=
-            `*${company?.name || "Company"}*\n`;
+            `*${company?.name || t("rateDashboard.waCompanyFallback")}*\n`;
 
           text +=
-            `Party: ${
-              party?.name || "Party"
-            }\n`;
+            `${t("rateDashboard.waPartyLabel", { name: party?.name || t("rateDashboard.partyFallback") })}\n`;
 
           text +=
-            `Selling Rate: ` +
-            `${sRate.rate_118 || "—"} / ` +
-            `${sRate.rate_454 || "—"} ` +
-            `(11.8kg / 45.4kg)\n\n`;
+            `${t("rateDashboard.waSellingRateLabel", { r118: sRate.rate_118 || "—", r454: sRate.rate_454 || "—" })}\n\n`;
         }
       });
 
@@ -406,7 +414,7 @@ function RateDashboardBody() {
     // -----------------------------------------------------
     if (!hasEntries) {
       alert(
-        "Please enter at least one selling rate before sharing."
+        t("rateDashboard.enterOneRateAlert")
       );
       return;
     }
@@ -436,6 +444,7 @@ function RateDashboardBody() {
     setPartyId("");
     setRate118("");
     setNewCompanyName("");
+    setNewCompanyOpeningBalance("");
     setAddingCompany(false);
     setNewPartyName("");
     setAddingParty(false);
@@ -452,6 +461,7 @@ function RateDashboardBody() {
 
     const c = await api.companies.create({
       name: newCompanyName.trim(),
+      opening_balance: parseFloat(newCompanyOpeningBalance) || 0,
     });
 
     setCompanies((prev) => [
@@ -463,6 +473,7 @@ function RateDashboardBody() {
     setPartyId("");
 
     setNewCompanyName("");
+    setNewCompanyOpeningBalance("");
     setAddingCompany(false);
   };
 
@@ -508,14 +519,14 @@ function RateDashboardBody() {
 
     await api.rates.create({
       company_id: companyId,
-      party_id: partyId,
+      party_id: partyId === NO_PARTY_VALUE ? null : partyId,
       rate_118: parseFloat(rate118),
       entered_by: user.name,
       timestamp:
         new Date(timestamp).toISOString(),
     });
 
-    setToast("Rate saved.");
+    setToast(t("rateDashboard.rateSavedToast"));
 
     setRate118("");
 
@@ -541,9 +552,9 @@ function RateDashboardBody() {
           PAGE HEADER
       =================================================== */}
       <PageHeader
-        eyebrow="Rate Dashboard"
-        title="What's the rate right now"
-        caption="Latest applied rate per Company · Party, plus the full timestamped history underneath."
+        eyebrow={t("nav.rateDashboard")}
+        title={t("rateDashboard.title")}
+        caption={t("rateDashboard.caption")}
         action={
           <div className="flex gap-2">
             <Button
@@ -554,7 +565,7 @@ function RateDashboardBody() {
               }}
             >
               <PlusCircle size={14} />
-              Add New Rate
+              {t("rateDashboard.addNewRate")}
             </Button>
 
             <Button
@@ -562,7 +573,7 @@ function RateDashboardBody() {
               onClick={handleOpenShareModal}
             >
               <Send size={14} />
-              Share Selling Rates on WhatsApp
+              {t("rateDashboard.shareOnWhatsapp")}
             </Button>
           </div>
         }
@@ -573,11 +584,11 @@ function RateDashboardBody() {
       =================================================== */}
       <Panel className="mb-4">
         <Eyebrow>
-          Latest Rates
+          {t("rateDashboard.latestRates")}
         </Eyebrow>
 
         <SectionCaption>
-          Grouped by company, most recently updated first.
+          {t("rateDashboard.latestRatesCaption")}
         </SectionCaption>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -596,7 +607,7 @@ function RateDashboardBody() {
               >
                 <div className="font-body font-semibold text-[13.5px] text-ink mb-2">
                   {company?.name ||
-                    "Unknown Company"}
+                    t("rateDashboard.unknownCompany")}
                 </div>
 
                 <div className="flex flex-col gap-1.5">
@@ -615,7 +626,7 @@ function RateDashboardBody() {
                       >
                         <span className="font-body text-xs text-steel">
                           {party?.name ||
-                            "Party"}
+                            t("rateDashboard.partyFallback")}
                         </span>
 
                         <span className="text-right">
@@ -635,11 +646,7 @@ function RateDashboardBody() {
 
                 <div className="font-mono text-[9.5px] text-steel mt-2 flex items-center gap-1">
                   <Clock size={10} />
-                  updated{" "}
-                  {fmtTime(
-                    grouped[cid][0]
-                      .timestamp
-                  )}
+                  {t("rateDashboard.updatedAt", { time: fmtTime(grouped[cid][0].timestamp) })}
                 </div>
               </div>
             );
@@ -647,7 +654,7 @@ function RateDashboardBody() {
 
           {!companyOrder.length && (
             <div className="font-body text-steel text-[13px] col-span-3">
-              No rates entered yet.
+              {t("rateDashboard.noRatesYet")}
             </div>
           )}
         </div>
@@ -659,7 +666,7 @@ function RateDashboardBody() {
       <Panel>
         <div className="flex justify-between items-center mb-1 flex-wrap gap-2.5">
           <Eyebrow>
-            Rate History Log
+            {t("rateDashboard.rateHistoryLog")}
           </Eyebrow>
 
           <div className="flex flex-wrap gap-2">
@@ -673,7 +680,7 @@ function RateDashboardBody() {
               className={`${inputClass} w-full sm:w-[180px] py-1.5 text-xs`}
             >
               <option value="All">
-                All companies
+                {t("rateDashboard.allCompanies")}
               </option>
 
               {companies.map((c) => (
@@ -699,7 +706,7 @@ function RateDashboardBody() {
                     e.target.value
                   )
                 }
-                placeholder="Search company or party"
+                placeholder={t("rateDashboard.searchCompanyPartyPlaceholder")}
                 className="border-none outline-none font-body text-xs py-1.5 w-full sm:w-[180px]"
               />
             </div>
@@ -710,19 +717,19 @@ function RateDashboardBody() {
           <table className="w-full border-collapse">
             <thead>
               <tr>
-                <Th>Company</Th>
-                <Th>Party</Th>
+                <Th>{t("rateDashboard.colCompany")}</Th>
+                <Th>{t("rateDashboard.colParty")}</Th>
                 <Th right>
-                  11.8kg
+                  {t("rateDashboard.col118kg")}
                 </Th>
                 <Th right>
-                  45.4kg
+                  {t("rateDashboard.col454kg")}
                 </Th>
                 <Th right>
-                  Timestamp
+                  {t("rateDashboard.colTimestamp")}
                 </Th>
                 <Th>
-                  Entered By
+                  {t("customerLedger.colEnteredBy")}
                 </Th>
               </tr>
             </thead>
@@ -792,8 +799,7 @@ function RateDashboardBody() {
                     colSpan={6}
                     className="text-steel text-[13px] py-3 text-center"
                   >
-                    No rate entries
-                    found.
+                    {t("rateDashboard.noRateEntriesFound")}
                   </td>
                 </tr>
               )}
@@ -825,13 +831,11 @@ function RateDashboardBody() {
             <div className="flex items-center justify-between px-5 py-4 border-b border-hairline">
               <div>
                 <Eyebrow>
-                  New Rate Entry
+                  {t("rateDashboard.newRateEntry")}
                 </Eyebrow>
 
                 <div className="font-body text-xs text-steel mt-1">
-                  One entry per change —
-                  nothing gets overwritten,
-                  even multiple times a day.
+                  {t("rateDashboard.newRateEntryCaption")}
                 </div>
               </div>
 
@@ -852,7 +856,7 @@ function RateDashboardBody() {
             <div className="p-5 flex flex-col gap-3.5">
 
               {/* COMPANY */}
-              <Field label="Company">
+              <Field label={t("rateDashboard.company")}>
                 {!addingCompany ? (
                   <div className="flex gap-1.5">
                     <select
@@ -866,7 +870,7 @@ function RateDashboardBody() {
                       className={`${inputClass} flex-1`}
                     >
                       <option value="">
-                        Select company
+                        {t("rateDashboard.selectCompany")}
                       </option>
 
                       {companies.map(
@@ -892,57 +896,76 @@ function RateDashboardBody() {
                       <PlusCircle
                         size={14}
                       />
-                      Add
+                      {t("expenses.add")}
                     </Button>
                   </div>
                 ) : (
-                  <div className="flex gap-1.5">
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex gap-1.5">
+                      <input
+                        autoFocus
+                        value={
+                          newCompanyName
+                        }
+                        onChange={(e) =>
+                          setNewCompanyName(
+                            e.target.value
+                          )
+                        }
+                        placeholder={t("rateDashboard.newCompanyNamePlaceholder")}
+                        className={`${inputClass} flex-1`}
+                      />
+
+                      <Button
+                        variant="teal"
+                        onClick={
+                          handleAddCompany
+                        }
+                      >
+                        <Check
+                          size={14}
+                        />
+                      </Button>
+
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          setAddingCompany(
+                            false
+                          );
+                          setNewCompanyName(
+                            ""
+                          );
+                          setNewCompanyOpeningBalance(
+                            ""
+                          );
+                        }}
+                      >
+                        <X
+                          size={14}
+                        />
+                      </Button>
+                    </div>
+
                     <input
-                      autoFocus
+                      type="number"
                       value={
-                        newCompanyName
+                        newCompanyOpeningBalance
                       }
                       onChange={(e) =>
-                        setNewCompanyName(
+                        setNewCompanyOpeningBalance(
                           e.target.value
                         )
                       }
-                      placeholder="New company name"
-                      className={`${inputClass} flex-1`}
+                      placeholder={`${t("modals.openingBalance")} (0)`}
+                      className={inputClass}
                     />
-
-                    <Button
-                      variant="teal"
-                      onClick={
-                        handleAddCompany
-                      }
-                    >
-                      <Check
-                        size={14}
-                      />
-                    </Button>
-
-                    <Button
-                      variant="outline"
-                      onClick={() => {
-                        setAddingCompany(
-                          false
-                        );
-                        setNewCompanyName(
-                          ""
-                        );
-                      }}
-                    >
-                      <X
-                        size={14}
-                      />
-                    </Button>
                   </div>
                 )}
               </Field>
 
               {/* PARTY */}
-              <Field label="Party">
+              <Field label={t("rateDashboard.party")}>
                 {!addingParty ? (
                   <div className="flex gap-1.5">
                     <select
@@ -959,9 +982,15 @@ function RateDashboardBody() {
                     >
                       <option value="">
                         {companyId
-                          ? "Select party"
-                          : "Select company first"}
+                          ? t("rateDashboard.selectParty")
+                          : t("rateDashboard.selectCompanyFirst")}
                       </option>
+
+                      {companyId && (
+                        <option value={NO_PARTY_VALUE}>
+                          {t("rateDashboard.noPartyOption")}
+                        </option>
+                      )}
 
                       {companyParties.map(
                         (p) => (
@@ -989,7 +1018,7 @@ function RateDashboardBody() {
                       <PlusCircle
                         size={14}
                       />
-                      Add
+                      {t("expenses.add")}
                     </Button>
                   </div>
                 ) : (
@@ -1004,7 +1033,7 @@ function RateDashboardBody() {
                           e.target.value
                         )
                       }
-                      placeholder="New party name"
+                      placeholder={t("rateDashboard.newPartyNamePlaceholder")}
                       className={`${inputClass} flex-1`}
                     />
 
@@ -1039,7 +1068,7 @@ function RateDashboardBody() {
               </Field>
 
               {/* RATE */}
-              <Field label="Rate — 11.8kg (domestic)">
+              <Field label={t("rateDashboard.rate118Label")}>
                 <input
                   type="number"
                   value={rate118}
@@ -1048,7 +1077,7 @@ function RateDashboardBody() {
                       e.target.value
                     )
                   }
-                  placeholder="e.g. 3410"
+                  placeholder={t("rateDashboard.ratePlaceholder")}
                   className={inputClass}
                 />
               </Field>
@@ -1056,8 +1085,7 @@ function RateDashboardBody() {
               {/* 45.4 PREVIEW */}
               <div className="flex justify-between items-center px-3 py-2.5 bg-paper rounded-lg border border-hairline">
                 <span className="font-mono text-[11px] text-steel">
-                  Auto-calculated · 45.4kg
-                  (commercial)
+                  {t("rateDashboard.autoCalculated454")}
                 </span>
 
                 <span className="font-display font-bold text-base text-teal">
@@ -1067,7 +1095,7 @@ function RateDashboardBody() {
               </div>
 
               {/* TIMESTAMP */}
-              <Field label="Timestamp">
+              <Field label={t("rateDashboard.timestamp")}>
                 <input
                   type="datetime-local"
                   value={timestamp}
@@ -1081,7 +1109,7 @@ function RateDashboardBody() {
               </Field>
 
               {/* ENTERED BY */}
-              <Field label="Entered by">
+              <Field label={t("rateDashboard.enteredByField")}>
                 <input
                   value={
                     user?.name || ""
@@ -1107,7 +1135,7 @@ function RateDashboardBody() {
                   !rate118
                 }
               >
-                Save Rate Entry
+                {t("rateDashboard.saveRateEntry")}
               </Button>
 
               {/* TOAST */}
@@ -1126,7 +1154,7 @@ function RateDashboardBody() {
                 <div className="border-t border-hairline pt-3 mt-1">
 
                   <div className="font-mono text-[10px] uppercase text-steel mb-1.5">
-                    Today's Entries
+                    {t("rateDashboard.todaysEntries")}
                   </div>
 
                   <div className="max-h-[140px] overflow-y-auto flex flex-col gap-1">
@@ -1202,15 +1230,15 @@ function RateDashboardBody() {
             <div className="px-5 py-4 border-b border-hairline flex items-start justify-between">
               <div>
                 <Eyebrow>
-                  WhatsApp Selling Rates
+                  {t("rateDashboard.whatsappSellingRates")}
                 </Eyebrow>
 
                 <h3 className="font-display font-bold text-lg text-ink mb-1">
-                  Enter Selling Rates to Send
+                  {t("rateDashboard.enterSellingRatesToSend")}
                 </h3>
 
                 <p className="text-xs text-steel">
-                  Enter party selling rates below. Blank entries won't be sent.
+                  {t("rateDashboard.enterPartyRatesCaption")}
                 </p>
               </div>
 
@@ -1231,7 +1259,7 @@ function RateDashboardBody() {
             <div className="p-5 overflow-y-auto max-h-[calc(90vh-150px)]">
               <div className="flex flex-col gap-3 mb-2">
                 <div className="font-mono text-[10px] uppercase text-steel">
-                  Party Selling Rates
+                  {t("rateDashboard.partySellingRates")}
                 </div>
 
                 {Object.values(
@@ -1261,29 +1289,37 @@ function RateDashboardBody() {
                       <div className="flex items-center justify-between mb-2">
                         <div>
                           <div className="font-body text-xs font-semibold text-ink">
-                            {party?.name || "Party"}
+                            {r.party_id
+                              ? party?.name || t("rateDashboard.partyFallback")
+                              : company?.name || t("rateDashboard.waCompanyFallback")}
                           </div>
 
-                          <div className="font-body text-[10px] text-steel">
-                            {company?.name || "Company"}
-                          </div>
+                          {r.party_id ? (
+                            <div className="font-body text-[10px] text-steel">
+                              {company?.name || t("rateDashboard.waCompanyFallback")}
+                            </div>
+                          ) : (
+                            <div className="font-body text-[10px] text-steel/70 italic">
+                              {t("rateDashboard.noPartyTag")}
+                            </div>
+                          )}
                         </div>
 
                         <div className="font-mono text-[9px] text-steel">
-                          Current: {r.rate_118} / {r.rate_454}
+                          {t("rateDashboard.currentLabel", { r118: r.rate_118, r454: r.rate_454 })}
                         </div>
                       </div>
 
                       <div className="grid grid-cols-2 gap-2">
                         <div>
                           <label className="text-[10px] text-steel block mb-0.5">
-                            Selling Rate (11.8kg)
+                            {t("rateDashboard.sellingRate118")}
                           </label>
 
                           <input
                             type="text"
                             inputMode="decimal"
-                            placeholder="e.g. 2800"
+                            placeholder={t("rateDashboard.sellingRatePlaceholder118")}
                             value={
                               sellingRates[key]?.rate_118 || ""
                             }
@@ -1300,13 +1336,13 @@ function RateDashboardBody() {
 
                         <div>
                           <label className="text-[10px] text-steel block mb-0.5">
-                            Selling Rate (45.4kg)
+                            {t("rateDashboard.sellingRate454")}
                           </label>
 
                           <input
                             type="text"
                             inputMode="decimal"
-                            placeholder="e.g. 10500"
+                            placeholder={t("rateDashboard.sellingRatePlaceholder454")}
                             value={
                               sellingRates[key]?.rate_454 || ""
                             }
@@ -1327,7 +1363,7 @@ function RateDashboardBody() {
 
                 {!Object.keys(latestByPartyId).length && (
                   <div className="text-xs text-steel py-3 text-center">
-                    No party rates found.
+                    {t("rateDashboard.noPartyRatesFound")}
                   </div>
                 )}
               </div>
@@ -1343,7 +1379,7 @@ function RateDashboardBody() {
                   )
                 }
               >
-                Cancel
+                {t("unifiedSale.cancel")}
               </Button>
 
               <Button
@@ -1351,7 +1387,7 @@ function RateDashboardBody() {
                 onClick={sendWhatsAppSellingRates}
               >
                 <Send size={14} />
-                Send via WhatsApp
+                {t("rateDashboard.sendViaWhatsapp")}
               </Button>
             </div>
           </div>

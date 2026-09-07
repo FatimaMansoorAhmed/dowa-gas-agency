@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { X, Check, Plus, Trash2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Field, inputClass, Button } from "./ui";
 import AmountInput from "./AmountInput";
 import { api } from "@/lib/api";
@@ -15,6 +16,7 @@ const emptyLine = (): Line => ({ category_id: "", line_type: "expense", amount: 
 export default function RecordShopExpenseModal({
   shopId, onClose, onSaved,
 }: { shopId: string; onClose: () => void; onSaved: () => void }) {
+  const { t } = useTranslation();
   const { user } = useAuth();
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
@@ -64,7 +66,7 @@ export default function RecordShopExpenseModal({
       });
       onSaved();
     } catch (e) {
-      setError("Could not save — check every line has a category and a positive amount.");
+      setError(t("modals.couldNotSaveExpenseLines"));
     } finally {
       setSaving(false);
     }
@@ -74,26 +76,26 @@ export default function RecordShopExpenseModal({
     <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-xl px-6 py-6 w-full max-w-[620px] max-h-[85vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-4">
-          <div className="font-display font-bold text-[17px] text-ink">Record Expenses</div>
+          <div className="font-display font-bold text-[17px] text-ink">{t("modals.recordExpensesTitle")}</div>
           <button onClick={onClose} className="bg-transparent border-none cursor-pointer"><X size={16} className="text-steel" /></button>
         </div>
         <div className="flex flex-col gap-3">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Date">
+            <Field label={t("unifiedSale.date")}>
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} />
             </Field>
-            <Field label="Debit From Account">
+            <Field label={t("modals.debitFromAccount")}>
               <select value={accountId} onChange={(e) => setAccountId(e.target.value)} className={inputClass}>
-                <option value="">Shop Cash (default)</option>
+                <option value="">{t("modals.shopCashDefault")}</option>
                 {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>
             </Field>
           </div>
-          <Field label="Payment Source Note (optional)">
-            <input value={paymentSource} onChange={(e) => setPaymentSource(e.target.value)} placeholder="e.g. cash drawer" className={inputClass} />
+          <Field label={t("modals.paymentSourceNoteOptional")}>
+            <input value={paymentSource} onChange={(e) => setPaymentSource(e.target.value)} placeholder={t("modals.paymentSourcePlaceholder")} className={inputClass} />
           </Field>
 
-          <div className="font-mono text-[10px] uppercase text-steel mt-1">Lines</div>
+          <div className="font-mono text-[10px] uppercase text-steel mt-1">{t("modals.linesLabel")}</div>
           {lines.map((line, i) => (
             <div key={i} className="overflow-x-auto">
             <div className="grid grid-cols-[1.3fr_1.3fr_0.9fr_1.3fr_auto] gap-2 items-center min-w-[560px]">
@@ -109,8 +111,8 @@ export default function RecordShopExpenseModal({
                 }}
                 className={inputClass}
               >
-                <option value="expense">Expense</option>
-                <option value="owner_withdrawal">Owner Withdrawal</option>
+                <option value="expense">{t("nav.expenses")}</option>
+                <option value="owner_withdrawal">{t("shopDetail.ownerWithdrawal")}</option>
               </select>
 
               {/* 2. CATEGORY SECOND: Clean disabled input box for Owner Withdrawal */}
@@ -120,7 +122,7 @@ export default function RecordShopExpenseModal({
                   onChange={(e) => updateLine(i, { category_id: e.target.value })}
                   className={inputClass}
                 >
-                  <option value="">Category</option>
+                  <option value="">{t("expenses.categoryLabel")}</option>
                   {categories.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
@@ -140,7 +142,7 @@ export default function RecordShopExpenseModal({
               <AmountInput
                 value={line.amount}
                 onChange={(v) => updateLine(i, { amount: v })}
-                placeholder="Amount"
+                placeholder={t("modals.amountPlaceholderShort")}
                 className={inputClass}
               />
 
@@ -148,7 +150,7 @@ export default function RecordShopExpenseModal({
               <input
                 value={line.description}
                 onChange={(e) => updateLine(i, { description: e.target.value })}
-                placeholder="Description (optional)"
+                placeholder={t("modals.descriptionOptionalPlaceholder")}
                 className={inputClass}
               />
 
@@ -157,7 +159,7 @@ export default function RecordShopExpenseModal({
                 onClick={() => setLines((prev) => prev.filter((_, idx) => idx !== i))}
                 disabled={lines.length === 1}
                 className="bg-transparent border-none cursor-pointer text-steel hover:text-brand-red disabled:opacity-30"
-                title="Remove line"
+                title={t("modals.removeLineTitle")}
               >
                 <Trash2 size={14} />
               </button>
@@ -169,22 +171,22 @@ export default function RecordShopExpenseModal({
             onClick={() => setLines((prev) => [...prev, emptyLine()])}
             className="flex items-center gap-1 text-[12px] font-body text-teal bg-transparent border-none cursor-pointer w-fit"
           >
-            <Plus size={13} /> Add line
+            <Plus size={13} /> {t("modals.addLine")}
           </button>
 
-          <Field label="Notes (optional)">
+          <Field label={t("modals.notesOptional")}>
             <input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputClass} />
           </Field>
 
           <div className="flex justify-between items-center border-t border-hairline pt-2 mt-1">
-            <span className="font-mono text-[11px] uppercase text-steel">Total</span>
+            <span className="font-mono text-[11px] uppercase text-steel">{t("modals.totalLabel")}</span>
             <span className="font-mono font-bold text-[16px] text-ink">{total.toFixed(2)}</span>
           </div>
         </div>
         {error && <div className="font-body text-xs text-brand-red mt-2">{error}</div>}
         <div className="mt-4">
           <Button variant="primary" onClick={submit} disabled={!canSubmit || saving}>
-            <Check size={14} /> {saving ? "Saving…" : "Save Expense Transaction"}
+            <Check size={14} /> {saving ? t("unifiedSale.saving") : t("modals.saveExpenseTransaction")}
           </Button>
         </div>
       </div>

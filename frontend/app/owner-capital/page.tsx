@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Banknote, Wallet, Home, Landmark, Building2, Check, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, Th, Td } from "@/components/ui";
 import { api } from "@/lib/api";
@@ -17,8 +18,11 @@ const BUCKET_ICONS: Record<BucketType, typeof Wallet> = {
 };
 
 function OwnerCapitalBody() {
+  const { t } = useTranslation();
   const { user } = useAuth();
   const enteredBy = user?.name || "System";
+  const bucketLabel = (type: BucketType) =>
+    type === "office_cash" ? t("payments.officeCash") : type === "owner_home" ? t("payments.ownerHome") : t("payments.dowaAccount");
 
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
@@ -62,7 +66,7 @@ function OwnerCapitalBody() {
       setEntries(capList);
       setLoadError(null);
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : "Failed to load Owner Capital data.");
+      setLoadError(e instanceof Error ? e.message : t("ownerCapital.failedLoad"));
     } finally {
       setLoading(false);
     }
@@ -94,10 +98,10 @@ function OwnerCapitalBody() {
   const targetLabel = (e: OwnerCapital) => {
     if (e.destination_type === "account") {
       const account = accounts.find((a) => a.id === e.account_id);
-      return account?.name || "Account";
+      return account?.name || t("ownerCapital.accountFallback");
     }
     const company = companies.find((c) => c.id === e.target_plant_id);
-    return company ? `${company.name} (Plant)` : "Plant";
+    return company ? t("ownerCapital.plantSuffix", { name: company.name }) : t("ownerCapital.plantFallback");
   };
 
   const canSubmit =
@@ -111,11 +115,11 @@ function OwnerCapitalBody() {
 
     const amt = Number(amount);
     if (!amount || !(amt > 0)) {
-      setFormError("Enter an amount greater than 0.");
+      setFormError(t("ownerCapital.enterAmountError"));
       return;
     }
     if (destinationType === "plant" && !plantId) {
-      setFormError("Select a plant to pay.");
+      setFormError(t("ownerCapital.selectPlantError"));
       return;
     }
 
@@ -139,32 +143,32 @@ function OwnerCapitalBody() {
 
       setAmount("");
       setNotes("");
-      setToast("Owner Capital recorded.");
+      setToast(t("ownerCapital.recorded"));
       await load();
       setTimeout(() => setToast(null), 2200);
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : "Could not save — check the fields and try again.");
+      setFormError(err instanceof Error ? err.message : t("ownerCapital.couldNotSave"));
     } finally {
       setSaving(false);
     }
   };
 
   const handleCancel = async (id: string) => {
-    if (!confirm("Cancel this Owner Capital entry? This reverses its effect on the account or plant payable.")) return;
+    if (!confirm(t("ownerCapital.confirmCancel"))) return;
     try {
       await api.ownerCapital.cancel(id, enteredBy);
       await load();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Could not cancel this entry.");
+      alert(err instanceof Error ? err.message : t("ownerCapital.couldNotCancel"));
     }
   };
 
   return (
     <div className="max-w-[1400px] mx-auto w-full space-y-6">
       <PageHeader
-        eyebrow="OWNER CAPITAL"
-        title="Re-Investment / Owner Capital"
-        caption="Record fresh capital the owner injects into the business — deposit it into an account, or apply it directly to settle a plant supplier's payable."
+        eyebrow={t("ownerCapital.eyebrowCaps")}
+        title={t("ownerCapital.title")}
+        caption={t("ownerCapital.caption")}
       />
 
       {loadError && (
@@ -178,7 +182,7 @@ function OwnerCapitalBody() {
         <div className="p-4 bg-ink rounded-xl shadow-xs">
           <div className="flex justify-between items-center mb-2">
             <span className="font-mono text-[10px] uppercase font-bold tracking-wider text-[#9FD8D8]">
-              Total Owner Capital
+              {t("ownerCapital.totalOwnerCapital")}
             </span>
             <Banknote size={16} className="text-[#9FD8D8]" />
           </div>
@@ -187,7 +191,7 @@ function OwnerCapitalBody() {
         <div className="p-4 bg-white border border-slate-200/80 rounded-xl shadow-xs">
           <div className="flex justify-between items-center mb-2">
             <span className="font-mono text-[10px] uppercase font-bold tracking-wider text-slate-500">
-              Deposited to Accounts
+              {t("ownerCapital.depositedToAccounts")}
             </span>
             <Wallet size={16} className="text-[#2B5854]" />
           </div>
@@ -196,7 +200,7 @@ function OwnerCapitalBody() {
         <div className="p-4 bg-white border border-slate-200/80 rounded-xl shadow-xs">
           <div className="flex justify-between items-center mb-2">
             <span className="font-mono text-[10px] uppercase font-bold tracking-wider text-slate-500">
-              Direct Plant Payments
+              {t("ownerCapital.directPlantPayments")}
             </span>
             <Building2 size={16} className="text-[#2B5854]" />
           </div>
@@ -206,16 +210,15 @@ function OwnerCapitalBody() {
 
       {/* FORM */}
       <Panel>
-        <Eyebrow>New Re-Investment</Eyebrow>
-        <h2 className="font-display text-[18px] font-semibold text-ink mt-1">Inject Owner Capital</h2>
+        <Eyebrow>{t("ownerCapital.newReInvestment")}</Eyebrow>
+        <h2 className="font-display text-[18px] font-semibold text-ink mt-1">{t("ownerCapital.injectOwnerCapital")}</h2>
         <SectionCaption>
-          Choose one allocation target. A deposit only increases the selected account; a direct plant payment only
-          settles that plant's payable — the two never mix.
+          {t("ownerCapital.formCaption")}
         </SectionCaption>
 
         <form onSubmit={handleSubmit} className="space-y-4 mt-2">
           {/* Destination toggle */}
-          <Field label="Allocation Target">
+          <Field label={t("ownerCapital.allocationTarget")}>
             <div className="inline-flex p-1 bg-slate-100 rounded-lg text-xs font-semibold text-slate-600 w-fit">
               <button
                 type="button"
@@ -224,7 +227,7 @@ function OwnerCapitalBody() {
                   destinationType === "account" ? "bg-[#A8D0CD] text-[#1E403C] shadow-xs font-bold" : "hover:text-slate-900"
                 }`}
               >
-                <Wallet size={13} /> Deposit to Account
+                <Wallet size={13} /> {t("ownerCapital.depositToAccount")}
               </button>
               <button
                 type="button"
@@ -233,7 +236,7 @@ function OwnerCapitalBody() {
                   destinationType === "plant" ? "bg-[#A8D0CD] text-[#1E403C] shadow-xs font-bold" : "hover:text-slate-900"
                 }`}
               >
-                <Building2 size={13} /> Direct Plant Payment
+                <Building2 size={13} /> {t("ownerCapital.directPlantPayment")}
               </button>
             </div>
           </Field>
@@ -241,19 +244,19 @@ function OwnerCapitalBody() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             {/* Dynamic target dropdown */}
             {destinationType === "account" ? (
-              <Field label="Deposit To">
+              <Field label={t("ownerCapital.depositTo")}>
                 <select value={bucketType} onChange={(e) => setBucketType(e.target.value as BucketType)} className={inputClass}>
                   {BUCKET_ACCOUNTS.map((b) => (
                     <option key={b.type} value={b.type}>
-                      {b.label}
+                      {bucketLabel(b.type)}
                     </option>
                   ))}
                 </select>
               </Field>
             ) : (
-              <Field label="Plant Supplier">
+              <Field label={t("ownerCapital.plantSupplier")}>
                 <select value={plantId} onChange={(e) => setPlantId(e.target.value)} className={inputClass}>
-                  <option value="">Select plant</option>
+                  <option value="">{t("ownerCapital.selectPlant")}</option>
                   {companies.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
@@ -263,31 +266,30 @@ function OwnerCapitalBody() {
               </Field>
             )}
 
-            <Field label="Amount (PKR)">
+            <Field label={t("ownerCapital.amountPkr")}>
               <input
                 type="number"
                 min="0.01"
                 step="0.01"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
-                placeholder="e.g. 10000000"
+                placeholder={t("ownerCapital.amountPlaceholder")}
                 className={inputClass}
               />
             </Field>
 
-            <Field label="Date">
+            <Field label={t("unifiedSale.date")}>
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} />
             </Field>
 
-            <Field label="Notes (optional)">
-              <input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputClass} placeholder="e.g. Owner personal funds" />
+            <Field label={t("ownerCapital.notesOptional")}>
+              <input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputClass} placeholder={t("ownerCapital.notesPlaceholder")} />
             </Field>
           </div>
 
           {destinationType === "plant" && plantId && (
             <div className="px-3 py-2 rounded-md bg-[#FBF3E4] text-[11px] text-[#8A5A00] border border-[#F0DFB8]">
-              This amount will settle {companies.find((c) => c.id === plantId)?.name}'s payable directly. No cash
-              account (Office Cash / Home Cash / Dowa Account) will be increased.
+              {t("ownerCapital.directPlantWarning", { name: companies.find((c) => c.id === plantId)?.name })}
             </div>
           )}
 
@@ -297,7 +299,7 @@ function OwnerCapitalBody() {
 
           <div className="flex items-center gap-3">
             <Button type="submit" variant="teal" disabled={!canSubmit || saving}>
-              <Check size={14} /> {saving ? "Saving…" : "Record Owner Capital"}
+              <Check size={14} /> {saving ? t("ownerCapital.saving") : t("ownerCapital.recordOwnerCapital")}
             </Button>
             {toast && <span className="font-body text-[12.5px] text-brand-green">{toast}</span>}
           </div>
@@ -306,33 +308,31 @@ function OwnerCapitalBody() {
 
       {/* AUDIT TABLE */}
       <Panel>
-        <Eyebrow>Owner Capital / Re-Investment Ledger</Eyebrow>
-        <h2 className="font-display text-[18px] font-semibold text-ink mt-1">Audit trail</h2>
+        <Eyebrow>{t("ownerCapital.ledgerEyebrow")}</Eyebrow>
+        <h2 className="font-display text-[18px] font-semibold text-ink mt-1">{t("ownerCapital.auditTrail")}</h2>
         <SectionCaption>
-          Every re-investment, its allocation target, and where it posted — deposits show up on the target account's
-          Cash Book column as "Owner Capital Inflow"; direct plant payments show on that plant's Settlement Ledger as
-          "Owner Capital (Direct)".
+          {t("ownerCapital.auditCaption")}
         </SectionCaption>
 
         <div className="overflow-x-auto mt-3">
           <table className="w-full border-collapse">
             <thead>
               <tr className="border-b border-slate-200 text-left">
-                <Th>ID</Th>
-                <Th>Date</Th>
-                <Th>Type</Th>
-                <Th>Target</Th>
-                <Th right>Amount</Th>
-                <Th>Entered By</Th>
-                <Th center>Status</Th>
-                <Th center>Action</Th>
+                <Th>{t("customerLedger.colId")}</Th>
+                <Th>{t("customerLedger.colDate")}</Th>
+                <Th>{t("shopDetail.colType")}</Th>
+                <Th>{t("ownerCapital.colTarget")}</Th>
+                <Th right>{t("unifiedSale.colAmount")}</Th>
+                <Th>{t("customerLedger.colEnteredBy")}</Th>
+                <Th center>{t("shopDetail.colStatus")}</Th>
+                <Th center>{t("shopDetail.colAction")}</Th>
               </tr>
             </thead>
             <tbody>
               {entries.length === 0 ? (
                 <tr>
                   <Td colSpan={8} center color="#8E8E93">
-                    {loading ? "Loading…" : "No Owner Capital entries recorded yet."}
+                    {loading ? t("common.loading") : t("ownerCapital.noEntriesYet")}
                   </Td>
                 </tr>
               ) : (
@@ -357,7 +357,7 @@ function OwnerCapitalBody() {
                           }`}
                         >
                           <Icon size={11} />
-                          {e.destination_type === "account" ? "Deposit to Account" : "Direct Plant Payment"}
+                          {e.destination_type === "account" ? t("ownerCapital.depositToAccount") : t("ownerCapital.directPlantPayment")}
                         </span>
                       </Td>
                       <Td>{targetLabel(e)}</Td>
@@ -371,7 +371,7 @@ function OwnerCapitalBody() {
                             e.status === "active" ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"
                           }`}
                         >
-                          {e.status}
+                          {e.status === "active" ? t("shopDetail.active") : t("unifiedSale.statusCancelled")}
                         </span>
                       </Td>
                       <Td center>
@@ -381,7 +381,7 @@ function OwnerCapitalBody() {
                             onClick={() => handleCancel(e.id)}
                             className="inline-flex items-center gap-1 text-[11px] font-semibold text-red-500 hover:text-red-600 cursor-pointer"
                           >
-                            <X size={12} /> Cancel
+                            <X size={12} /> {t("ownerCapital.cancel")}
                           </button>
                         ) : (
                           <span className="text-[11px] text-slate-300">—</span>

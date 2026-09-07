@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { X, Check } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Field, inputClass, Button } from "./ui";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -26,6 +27,7 @@ export default function CorrectTransactionModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { t } = useTranslation();
   const { user } = useAuth();
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
   const [date, setDate] = useState(toKarachiDateString(transaction.date));
@@ -77,6 +79,11 @@ export default function CorrectTransactionModal({
     kind === "sale" ? sale.vehicle_no || "" : kind === "purchase" ? (transaction as Purchase).vehicle_no || "" : ""
   );
   const [notes, setNotes] = useState((transaction as { notes?: string | null }).notes || "");
+  // GST on Sale (optional, locked at entry — § GST on Sale) — pre-filled
+  // from the original sale so a correction that doesn't touch GST reposts
+  // the exact same gst_enabled/gst_rate, never silently dropping it.
+  const [gstEnabled, setGstEnabled] = useState(kind === "sale" ? !!sale.gst_enabled : false);
+  const [gstRate, setGstRate] = useState(kind === "sale" ? String(sale.gst_rate || "") : "");
 
   // Shop Sale-only fields — a correction must preserve unit/payment_type/
   // supply_customer_id unless the user deliberately changes them; the
@@ -124,7 +131,13 @@ export default function CorrectTransactionModal({
   // correcting a Payment. Optional/empty for an ordinary customer's payment.
   const [sourceAccountId, setSourceAccountId] = useState(kind === "payment" ? payment.source_account_id || "" : "");
 
-  const kindLabel = { sale: "Sale", payment: "Payment", purchase: "Purchase", companyPayment: "Plant Payment", shopSale: "Shop Sale" }[kind];
+  const kindLabel = {
+    sale: t("unifiedSale.colSale"),
+    payment: t("customerLedger.colPayment"),
+    purchase: t("purchases.colPurchase"),
+    companyPayment: t("modals.plantPaymentSingular"),
+    shopSale: t("shopDetail.shopSale"),
+  }[kind];
 
   const canSubmit =
     reason.trim().length > 0 &&
@@ -134,6 +147,7 @@ export default function CorrectTransactionModal({
         // Once an emergency transfer, always needs a shop to draw from —
         // the correction form never lets this be cleared to empty.
         && (!sale.emergency_transfer_shop_id || !!emergencyTransferShopId)
+        && (kind !== "sale" || !gstEnabled || parseFloat(gstRate) > 0)
       : kind === "shopSale"
       ? parseFloat(quantity) > 0 && (paymentType === "cash" || !!supplyCustomerId)
         && (paymentType === "cash" || (parseFloat(amountReceived) || 0) >= 0)
@@ -168,6 +182,8 @@ export default function CorrectTransactionModal({
           entered_by: user.name,
           cylinders_returned: parseFloat(cylindersReturned) || 0,
           emergency_transfer_shop_id: emergencyTransferShopId || undefined,
+          gst_enabled: gstEnabled,
+          gst_rate: gstEnabled ? parseFloat(gstRate) : undefined,
           correction_reason: reason,
           corrected_by: user.name,
         });
@@ -237,7 +253,7 @@ export default function CorrectTransactionModal({
       }
       onSaved();
     } catch (e) {
-      setError("Could not save the correction — check the fields and try again.");
+      setError(t("modals.couldNotSaveCorrection"));
     } finally {
       setSaving(false);
     }
@@ -248,7 +264,7 @@ export default function CorrectTransactionModal({
       <div className="bg-white rounded-xl px-5 py-6 sm:px-6 w-full max-w-[440px] max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-4">
           <div className="font-display font-bold text-[17px] text-ink">
-            Correct {kindLabel} · {transaction.display_id}
+            {t("modals.correctKindTitle", { kind: kindLabel, id: transaction.display_id })}
           </div>
           <button onClick={onClose} className="bg-transparent border-none cursor-pointer">
             <X size={16} className="text-steel" />
@@ -256,17 +272,17 @@ export default function CorrectTransactionModal({
         </div>
 
         <div className="flex flex-col gap-3.5">
-          <Field label="Date">
+          <Field label={t("unifiedSale.date")}>
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} />
           </Field>
 
           {(kind === "sale" || kind === "purchase") && (
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Field label="Quantity">
+                <Field label={t("modals.quantityLabel")}>
                   <input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} className={inputClass} />
                 </Field>
-                <Field label="Rate / Cylinder">
+                <Field label={t("modals.ratePerCylinder")}>
                   <input
                     type="number"
                     value={ratePerCylinder}
@@ -276,7 +292,7 @@ export default function CorrectTransactionModal({
                 </Field>
               </div>
               {kind === "sale" && (
-                <Field label="Cylinders Returned">
+                <Field label={t("modals.cylindersReturned")}>
                   <input
                     type="number"
                     value={cylindersReturned}
@@ -285,10 +301,29 @@ export default function CorrectTransactionModal({
                   />
                 </Field>
               )}
+              {kind === "sale" && (
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-1.5 font-body text-[13px] text-ink cursor-pointer">
+                    <input type="checkbox" checked={gstEnabled} onChange={(e) => setGstEnabled(e.target.checked)} />
+                    Apply GST
+                  </label>
+                  {gstEnabled && (
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={gstRate}
+                      onChange={(e) => setGstRate(e.target.value)}
+                      placeholder="Rate %"
+                      className={`${inputClass} w-24`}
+                    />
+                  )}
+                </div>
+              )}
               {kind === "sale" && sale.emergency_transfer_shop_id && (
-                <Field label="Emergency Transfer — Shop">
+                <Field label={t("modals.emergencyTransferShop")}>
                   <select value={emergencyTransferShopId} onChange={(e) => setEmergencyTransferShopId(e.target.value)} className={inputClass}>
-                    <option value="">Select shop</option>
+                    <option value="">{t("modals.selectShop")}</option>
                     {shops.map((s) => (
                       <option key={s.customer.id} value={s.customer.id}>{s.customer.name}</option>
                     ))}
@@ -297,31 +332,31 @@ export default function CorrectTransactionModal({
               )}
               {kind === "purchase" && (
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <Field label="Additional">
+                  <Field label={t("modals.additional")}>
                     <input type="number" value={additionalCharges} onChange={(e) => setAdditionalCharges(e.target.value)} className={inputClass} />
                   </Field>
-                  <Field label="Transport">
+                  <Field label={t("modals.transport")}>
                     <input type="number" value={transportCharges} onChange={(e) => setTransportCharges(e.target.value)} className={inputClass} />
                   </Field>
-                  <Field label="Other">
+                  <Field label={t("modals.other")}>
                     <input type="number" value={otherCharges} onChange={(e) => setOtherCharges(e.target.value)} className={inputClass} />
                   </Field>
                 </div>
               )}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Field label="Gate Pass No.">
+                <Field label={t("modals.gatePassNoLabel")}>
                   <input value={gatePassNo} onChange={(e) => setGatePassNo(e.target.value)} className={inputClass} />
                 </Field>
-                <Field label="Vehicle No.">
+                <Field label={t("modals.vehicleNoLabel")}>
                   <input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} className={inputClass} />
                 </Field>
               </div>
               {kind === "purchase" && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <Field label="Driver Name">
+                  <Field label={t("modals.driverNameLabel")}>
                     <input value={driverName} onChange={(e) => setDriverName(e.target.value)} className={inputClass} />
                   </Field>
-                  <Field label="Driver Contact">
+                  <Field label={t("modals.driverContactLabel")}>
                     <input value={driverContact} onChange={(e) => setDriverContact(e.target.value)} className={inputClass} />
                   </Field>
                 </div>
@@ -332,68 +367,67 @@ export default function CorrectTransactionModal({
           {kind === "shopSale" && (
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Field label="Unit">
+                <Field label={t("modals.unitLabel")}>
                   <select value={unit} onChange={(e) => setUnit(e.target.value as "cylinder" | "kg")} className={inputClass}>
-                    <option value="cylinder">Full Cylinder(s)</option>
-                    <option value="kg">KG</option>
+                    <option value="cylinder">{t("modals.fullCylinders")}</option>
+                    <option value="kg">{t("modals.kgUnit")}</option>
                   </select>
                 </Field>
-                <Field label={unit === "kg" ? "Quantity (KG)" : "Quantity (cylinders)"}>
+                <Field label={unit === "kg" ? t("modals.quantityKg") : t("modals.quantityCylinders")}>
                   <input type="number" autoFocus value={quantity} onChange={(e) => setQuantity(e.target.value)} className={inputClass} />
                 </Field>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Field label="Payment Type">
+                <Field label={t("modals.paymentTypeLabel")}>
                   <select value={paymentType} onChange={(e) => setPaymentType(e.target.value as "cash" | "credit")} className={inputClass}>
-                    <option value="cash">Cash</option>
-                    <option value="credit">Credit</option>
+                    <option value="cash">{t("unifiedSale.methodCash")}</option>
+                    <option value="credit">{t("modals.creditOption")}</option>
                   </select>
                 </Field>
-                <Field label={paymentType === "credit" ? "Supply Customer" : "Supply Customer (optional)"}>
+                <Field label={paymentType === "credit" ? t("modals.supplyCustomer") : t("modals.supplyCustomerOptional")}>
                   <select value={supplyCustomerId} onChange={(e) => setSupplyCustomerId(e.target.value)} className={inputClass}>
-                    <option value="">{paymentType === "credit" ? "Select customer" : "Walk-in / public"}</option>
+                    <option value="">{paymentType === "credit" ? t("modals.selectCustomerGeneric") : t("modals.walkInPublic")}</option>
                     {supplyCustomers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </Field>
               </div>
               {paymentType === "credit" && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <Field label="Amount Received">
+                  <Field label={t("modals.amountReceivedLabel")}>
                     <input type="number" value={amountReceived} onChange={(e) => setAmountReceived(e.target.value)} className={inputClass} />
                   </Field>
-                  <Field label="Destination Account">
+                  <Field label={t("modals.destinationAccount")}>
                     <select value={destinationAccountId} onChange={(e) => setDestinationAccountId(e.target.value)} className={inputClass}>
-                      <option value="">Shop Cash (default)</option>
+                      <option value="">{t("modals.shopCashDefault")}</option>
                       {accounts.filter((a) => a.active === "active").map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                     </select>
                   </Field>
                 </div>
               )}
               <div className="font-body text-[11px] text-steel">
-                The sale amount will be recomputed from the Board Rate in effect on the date above ×
-                the product's saleable weight — never from the original amount.
+                {t("modals.boardRateRecomputeNote")}
               </div>
             </>
           )}
 
           {(kind === "payment" || kind === "companyPayment") && (
             <>
-              <Field label="Amount">
+              <Field label={t("modals.amountField")}>
                 <input type="number" autoFocus value={amount} onChange={(e) => setAmount(e.target.value)} className={inputClass} />
               </Field>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Field label="Method">
+                <Field label={t("expenses.paymentMethod")}>
                   <select value={method} onChange={(e) => setMethod(e.target.value)} className={inputClass}>
-                    <option value="cash">Cash</option>
-                    <option value="bank_transfer">Bank Transfer</option>
-                    <option value="cheque">Cheque</option>
-                    <option value="online">Online Payment</option>
-                    <option value="other">Other</option>
+                    <option value="cash">{t("unifiedSale.methodCash")}</option>
+                    <option value="bank_transfer">{t("expenses.methodBankTransfer")}</option>
+                    <option value="cheque">{t("unifiedSale.methodCheque")}</option>
+                    <option value="online">{t("expenses.methodOnlinePayment")}</option>
+                    <option value="other">{t("expenses.methodOther")}</option>
                   </select>
                 </Field>
-                <Field label={kind === "payment" ? "Into Account" : "From Account"}>
+                <Field label={kind === "payment" ? t("modals.intoAccount") : t("modals.fromAccount")}>
                   <select value={accountId} onChange={(e) => setAccountId(e.target.value)} className={inputClass}>
-                    <option value="">{kind === "companyPayment" ? "Direct settlement (none)" : "Select account"}</option>
+                    <option value="">{kind === "companyPayment" ? t("modals.directSettlementNone") : t("expenses.selectAccount")}</option>
                     {accounts
                       .filter((a) => a.active === "active")
                       .map((a) => (
@@ -404,13 +438,13 @@ export default function CorrectTransactionModal({
                   </select>
                 </Field>
               </div>
-              <Field label="Reference Number (optional)">
+              <Field label={t("modals.referenceNumberOptional")}>
                 <input value={referenceNo} onChange={(e) => setReferenceNo(e.target.value)} className={inputClass} />
               </Field>
               {kind === "payment" && (
-                <Field label="Source Account (optional — only if funded from a tracked account, e.g. a shop's own Shop Cash)">
+                <Field label={t("modals.sourceAccountOptionalHint")}>
                   <select value={sourceAccountId} onChange={(e) => setSourceAccountId(e.target.value)} className={inputClass}>
-                    <option value="">None (untracked source)</option>
+                    <option value="">{t("modals.noneUntrackedSource")}</option>
                     {accounts.filter((a) => a.active === "active").map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                   </select>
                 </Field>
@@ -418,29 +452,28 @@ export default function CorrectTransactionModal({
             </>
           )}
 
-          <Field label="Notes (optional)">
+          <Field label={t("modals.notesOptional")}>
             <input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputClass} />
           </Field>
 
-          <Field label="Reason for Correction (required)">
+          <Field label={t("modals.reasonForCorrection")}>
             <textarea
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               rows={3}
               className={inputClass}
-              placeholder="e.g. Amount was entered wrong, quantity miscounted…"
+              placeholder={t("modals.reasonPlaceholder")}
             />
           </Field>
 
           <div className="font-body text-[11px] text-steel">
-            {transaction.display_id} stays in history, clearly marked as corrected — a new
-            transaction is posted with the values above.
+            {t("modals.staysInHistoryNote", { id: transaction.display_id })}
           </div>
 
           {error && <div className="font-body text-xs text-brand-red">{error}</div>}
 
           <Button variant="primary" onClick={handleSubmit} disabled={!canSubmit || saving}>
-            <Check size={14} /> {saving ? "Saving…" : "Save Correction"}
+            <Check size={14} /> {saving ? t("unifiedSale.saving") : t("modals.saveCorrection")}
           </Button>
         </div>
       </div>

@@ -1,9 +1,18 @@
 """Sends a generated PDF report over WhatsApp using the real Meta WhatsApp
-Cloud API (§7) — never a fake/simulated integration. Configured via 3 env
+Cloud API (§7) — never a fake/simulated integration. Configured via env
 vars (backend/.env): WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID,
-WHATSAPP_RECIPIENT_NUMBER. If any are missing, `is_configured()` is False
-and the caller (routers/reports.py) must treat that as "unavailable", never
-as a failure — report generation/download must never depend on this.
+WHATSAPP_RECIPIENT_NUMBER, WHATSAPP_TEMPLATE_NAME, and optionally
+WHATSAPP_TEMPLATE_LANG (defaults to "en"). If any required var is missing,
+`is_configured()` is False and the caller (routers/reports.py) must treat
+that as "unavailable", never as a failure — report generation/download
+must never depend on this.
+
+The message is sent as an approved template (not a free-form "document"
+message) because Meta rejects business-initiated free-form messages sent
+outside a 24-hour customer-service window — which an automated daily
+report always is. The template must have a document header (the PDF) and
+exactly one body variable, the business date, e.g.:
+"Your daily DOWA report for {{1}} is attached."
 """
 import os
 from typing import Optional
@@ -14,18 +23,27 @@ GRAPH_API_BASE = "https://graph.facebook.com/v21.0"
 
 
 def is_configured() -> bool:
-    return bool(os.getenv("WHATSAPP_TOKEN") and os.getenv("WHATSAPP_PHONE_NUMBER_ID") and os.getenv("WHATSAPP_RECIPIENT_NUMBER"))
+    return bool(
+        os.getenv("WHATSAPP_TOKEN")
+        and os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+        and os.getenv("WHATSAPP_RECIPIENT_NUMBER")
+        and os.getenv("WHATSAPP_TEMPLATE_NAME")
+    )
 
 
-def send_pdf(file_path: str, filename: str, to: Optional[str] = None) -> tuple[bool, Optional[str]]:
+def send_pdf(file_path: str, filename: str, business_date: str, to: Optional[str] = None) -> tuple[bool, Optional[str]]:
     """Uploads the PDF to the Cloud API's /media endpoint, then sends it as
-    a document message to `to` (defaults to WHATSAPP_RECIPIENT_NUMBER).
-    Returns (ok, error_message) — never raises; every failure mode (missing
-    config, HTTP error, network error) is captured and returned instead."""
+    the document header of the WHATSAPP_TEMPLATE_NAME template (body
+    variable {{1}} = business_date) to `to` (defaults to
+    WHATSAPP_RECIPIENT_NUMBER). Returns (ok, error_message) — never raises;
+    every failure mode (missing config, HTTP error, network error) is
+    captured and returned instead."""
     token = os.getenv("WHATSAPP_TOKEN")
     phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
     recipient = to or os.getenv("WHATSAPP_RECIPIENT_NUMBER")
-    if not (token and phone_number_id and recipient):
+    template_name = os.getenv("WHATSAPP_TEMPLATE_NAME")
+    template_lang = os.getenv("WHATSAPP_TEMPLATE_LANG", "en")
+    if not (token and phone_number_id and recipient and template_name):
         return False, "WhatsApp not configured"
 
     headers = {"Authorization": f"Bearer {token}"}
@@ -47,8 +65,23 @@ def send_pdf(file_path: str, filename: str, to: Optional[str] = None) -> tuple[b
             json={
                 "messaging_product": "whatsapp",
                 "to": recipient,
-                "type": "document",
-                "document": {"id": media_id, "filename": filename},
+                "type": "template",
+                "template": {
+                    "name": template_name,
+                    "language": {"code": template_lang},
+                    "components": [
+                        {
+                            "type": "header",
+                            "parameters": [
+                                {"type": "document", "document": {"id": media_id, "filename": filename}}
+                            ],
+                        },
+                        {
+                            "type": "body",
+                            "parameters": [{"type": "text", "text": business_date}],
+                        },
+                    ],
+                },
             },
             timeout=30,
         )

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { X, Check, Zap, Banknote } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Field, inputClass, Button } from "./ui";
 import AmountInput from "./AmountInput";
@@ -26,6 +27,7 @@ export default function EmergencyTransferModal({
   shopId: string; shopName: string; stockProducts: ShopProductStockSummary[];
   onClose: () => void; onSaved: () => void;
 }) {
+  const { t } = useTranslation();
   const { user } = useAuth();
 
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -108,7 +110,7 @@ export default function EmergencyTransferModal({
       });
       onSaved();
     } catch (e) {
-      setError(e instanceof Error ? e.message.replace(/^API .*?\):\s*/, "") : "Could not save — check the fields and try again.");
+      setError(e instanceof Error ? e.message.replace(/^API .*?\):\s*/, "") : t("unifiedSale.couldNotSave"));
     } finally {
       setSaving(false);
     }
@@ -119,21 +121,21 @@ export default function EmergencyTransferModal({
       <div className="bg-white rounded-xl px-5 py-6 sm:px-6 w-full max-w-[460px] max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-1">
           <div className="flex items-center gap-2 font-display font-bold text-[17px] text-ink">
-            <Zap size={16} className="text-brand-amber" /> Emergency Transfer
+            <Zap size={16} className="text-brand-amber" /> {t("shopDetail.emergencyTransfer")}
           </div>
           <button onClick={onClose} className="bg-transparent border-none cursor-pointer"><X size={16} className="text-steel" /></button>
         </div>
         <div className="font-body text-[12px] text-steel mb-4">
-          Charges a real customer's own ledger, drawing cylinders from {shopName}'s stock.
+          {t("modals.emergencyTransferCaption", { shopName })}
         </div>
 
         <div className="flex flex-col gap-3">
-          <Field label="Customer">
+          <Field label={t("unifiedSale.customer")}>
             <div className="relative">
               <input
                 value={selectedCustomer ? `${selectedCustomer.name} · ${selectedCustomer.display_id}` : customerSearch}
                 onChange={(e) => { setCustomerId(""); setCustomerSearch(e.target.value); }}
-                placeholder="Search by name, mobile, or customer ID"
+                placeholder={t("unifiedSale.searchCustomer")}
                 className={inputClass}
               />
               {!customerId && customerSearch.trim() && (
@@ -143,67 +145,67 @@ export default function EmergencyTransferModal({
                       <span className="font-semibold text-ink">{c.name}</span> <span className="text-steel">· {c.display_id} · {c.mobile}</span>
                     </button>
                   ))}
-                  {!filteredCustomers.length && <div className="px-3 py-2 font-body text-[13px] text-steel">No match.</div>}
+                  {!filteredCustomers.length && <div className="px-3 py-2 font-body text-[13px] text-steel">{t("unifiedSale.noMatch")}</div>}
                 </div>
               )}
             </div>
           </Field>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Field label="Product">
+            <Field label={t("unifiedSale.colProduct")}>
               <select value={productId} onChange={(e) => setProductId(e.target.value)} className={inputClass}>
-                <option value="">Select product</option>
+                <option value="">{t("modals.selectProduct")}</option>
                 {liveStockProducts.map((p) => (
-                  <option key={p.product_id} value={p.product_id}>{p.product_name} ({p.closing_stock} available)</option>
+                  <option key={p.product_id} value={p.product_id}>{t("modals.productAvailable", { name: p.product_name, available: p.closing_stock })}</option>
                 ))}
               </select>
             </Field>
-            <Field label="Date">
+            <Field label={t("unifiedSale.date")}>
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} />
             </Field>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Field label="Quantity">
+            <Field label={t("modals.quantityLabel")}>
               <input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} className={inputClass} />
             </Field>
-            <Field label="Rate / Cylinder">
+            <Field label={t("modals.ratePerCylinder")}>
               <AmountInput value={rate} onChange={setRate} className={inputClass} />
             </Field>
           </div>
           {available != null && qty > available && (
             <div className="font-body text-xs text-brand-red -mt-1.5">
-              Only {available} available at this shop.
+              {t("modals.onlyAvailableAtShop", { available })}
             </div>
           )}
 
           {totalAmount != null && (
             <div className="flex justify-between items-center rounded-md bg-paper px-3 py-2">
-              <span className="font-mono text-[10px] uppercase text-steel">Total</span>
+              <span className="font-mono text-[10px] uppercase text-steel">{t("modals.totalLabel")}</span>
               <span className="font-mono font-bold text-[15px] text-ink">{pkr(totalAmount)}</span>
             </div>
           )}
 
           <label className="flex items-center gap-2 cursor-pointer">
             <input type="checkbox" checked={collectNow} onChange={(e) => setCollectNow(e.target.checked)} className="cursor-pointer" />
-            <span className="font-body text-[13px] text-ink flex items-center gap-1"><Banknote size={13} /> Collect payment now</span>
+            <span className="font-body text-[13px] text-ink flex items-center gap-1"><Banknote size={13} /> {t("modals.collectPaymentNow")}</span>
           </label>
 
           {collectNow && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Field label="Amount Collected">
+              <Field label={t("modals.amountCollected")}>
                 <AmountInput value={amountCollected} onChange={setAmountCollected} className={inputClass} />
               </Field>
-              <Field label="Destination Account">
+              <Field label={t("modals.destinationAccount")}>
                 <select value={destinationAccountId} onChange={(e) => setDestinationAccountId(e.target.value)} className={inputClass}>
-                  <option value="">{shopName} Shop Cash (default)</option>
+                  <option value="">{t("modals.shopCashDefaultNamed", { shopName })}</option>
                   {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                 </select>
               </Field>
             </div>
           )}
 
-          <Field label="Notes (optional)">
+          <Field label={t("modals.notesOptional")}>
             <input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputClass} />
           </Field>
         </div>
@@ -211,7 +213,7 @@ export default function EmergencyTransferModal({
         {error && <div className="font-body text-xs text-brand-red mt-3">{error}</div>}
         <div className="mt-4">
           <Button variant="primary" onClick={submit} disabled={!canSubmit || saving}>
-            <Check size={14} /> {saving ? "Saving…" : "Save Emergency Transfer"}
+            <Check size={14} /> {saving ? t("unifiedSale.saving") : t("modals.saveEmergencyTransfer")}
           </Button>
         </div>
       </div>

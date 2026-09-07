@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { X, RotateCcw, ArrowRightLeft, Banknote } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Field, inputClass, Button } from "@/components/ui";
 import AmountInput from "@/components/AmountInput";
 import SettlementDestinationFields, { SpecialAccount } from "@/components/SettlementDestinationFields";
@@ -45,10 +46,18 @@ interface Props {
   onClose: () => void;
   onSuccess: () => void;
   customer: Customer | null;
+  // "sell" (Empty Cylinders page's "Sell Cylinder" button) reuses this
+  // exact component/endpoint instead of duplicating the cash-mode +
+  // settlement-fields wiring: mode is locked to "cash" (no transfer
+  // toggle), and origin="sell_cylinder" tags the row so the Daily Report
+  // keeps reporting sells as their own section (§ models.CylinderReturn.origin).
+  variant?: "return" | "sell";
 }
 
-export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, customer }: Props) {
+export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, customer, variant = "return" }: Props) {
+  const { t } = useTranslation();
   const { user } = useAuth();
+  const isSell = variant === "sell";
 
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
@@ -58,7 +67,7 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
   const [cylSize, setCylSize] = useState<"118" | "454">("118");
   const [sellType, setSellType] = useState<SellType>("cross");
   const [quantity, setQuantity] = useState("");
-  const [mode, setMode] = useState<"transfer" | "cash">("transfer");
+  const [mode, setMode] = useState<"transfer" | "cash">(isSell ? "cash" : "transfer");
 
   const [toCustomerId, setToCustomerId] = useState("");
   const [toCustomerSearch, setToCustomerSearch] = useState("");
@@ -91,14 +100,14 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
         setAccounts(accList);
         setExpenseCategories(catList);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load form data.");
+        setError(e instanceof Error ? e.message : t("modals.failedLoadFormData"));
       }
     })();
     const size = parseFloat(customer.empty_cylinders_118 || "0") > 0 ? "118" : "454";
     setCylSize(size);
     setSellType(defaultTypeFor(customer, size));
     setQuantity("");
-    setMode("transfer");
+    setMode(isSell ? "cash" : "transfer");
     setToCustomerId("");
     setToCustomerSearch("");
     setAmount("");
@@ -167,6 +176,7 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
         cylinder_type: sellType === "legacy" ? undefined : sellType,
         quantity: qtyNum,
         mode,
+        origin: isSell ? "sell_cylinder" : "return_cylinder",
         to_customer_id: mode === "transfer" ? toCustomerId : undefined,
         amount: mode === "cash" ? amountNum : undefined,
         home_expense_amount: mode === "cash" && (parseFloat(homeExpenseAmount) || 0) > 0 ? parseFloat(homeExpenseAmount) : undefined,
@@ -181,7 +191,7 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
       onSuccess();
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to record the cylinder return.");
+      setError(e instanceof Error ? e.message : t("modals.failedRecordCylinderReturn"));
     } finally {
       setSaving(false);
     }
@@ -192,8 +202,10 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
       <div className="bg-white rounded-xl shadow-xl w-full max-w-lg my-8 overflow-hidden border border-hairline">
         <div className="flex justify-between items-center px-5 py-4 border-b border-hairline bg-paper">
           <div className="flex items-center gap-2">
-            <RotateCcw className="text-teal" size={20} />
-            <h3 className="font-display font-semibold text-lg text-ink">Return Cylinder — {customer.name}</h3>
+            {isSell ? <Banknote className="text-teal" size={20} /> : <RotateCcw className="text-teal" size={20} />}
+            <h3 className="font-display font-semibold text-lg text-ink">
+              {t(isSell ? "modals.sellCylinderTitle" : "modals.returnCylinderTitle", { name: customer.name })}
+            </h3>
           </div>
           <button onClick={onClose} className="text-steel hover:text-ink cursor-pointer">
             <X size={20} />
@@ -202,29 +214,29 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
 
         <div className="p-5 flex flex-col gap-4">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Cylinder Size">
+            <Field label={t("modals.cylinderSize")}>
               <select value={cylSize} onChange={(e) => changeSize(e.target.value as "118" | "454")} className={inputClass}>
-                <option value="118">11.8 KG</option>
-                <option value="454">45.4 KG</option>
+                <option value="118">{t("unifiedSale.col118")}</option>
+                <option value="454">{t("unifiedSale.col454")}</option>
               </select>
             </Field>
-            <Field label="Cylinder Type">
+            <Field label={t("modals.cylinderType")}>
               <select value={sellType} onChange={(e) => { setSellType(e.target.value as SellType); setQuantity(""); }} className={inputClass}>
-                <option value="cross">Cross ({balanceFor(customer, cylSize, "cross")} available)</option>
-                <option value="pso">PSO ({balanceFor(customer, cylSize, "pso")} available)</option>
+                <option value="cross">{t("modals.crossAvailable", { available: balanceFor(customer, cylSize, "cross") })}</option>
+                <option value="pso">{t("modals.psoAvailable", { available: balanceFor(customer, cylSize, "pso") })}</option>
                 {unclassified(customer, cylSize) > 0 && (
-                  <option value="legacy">Unclassified ({unclassified(customer, cylSize)} available)</option>
+                  <option value="legacy">{t("modals.unclassifiedAvailable", { available: unclassified(customer, cylSize) })}</option>
                 )}
               </select>
             </Field>
           </div>
 
           <div className="font-mono text-xs text-steel">
-            Available {cylSize === "454" ? "45.4 KG" : "11.8 KG"} {sellType === "legacy" ? "unclassified" : sellType.toUpperCase()} empty cylinders:{" "}
+            {t("modals.availableCylindersLine", { size: cylSize === "454" ? t("unifiedSale.col454") : t("unifiedSale.col118"), type: sellType === "legacy" ? t("modals.unclassifiedLower") : sellType.toUpperCase() })}{" "}
             <b className="text-ink">{availableBalance}</b>
           </div>
 
-          <Field label="Quantity">
+          <Field label={t("modals.quantityLabel")}>
             <input
               type="number"
               min="0"
@@ -234,29 +246,31 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
             />
           </Field>
 
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => setMode("transfer")}
-              className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-md border text-xs font-semibold transition-all ${
-                mode === "transfer" ? "bg-teal/10 border-teal text-teal shadow-xs" : "border-hairline bg-white text-steel hover:bg-paper"
-              }`}
-            >
-              <ArrowRightLeft size={13} /> Transfer to Customer
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode("cash")}
-              className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-md border text-xs font-semibold transition-all ${
-                mode === "cash" ? "bg-teal/10 border-teal text-teal shadow-xs" : "border-hairline bg-white text-steel hover:bg-paper"
-              }`}
-            >
-              <Banknote size={13} /> Convert to Cash
-            </button>
-          </div>
+          {!isSell && (
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setMode("transfer")}
+                className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-md border text-xs font-semibold transition-all ${
+                  mode === "transfer" ? "bg-teal/10 border-teal text-teal shadow-xs" : "border-hairline bg-white text-steel hover:bg-paper"
+                }`}
+              >
+                <ArrowRightLeft size={13} /> {t("modals.transferToCustomer")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("cash")}
+                className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-md border text-xs font-semibold transition-all ${
+                  mode === "cash" ? "bg-teal/10 border-teal text-teal shadow-xs" : "border-hairline bg-white text-steel hover:bg-paper"
+                }`}
+              >
+                <Banknote size={13} /> {t("modals.convertToCash")}
+              </button>
+            </div>
+          )}
 
           {mode === "transfer" ? (
-            <Field label="Transfer To (Customer B)">
+            <Field label={t("modals.transferToCustomerB")}>
               <div className="relative">
                 <input
                   value={toCustomer ? `${toCustomer.name} · ${toCustomer.display_id}` : toCustomerSearch}
@@ -264,7 +278,7 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
                     setToCustomerId("");
                     setToCustomerSearch(e.target.value);
                   }}
-                  placeholder="Search customer by name or ID"
+                  placeholder={t("modals.searchCustomerByNameOrId2")}
                   className={inputClass}
                 />
                 {!toCustomerId && toCustomerSearch.trim() && (
@@ -288,7 +302,7 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
             </Field>
           ) : (
             <>
-              <Field label="Cash Value (PKR)">
+              <Field label={t("modals.cashValuePkr")}>
                 <AmountInput
                   value={amount}
                   onChange={setAmount}
@@ -320,7 +334,7 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
             </>
           )}
 
-          <Field label="Notes (optional)">
+          <Field label={t("modals.notesOptional")}>
             <input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputClass} />
           </Field>
 
@@ -329,10 +343,10 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
 
         <div className="flex justify-end gap-2 px-5 py-3 border-t border-hairline bg-paper">
           <Button variant="outline" onClick={onClose} disabled={saving}>
-            Cancel
+            {t("unifiedSale.cancel")}
           </Button>
           <Button variant="teal" onClick={handleSubmit} disabled={!canSubmit || saving}>
-            {saving ? "Saving…" : "Confirm Return"}
+            {saving ? t("unifiedSale.saving") : t(isSell ? "modals.confirmSale" : "modals.confirmReturn")}
           </Button>
         </div>
       </div>

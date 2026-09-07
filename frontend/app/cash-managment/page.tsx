@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Wallet, Home, Landmark, ArrowRightLeft, Building2, Send, X, Calendar, Banknote, ArrowDownRight, Layers, Store } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { Panel, Eyebrow, Field, inputClass, Th, Td, Button } from "@/components/ui";
 import { api } from "@/lib/api";
@@ -19,8 +20,11 @@ const BUCKET_ICONS: Record<BucketType, typeof Wallet> = {
 };
 
 function CashManagementBody() {
+  const { t, i18n } = useTranslation();
   const { user } = useAuth();
   const enteredBy = user?.name || "System";
+  const bucketLabel = (type: BucketType) =>
+    type === "office_cash" ? t("payments.officeCash") : type === "owner_home" ? t("payments.ownerHome") : t("payments.dowaAccount");
 
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
@@ -90,7 +94,7 @@ function CashManagementBody() {
       setCustomers(custList);
       setLoadError(null);
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : "Failed to load cash management data.");
+      setLoadError(e instanceof Error ? e.message : t("cashBook.failedLoad"));
     } finally {
       setLoading(false);
     }
@@ -123,22 +127,22 @@ function CashManagementBody() {
     setTransferError(null);
 
     if (transferFrom === transferTo) {
-      setTransferError("Source and destination accounts must be different.");
+      setTransferError(t("cashBook.sourceDestDifferent"));
       return;
     }
     const amt = Number(transferAmount);
     if (!transferAmount || !(amt > 0)) {
-      setTransferError("Enter a positive amount.");
+      setTransferError(t("cashBook.enterPositiveAmount"));
       return;
     }
     const fromAccount = resolveTransferAccount(transferFrom);
     const toAccount = resolveTransferAccount(transferTo);
     if (!fromAccount || !toAccount) {
-      setTransferError("Accounts are still being set up — please retry in a moment.");
+      setTransferError(t("cashBook.accountsBeingSetUp"));
       return;
     }
     if (amt > parseFloat(fromAccount.current_balance)) {
-      setTransferError("Amount exceeds the available balance in the source account.");
+      setTransferError(t("cashBook.amountExceedsBalance"));
       return;
     }
 
@@ -155,7 +159,7 @@ function CashManagementBody() {
       setIsTransferOpen(false);
       await loadData();
     } catch (err) {
-      setTransferError(err instanceof Error ? err.message : "Transfer failed.");
+      setTransferError(err instanceof Error ? err.message : t("cashBook.transferFailed"));
     } finally {
       setTransferSaving(false);
     }
@@ -166,21 +170,21 @@ function CashManagementBody() {
     setPlantError(null);
 
     if (!plantId) {
-      setPlantError("Select a plant.");
+      setPlantError(t("cashBook.selectAPlant"));
       return;
     }
     const amt = Number(plantAmount);
     if (!plantAmount || !(amt > 0)) {
-      setPlantError("Enter a positive amount.");
+      setPlantError(t("cashBook.enterPositiveAmount"));
       return;
     }
     const sourceAccount = findBucketAccount(accounts, plantSource);
     if (!sourceAccount) {
-      setPlantError("Source account is still being set up — please retry in a moment.");
+      setPlantError(t("cashBook.accountsBeingSetUp"));
       return;
     }
     if (amt > parseFloat(sourceAccount.current_balance)) {
-      setPlantError("Amount exceeds the available balance in the source account.");
+      setPlantError(t("cashBook.amountExceedsBalance"));
       return;
     }
 
@@ -199,7 +203,7 @@ function CashManagementBody() {
       setIsPlantPaymentOpen(false);
       await loadData();
     } catch (err) {
-      setPlantError(err instanceof Error ? err.message : "Payment failed.");
+      setPlantError(err instanceof Error ? err.message : t("cashBook.paymentFailed"));
     } finally {
       setPlantSaving(false);
     }
@@ -245,12 +249,13 @@ function CashManagementBody() {
           date: d.date,
           sourceAccount: d.account_id
             ? accounts.find((a) => a.id === d.account_id)?.name || "—"
-            : "Customer Payment (Direct)",
+            : t("cashBook.customerPaymentDirect"),
           amount: parseFloat(d.amount || "0"),
         };
       })
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [filteredOwnerDrawings, unifiedSales, customers, accounts]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredOwnerDrawings, unifiedSales, customers, accounts, i18n.language]);
 
   // Dashboard P&L / Shop Expense integration (§ Dashboard) — dual-written
   // from a Shop's own Record Expense form (an owner_withdrawal line).
@@ -282,10 +287,10 @@ function CashManagementBody() {
       {/* HEADER CARD WITH DARK NAVY (#0b2138) */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-[#0b2138] text-white p-5 rounded-lg shadow-sm">
         <div>
-          <span className="text-[10px] font-mono tracking-widest uppercase text-blue-200">Liquidity & Treasury</span>
-          <h1 className="text-2xl font-display font-bold mt-0.5">Cash Management Operations</h1>
+          <span className="text-[10px] font-mono tracking-widest uppercase text-blue-200">{t("cashBook.eyebrowSmall")}</span>
+          <h1 className="text-2xl font-display font-bold mt-0.5">{t("cashBook.title")}</h1>
           <p className="text-xs text-blue-100/80 mt-1 max-w-xl">
-            Monitor liquidity across office cash, owner home vault, and bank accounts. Direct transfers and plant payments.
+            {t("cashBook.caption")}
           </p>
         </div>
 
@@ -295,14 +300,14 @@ function CashManagementBody() {
             onClick={() => setIsTransferOpen(true)}
             className="flex items-center gap-2 px-3.5 py-2 bg-white/15 hover:bg-white/25 text-white rounded border border-white/20 transition-all text-xs font-semibold cursor-pointer"
           >
-            <ArrowRightLeft size={14} /> Transfer
+            <ArrowRightLeft size={14} /> {t("cashBook.transfer")}
           </button>
           <button
             type="button"
             onClick={() => setIsPlantPaymentOpen(true)}
             className="flex items-center gap-2 px-3.5 py-2 bg-[#061423] hover:bg-[#040c17] text-white rounded border border-blue-400/30 transition-all text-xs font-semibold shadow-sm cursor-pointer"
           >
-            <Building2 size={14} /> Pay Plant
+            <Building2 size={14} /> {t("cashBook.payPlant")}
           </button>
         </div>
       </div>
@@ -320,7 +325,7 @@ function CashManagementBody() {
           return (
             <div key={type} className="bg-white border border-hairline rounded-lg p-4 flex flex-col justify-between shadow-xs">
               <div className="flex items-center justify-between border-b border-hairline/60 pb-2 mb-3">
-                <span className="text-[11px] font-mono font-semibold uppercase tracking-wider text-steel">{label}</span>
+                <span className="text-[11px] font-mono font-semibold uppercase tracking-wider text-steel">{bucketLabel(type)}</span>
                 <div className="p-1.5 rounded bg-[#e8eef4] text-[#0b2138]">
                   <Icon size={14} />
                 </div>
@@ -337,7 +342,7 @@ function CashManagementBody() {
             this is a display-only sum, never a shared storage-level total. */}
         <div className="bg-white border border-teal-200 rounded-lg p-4 flex flex-col justify-between shadow-xs">
           <div className="flex items-center justify-between border-b border-hairline/60 pb-2 mb-3">
-            <span className="text-[11px] font-mono font-semibold uppercase tracking-wider text-[#0b2138]">Total Shop Cash</span>
+            <span className="text-[11px] font-mono font-semibold uppercase tracking-wider text-[#0b2138]">{t("cashBook.totalShopCash")}</span>
             <div className="p-1.5 rounded bg-teal-100 text-teal-800">
               <Wallet size={14} />
             </div>
@@ -347,7 +352,7 @@ function CashManagementBody() {
               {loading ? "—" : pkr(totalShopCash)}
             </div>
             <div className="text-[11px] text-steel font-mono mt-1">
-              across {shopAccounts.length} shop{shopAccounts.length === 1 ? "" : "s"}
+              {t("cashBook.acrossShops", { count: shopAccounts.length })}
             </div>
           </div>
         </div>
@@ -355,7 +360,7 @@ function CashManagementBody() {
         {/* SUMMARY CARD: TOTAL DRAWINGS */}
         <div className="bg-white border border-blue-200 rounded-lg p-4 flex flex-col justify-between shadow-xs">
           <div className="flex items-center justify-between border-b border-hairline/60 pb-2 mb-3">
-            <span className="text-[11px] font-mono font-semibold uppercase tracking-wider text-[#0b2138]">Total Drawings</span>
+            <span className="text-[11px] font-mono font-semibold uppercase tracking-wider text-[#0b2138]">{t("cashBook.totalDrawings")}</span>
             <div className="p-1.5 rounded bg-amber-100 text-amber-800">
               <ArrowDownRight size={14} />
             </div>
@@ -365,7 +370,7 @@ function CashManagementBody() {
               {loading ? "—" : pkr(totalOwnerDrawings)}
             </div>
             <div className="text-[11px] text-steel font-mono mt-1 capitalize">
-              Scope: {drawingFilter === "custom" && customDate ? customDate : drawingFilter}
+              {t("cashBook.scopeLabel", { scope: drawingFilter === "custom" && customDate ? customDate : t(`cashBook.filter${drawingFilter.charAt(0).toUpperCase()}${drawingFilter.slice(1)}`) })}
             </div>
           </div>
         </div>
@@ -378,14 +383,14 @@ function CashManagementBody() {
         <Panel>
           <div className="flex items-center gap-2 border-b border-hairline pb-3 mb-3">
             <Wallet size={16} className="text-[#0b2138]" />
-            <Eyebrow>Shop Cash by Shop</Eyebrow>
+            <Eyebrow>{t("cashBook.shopCashByShop")}</Eyebrow>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full border-collapse">
               <thead>
                 <tr>
-                  <Th>Shop</Th>
-                  <Th right>Balance</Th>
+                  <Th>{t("cashBook.colShop")}</Th>
+                  <Th right>{t("customerLedger.colBalance")}</Th>
                 </tr>
               </thead>
               <tbody>
@@ -406,7 +411,7 @@ function CashManagementBody() {
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-hairline pb-3 mb-4">
           <div className="flex items-center gap-2">
             <Layers size={16} className="text-[#0b2138]" />
-            <Eyebrow>Owner Drawings Audit Ledger</Eyebrow>
+            <Eyebrow>{t("cashBook.ownerDrawingsAuditLedger")}</Eyebrow>
           </div>
 
           {/* Timeframe & Calendar Picker Controls */}
@@ -426,7 +431,7 @@ function CashManagementBody() {
                       : "text-steel hover:text-ink"
                   }`}
                 >
-                  {f}
+                  {t(`cashBook.filter${f.charAt(0).toUpperCase()}${f.slice(1)}`)}
                 </button>
               ))}
             </div>
@@ -450,18 +455,18 @@ function CashManagementBody() {
           <table className="w-full border-collapse">
             <thead>
               <tr>
-                <Th>Customer Name</Th>
-                <Th>Sale ID</Th>
-                <Th>Date</Th>
-                <Th>Source Account</Th>
-                <Th right>Amount Drawn</Th>
+                <Th>{t("cashBook.colCustomerName")}</Th>
+                <Th>{t("cashBook.colSaleId")}</Th>
+                <Th>{t("customerLedger.colDate")}</Th>
+                <Th>{t("cashBook.colSourceAccount")}</Th>
+                <Th right>{t("cashBook.colAmountDrawn")}</Th>
               </tr>
             </thead>
             <tbody>
               {drawingRows.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="text-steel font-body text-[13px] py-6 text-center">
-                    {loading ? "Loading…" : "No owner drawings recorded for the selected filter."}
+                    {loading ? t("common.loading") : t("cashBook.noDrawingsForFilter")}
                   </td>
                 </tr>
               ) : (
@@ -488,25 +493,25 @@ function CashManagementBody() {
       <Panel>
         <div className="flex items-center gap-2 border-b border-hairline pb-3 mb-4">
           <Store size={16} className="text-[#0b2138]" />
-          <Eyebrow>Shop Owner Withdrawals</Eyebrow>
+          <Eyebrow>{t("cashBook.shopOwnerWithdrawals")}</Eyebrow>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full border-collapse">
             <thead>
               <tr>
-                <Th>ID</Th>
-                <Th>Shop</Th>
-                <Th>Customer / Sale</Th>
-                <Th>Date</Th>
-                <Th>Account</Th>
-                <Th right>Amount</Th>
+                <Th>{t("customerLedger.colId")}</Th>
+                <Th>{t("cashBook.colShop")}</Th>
+                <Th>{t("cashBook.colCustomerSale")}</Th>
+                <Th>{t("customerLedger.colDate")}</Th>
+                <Th>{t("unifiedSale.colAccount")}</Th>
+                <Th right>{t("unifiedSale.colAmount")}</Th>
               </tr>
             </thead>
             <tbody>
               {shopDrawingRows.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="text-steel font-body text-[13px] py-6 text-center">
-                    {loading ? "Loading…" : "No shop owner withdrawals for the selected filter."}
+                    {loading ? t("common.loading") : t("cashBook.noShopWithdrawals")}
                   </td>
                 </tr>
               ) : (
@@ -519,7 +524,7 @@ function CashManagementBody() {
                         <span className="font-body text-[12px] text-ink">
                           {row.customerName || "—"}
                           {row.saleRef && (
-                            <span className="ml-1 font-mono text-[10px] text-steel">· Sale {row.saleRef}</span>
+                            <span className="ml-1 font-mono text-[10px] text-steel">{t("cashBook.saleRefInline", { id: row.saleRef })}</span>
                           )}
                         </span>
                       ) : (
@@ -545,25 +550,25 @@ function CashManagementBody() {
       <Panel>
         <div className="flex items-center gap-2 border-b border-hairline pb-3 mb-3">
           <Banknote size={16} className="text-[#0b2138]" />
-          <Eyebrow>Owner Capital Inflow Ledger (Re-Investment Deposits)</Eyebrow>
+          <Eyebrow>{t("cashBook.ownerCapitalInflowLedger")}</Eyebrow>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full border-collapse">
             <thead>
               <tr>
-                <Th>ID</Th>
-                <Th>Date</Th>
-                <Th>Account</Th>
-                <Th>Source</Th>
-                <Th right>Amount</Th>
+                <Th>{t("customerLedger.colId")}</Th>
+                <Th>{t("customerLedger.colDate")}</Th>
+                <Th>{t("unifiedSale.colAccount")}</Th>
+                <Th>{t("cashBook.colSource")}</Th>
+                <Th right>{t("unifiedSale.colAmount")}</Th>
               </tr>
             </thead>
             <tbody>
               {ownerCapital.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="text-steel font-body text-[13px] py-6 text-center">
-                    {loading ? "Loading…" : "No Owner Capital deposits recorded yet."}
+                    {loading ? t("common.loading") : t("cashBook.noOwnerCapitalDeposits")}
                   </td>
                 </tr>
               ) : (
@@ -578,7 +583,7 @@ function CashManagementBody() {
                     </Td>
                     <Td>
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono bg-[#e8eef4] text-[#0b2138] border border-blue-200">
-                        <Banknote size={11} /> Owner Capital Inflow
+                        <Banknote size={11} /> {t("cashBook.ownerCapitalInflow")}
                       </span>
                     </Td>
                     <Td right mono bold color="#0b2138">{pkr(c.amount)}</Td>
@@ -596,7 +601,7 @@ function CashManagementBody() {
           <div className="bg-white border border-hairline rounded-lg shadow-2xl max-w-md w-full p-6 space-y-4">
             <div className="flex justify-between items-center border-b border-hairline pb-3">
               <span className="inline-flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-[#0b2138] font-display">
-                <ArrowRightLeft size={16} /> Internal Money Transfer
+                <ArrowRightLeft size={16} /> {t("cashBook.internalMoneyTransfer")}
               </span>
               <button
                 type="button"
@@ -608,7 +613,7 @@ function CashManagementBody() {
             </div>
 
             <form onSubmit={handleTransfer} className="space-y-3.5">
-              <Field label="From Account">
+              <Field label={t("cashBook.fromAccount")}>
                 <select
                   value={transferFrom}
                   onChange={(e) => setTransferFrom(e.target.value)}
@@ -616,7 +621,7 @@ function CashManagementBody() {
                 >
                   {BUCKET_ACCOUNTS.map((b) => (
                     <option key={b.type} value={b.type}>
-                      {b.label}
+                      {bucketLabel(b.type)}
                     </option>
                   ))}
                   {shopAccounts.map((a) => (
@@ -627,7 +632,7 @@ function CashManagementBody() {
                 </select>
               </Field>
 
-              <Field label="To Account">
+              <Field label={t("cashBook.toAccount")}>
                 <select
                   value={transferTo}
                   onChange={(e) => setTransferTo(e.target.value)}
@@ -635,7 +640,7 @@ function CashManagementBody() {
                 >
                   {BUCKET_ACCOUNTS.map((b) => (
                     <option key={b.type} value={b.type}>
-                      {b.label}
+                      {bucketLabel(b.type)}
                     </option>
                   ))}
                   {shopAccounts.map((a) => (
@@ -646,14 +651,14 @@ function CashManagementBody() {
                 </select>
               </Field>
 
-              <Field label="Amount (PKR)">
+              <Field label={t("ownerCapital.amountPkr")}>
                 <input
                   type="number"
                   min="0"
                   step="0.01"
                   value={transferAmount}
                   onChange={(e) => setTransferAmount(e.target.value)}
-                  placeholder="e.g. 50000"
+                  placeholder={t("cashBook.amountPlaceholder50000")}
                   className={inputClass}
                 />
               </Field>
@@ -665,10 +670,10 @@ function CashManagementBody() {
               )}
 
               <div className="flex justify-end gap-2 pt-2 border-t border-hairline">
-                <Button variant="outline" onClick={() => setIsTransferOpen(false)}>Cancel</Button>
+                <Button variant="outline" onClick={() => setIsTransferOpen(false)}>{t("unifiedSale.cancel")}</Button>
                 <Button variant="primary" type="submit" disabled={transferSaving || loading}>
                   <Send size={14} />
-                  {transferSaving ? "Transferring…" : "Execute Transfer"}
+                  {transferSaving ? t("cashBook.transferring") : t("cashBook.executeTransfer")}
                 </Button>
               </div>
             </form>
@@ -682,7 +687,7 @@ function CashManagementBody() {
           <div className="bg-white border border-hairline rounded-lg shadow-2xl max-w-md w-full p-6 space-y-4">
             <div className="flex justify-between items-center border-b border-hairline pb-3">
               <span className="inline-flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-[#0b2138] font-display">
-                <Building2 size={16} /> Plant Supplier Payment
+                <Building2 size={16} /> {t("cashBook.plantSupplierPayment")}
               </span>
               <button
                 type="button"
@@ -694,7 +699,7 @@ function CashManagementBody() {
             </div>
 
             <form onSubmit={handlePlantPayment} className="space-y-3.5">
-              <Field label="Source Account">
+              <Field label={t("cashBook.sourceAccount")}>
                 <select
                   value={plantSource}
                   onChange={(e) =>
@@ -702,14 +707,14 @@ function CashManagementBody() {
                   }
                   className={inputClass}
                 >
-                  <option value="office_cash">Office Cash</option>
-                  <option value="dowa_account">Dowa Account</option>
+                  <option value="office_cash">{t("payments.officeCash")}</option>
+                  <option value="dowa_account">{t("payments.dowaAccount")}</option>
                 </select>
               </Field>
 
-              <Field label="Plant">
+              <Field label={t("cashBook.plant")}>
                 <select value={plantId} onChange={(e) => setPlantId(e.target.value)} className={inputClass}>
-                  <option value="">Select plant</option>
+                  <option value="">{t("ownerCapital.selectPlant")}</option>
                   {companies.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
@@ -718,14 +723,14 @@ function CashManagementBody() {
                 </select>
               </Field>
 
-              <Field label="Amount (PKR)">
+              <Field label={t("ownerCapital.amountPkr")}>
                 <input
                   type="number"
                   min="0"
                   step="0.01"
                   value={plantAmount}
                   onChange={(e) => setPlantAmount(e.target.value)}
-                  placeholder="e.g. 100000"
+                  placeholder={t("cashBook.amountPlaceholder100000")}
                   className={inputClass}
                 />
               </Field>
@@ -737,10 +742,10 @@ function CashManagementBody() {
               )}
 
               <div className="flex justify-end gap-2 pt-2 border-t border-hairline">
-                <Button variant="outline" onClick={() => setIsPlantPaymentOpen(false)}>Cancel</Button>
+                <Button variant="outline" onClick={() => setIsPlantPaymentOpen(false)}>{t("unifiedSale.cancel")}</Button>
                 <Button variant="primary" type="submit" disabled={plantSaving || loading}>
                   <Send size={14} />
-                  {plantSaving ? "Paying…" : "Pay Plant"}
+                  {plantSaving ? t("cashBook.paying") : t("cashBook.payPlant")}
                 </Button>
               </div>
             </form>

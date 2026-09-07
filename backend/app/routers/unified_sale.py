@@ -3,12 +3,15 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
 from app.deps import require_active_user, require_csrf
-from app.utils import next_display_id, resolve_account_or_bucket
+from app.reporting.invoice_pdf import render_unified_sale_invoice_pdf
+from app.timezone import KARACHI_TZ
+from app.utils import next_display_id, resolve_account_or_bucket, compute_gst
 
 router = APIRouter(prefix="/sales", tags=["unified-sale"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
@@ -129,6 +132,7 @@ def _create_pending_children(db: Session, payload: schemas.UnifiedSaleCreate, ba
             total_kg=item.quantity * product.weight_kg,
             rate_per_kg=round(item.selling_rate / product.weight_kg, 2) if product.weight_kg else None,
             rate_per_cylinder=item.selling_rate, total_amount=item.quantity * item.selling_rate,
+            grand_total=item.quantity * item.selling_rate,
             gate_pass_no=payload.gate_pass_no, vehicle_no=payload.vehicle_no, notes=payload.notes,
             status="pending", entered_by=entered_by, unified_sale_id=batch.id,
         )
@@ -200,6 +204,7 @@ def _batch_to_out(batch, sales, purchases, plant_payment, expense, owner_drawing
         destination_type=batch.destination_type, target_plant_id=batch.target_plant_id, account_id=batch.account_id,
         vehicle_no=batch.vehicle_no, gate_pass_no=batch.gate_pass_no, notes=batch.notes,
         payment_reference=batch.payment_reference,
+        gst_enabled=batch.gst_enabled, gst_rate=batch.gst_rate, gst_amount=batch.gst_amount, grand_total=batch.grand_total,
         status=batch.status, approved_at=batch.approved_at, approved_by=batch.approved_by,
         sale_status=batch.sale_status, sale_approved_at=batch.sale_approved_at, sale_approved_by=batch.sale_approved_by,
         payment_status=batch.payment_status, payment_approved_at=batch.payment_approved_at, payment_approved_by=batch.payment_approved_by,
@@ -277,6 +282,28 @@ def get_unified_sale(unified_sale_id: UUID, db: Session = Depends(get_db)):
     return _batch_to_out(batch, sales, purchases, payment, expense, owner_drawing)
 
 
+@router.get("/unified/{unified_sale_id}/invoice")
+def get_unified_sale_invoice(
+    unified_sale_id: UUID, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
+    """One combined invoice PDF for the whole batch (§ One Invoice for
+    Multi-Item Sales) — every child Sale line item on one document under
+    the batch's own display_id, instead of a separate invoice per product.
+    Read-only, on-demand, never stored to disk — same convention as
+    routers/sales.py's get_sale_invoice."""
+    batch = db.query(models.UnifiedSaleBatch).get(unified_sale_id)
+    if not batch:
+        raise HTTPException(404, "Unified sale not found")
+    sales, _, _, _, _ = _load_children(db, batch.id)
+    generated_at = datetime.now(KARACHI_TZ).strftime("%Y-%m-%d %H:%M")
+    pdf_bytes = render_unified_sale_invoice_pdf(batch, sales, current_user.name, generated_at)
+    return Response(
+        content=pdf_bytes, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{batch.display_id}.pdf"'},
+    )
+
+
 @router.post("/unified", response_model=schemas.UnifiedSaleOut, status_code=201)
 def create_unified_sale(
     payload: schemas.UnifiedSaleCreate, db: Session = Depends(get_db),
@@ -297,6 +324,14 @@ def create_unified_sale(
 
         net_plant_payment = s.total_credit_received - s.home_expense_amount - s.owner_drawings_amount
 
+        # GST on Sale, extended to Unified Sale (§ GST on Sale) — computed
+        # once here from total_selling_amount and frozen on the batch;
+        # grand_total (never total_selling_amount) is what
+        # approve_unified_sale_sale posts to the customer's balance/ledger.
+        gst_enabled, gst_rate, gst_amount, grand_total = compute_gst(
+            total_selling_amount, payload.gst_enabled, payload.gst_rate
+        )
+
         batch = models.UnifiedSaleBatch(
             display_id=next_display_id(db, models.UnifiedSaleBatch, "USALE", width=6),
             date=payload.date,
@@ -316,6 +351,10 @@ def create_unified_sale(
             vehicle_no=payload.vehicle_no,
             gate_pass_no=payload.gate_pass_no,
             notes=payload.notes,
+            gst_enabled=gst_enabled,
+            gst_rate=gst_rate,
+            gst_amount=gst_amount,
+            grand_total=grand_total,
             status="pending",
             sale_status="pending",
             payment_status="pending",
@@ -363,6 +402,13 @@ def edit_unified_sale(
 
         net_plant_payment = s.total_credit_received - s.home_expense_amount - s.owner_drawings_amount
 
+        # GST on Sale, extended to Unified Sale (§ GST on Sale) — recomputed
+        # from this edit's own total_selling_amount/gst_rate, same as every
+        # other field here being fully replaced by the edit, not patched.
+        gst_enabled, gst_rate, gst_amount, grand_total = compute_gst(
+            total_selling_amount, payload.gst_enabled, payload.gst_rate
+        )
+
         batch.date = payload.date
         batch.customer_id = payload.customer_id
         batch.company_id = payload.plant_id
@@ -380,6 +426,10 @@ def edit_unified_sale(
         batch.vehicle_no = payload.vehicle_no
         batch.gate_pass_no = payload.gate_pass_no
         batch.notes = payload.notes
+        batch.gst_enabled = gst_enabled
+        batch.gst_rate = gst_rate
+        batch.gst_amount = gst_amount
+        batch.grand_total = grand_total
         db.add(batch)
         db.flush()
 
@@ -427,7 +477,9 @@ def approve_unified_sale_sale(
         # payment/settlement approval below). All operands Decimal-coerced
         # — a NULL current_balance must never crash approval.
         current_balance = _dec(customer.current_balance)
-        selling_amount = _dec(batch.total_selling_amount)
+        # grand_total (incl. GST when enabled), never total_selling_amount —
+        # GST is money the customer owes, not business revenue (§ GST on Sale).
+        selling_amount = _dec(batch.grand_total)
         credit_received = _dec(batch.total_credit_received)
 
         balance_before_settlement = current_balance + selling_amount

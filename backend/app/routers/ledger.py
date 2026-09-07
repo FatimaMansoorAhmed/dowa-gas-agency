@@ -56,7 +56,7 @@ def _customer_corrections(db: Session, customer_id, month_start: datetime, next_
         replacement = db.query(models.Sale).filter(models.Sale.corrected_from_id == s.id).first()
         out.append(schemas.CorrectionHistoryRow(
             kind="sale", date=s.date, ref_id=s.id, display_id=s.display_id,
-            description=f"Sale × {s.quantity}", original_amount=s.total_amount,
+            description=f"Sale × {s.quantity}", original_amount=s.grand_total,
             correction_reason=s.correction_reason or "", corrected_by=s.corrected_by or "",
             corrected_at=s.corrected_at, corrected_display_id=replacement.display_id if replacement else None,
         ))
@@ -239,13 +239,13 @@ def customer_monthly_ledger(
     opening = customer.opening_balance
     for s in all_sales:
         if s.date < month_start:
-            opening += s.total_amount
+            opening += s.grand_total
     for p in all_payments:
         if p.date < month_start:
             opening -= p.amount
     for b in all_batches:
         if b.date < month_start:
-            opening += b.total_selling_amount - b.total_credit_received
+            opening += b.grand_total - b.total_credit_received
     for ecs in all_empty_cylinder_sales:
         if ecs.date < month_start:
             opening += ecs.amount
@@ -282,8 +282,8 @@ def customer_monthly_ledger(
     for e in events:
         if e["kind"] == "sale":
             s: models.Sale = e["obj"]
-            running += s.total_amount
-            total_sales += s.total_amount
+            running += s.grand_total
+            total_sales += s.grand_total
             total_kg += s.total_kg
             product = products.get(s.product_id)
             w = float(product.weight_kg) if product else None
@@ -302,10 +302,11 @@ def customer_monthly_ledger(
             rows.append(schemas.LedgerRow(
                 date=s.date, kind="sale", ref_id=s.id, display_id=s.display_id,
                 description=description,
-                sale_amount=s.total_amount, payment_amount=0, running_balance=running,
+                sale_amount=s.grand_total, payment_amount=0, running_balance=running,
                 qty_118=q118, qty_454=q454, cyl_out=s.quantity,
                 entered_by=s.entered_by, correctable=True,
                 rate_per_cylinder=s.rate_per_cylinder, rate_per_kg=s.rate_per_kg,
+                gst_rate=s.gst_rate, gst_amount=s.gst_amount,
             ))
         elif e["kind"] == "payment":
             p: models.Payment = e["obj"]
@@ -321,8 +322,8 @@ def customer_monthly_ledger(
         elif e["kind"] == "unified_sale":
             # One row for the whole Unified Sale batch — never split by line item.
             b: models.UnifiedSaleBatch = e["obj"]
-            running += b.total_selling_amount - b.total_credit_received
-            total_sales += b.total_selling_amount
+            running += b.grand_total - b.total_credit_received
+            total_sales += b.grand_total
             total_payments += b.total_credit_received
             q118, q454, kg = _batch_cylinder_totals(db, models.Sale, b.id, products)
             total_118 += q118
@@ -346,9 +347,10 @@ def customer_monthly_ledger(
             rows.append(schemas.LedgerRow(
                 date=b.sale_approved_at or b.date, kind="unified_sale", ref_id=b.id, display_id=b.display_id,
                 description="Unified Sale — sale & settlement",
-                sale_amount=b.total_selling_amount, payment_amount=b.total_credit_received,
+                sale_amount=b.grand_total, payment_amount=b.total_credit_received,
                 running_balance=running, qty_118=q118, qty_454=q454, cyl_out=q118 + q454,
                 unified_sale_rates=batch_rates or None,
+                gst_rate=b.gst_rate, gst_amount=b.gst_amount,
             ))
         elif e["kind"] == "empty_cylinder_sale":
             ecs: models.EmptyCylinderSale = e["obj"]
@@ -472,13 +474,13 @@ def _bulk_month_opening_closing(
         opening = customer.opening_balance
         for s in sales_by_customer.get(customer.id, []):
             if s.date < month_start:
-                opening += s.total_amount
+                opening += s.grand_total
         for p in payments_by_customer.get(customer.id, []):
             if p.date < month_start:
                 opening -= p.amount
         for b in batches_by_customer.get(customer.id, []):
             if b.date < month_start:
-                opening += b.total_selling_amount - b.total_credit_received
+                opening += b.grand_total - b.total_credit_received
         for e in ecs_by_customer.get(customer.id, []):
             if e.date < month_start:
                 opening += e.amount
@@ -486,13 +488,13 @@ def _bulk_month_opening_closing(
         closing = opening
         for s in sales_by_customer.get(customer.id, []):
             if month_start <= s.date < next_month:
-                closing += s.total_amount
+                closing += s.grand_total
         for p in payments_by_customer.get(customer.id, []):
             if month_start <= p.date < next_month:
                 closing -= p.amount
         for b in batches_by_customer.get(customer.id, []):
             if month_start <= b.date < next_month:
-                closing += b.total_selling_amount - b.total_credit_received
+                closing += b.grand_total - b.total_credit_received
         for e in ecs_by_customer.get(customer.id, []):
             if month_start <= e.date < next_month:
                 closing += e.amount
