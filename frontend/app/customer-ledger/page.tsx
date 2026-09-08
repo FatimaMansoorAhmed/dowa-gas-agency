@@ -1,7 +1,7 @@
 "use client";
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Search, PlusCircle, Pencil, Printer } from "lucide-react";
+import { Search, PlusCircle, Pencil, Printer, Share2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Th, Td, inputClass, BalanceTag, Button } from "@/components/ui";
@@ -43,6 +43,8 @@ function CustomerLedgerBody() {
   const [correctTarget, setCorrectTarget] = useState<{ kind: CorrectableKind; transaction: Sale | Payment } | null>(null);
   const [correctLoading, setCorrectLoading] = useState<string | null>(null);
   const [showCorrections, setShowCorrections] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [shareStatus, setShareStatus] = useState<{ type: "info" | "error"; msg: string } | null>(null);
 
   // Ledger Correction (§1) — the ledger row only carries a summary shape;
   // fetch the full Sale/Payment record (scoped to this customer) so the
@@ -105,6 +107,75 @@ function CustomerLedgerBody() {
   const [year, mo] = month.split("-");
   const monthOptions = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, "0"));
   const yearOptions = [2025, 2026, 2027];
+
+  // Send via WhatsApp (client-side only — no WhatsApp Business API/backend
+  // messaging, see the button's usage below). The statement endpoint is
+  // the same backend-rendered PDF the "Download Statement" link opens
+  // (app/routers/ledger.py's /customer/{id}/statement); we fetch it here
+  // instead of just linking to it because navigator.share needs an actual
+  // File/Blob, not a URL. Session auth is cookie-based (lib/api.ts), so
+  // credentials: "include" is enough — no bearer token to attach.
+  const shareStatement = async () => {
+    if (!customerId || !summary) return;
+    setShareStatus(null);
+    setSharing(true);
+    try {
+      const res = await fetch(api.ledger.customerStatementUrl(customerId, month), { credentials: "include" });
+      if (!res.ok) throw new Error(t("customerLedger.shareWhatsappError"));
+      const blob = await res.blob();
+      const filename = `Statement-${summary.customer.display_id ?? summary.customer.name}-${month}.pdf`;
+      const file = new File([blob], filename, { type: "application/pdf" });
+      const shareText = t("customerLedger.shareWhatsappText", { name: summary.customer.name, mo, year });
+
+      // navigator.share existing is not enough on its own — many desktop
+      // browsers implement share() for text/links but not files, and will
+      // throw or silently ignore `files`. canShare({ files }) is the
+      // actual capability check (Android/iOS Chrome & Safari support it;
+      // desktop Chrome/Edge/Firefox currently do not) — wrapped in
+      // try/catch since some older implementations throw on an
+      // unrecognized shape rather than just returning false.
+      let canShareFile = false;
+      try {
+        canShareFile =
+          typeof navigator.canShare === "function" &&
+          typeof navigator.share === "function" &&
+          navigator.canShare({ files: [file] });
+      } catch {
+        canShareFile = false;
+      }
+
+      if (canShareFile) {
+        try {
+          await navigator.share({ files: [file], title: filename, text: shareText });
+        } catch (err) {
+          // AbortError = user closed the native share sheet without
+          // picking anything — not a failure, say nothing.
+          if (err instanceof Error && err.name !== "AbortError") throw err;
+        }
+        return;
+      }
+
+      // Desktop fallback: navigator.share with files isn't supported, and
+      // WhatsApp's wa.me click-to-chat links have no way to pre-attach a
+      // file, so we download the PDF (for staff to attach by hand) and
+      // open a WhatsApp chat draft in parallel.
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(blobUrl);
+
+      window.open(`https://wa.me/?text=${encodeURIComponent(shareText)}`, "_blank", "noopener,noreferrer");
+      setShareStatus({ type: "info", msg: t("customerLedger.shareWhatsappFallbackInstruction") });
+    } catch (err) {
+      setShareStatus({ type: "error", msg: err instanceof Error ? err.message : t("customerLedger.shareWhatsappError") });
+    } finally {
+      setSharing(false);
+    }
+  };
 
   return (
     <div>
@@ -213,6 +284,9 @@ function CustomerLedgerBody() {
                     >
                       <Printer size={14} /> {t("customerLedger.downloadStatement")}
                     </a>
+                    <Button variant="outline" onClick={shareStatement} disabled={sharing}>
+                      <Share2 size={14} /> {sharing ? t("customerLedger.sharingWhatsapp") : t("customerLedger.shareWhatsapp")}
+                    </Button>
 
                     <div className="flex gap-1.5 ml-1">
                       <select
@@ -240,6 +314,17 @@ function CustomerLedgerBody() {
                     </div>
                   </div>
                 </div>
+                {shareStatus && (
+                  <div
+                    className={`print:hidden mt-3 font-body text-[12.5px] px-3 py-2 rounded-md border ${
+                      shareStatus.type === "info"
+                        ? "bg-[#EAF6F6] text-tealdeep border-[#BFE3E3]"
+                        : "bg-red-50 text-red-600 border-red-200"
+                    }`}
+                  >
+                    {shareStatus.msg}
+                  </div>
+                )}
               </Panel>
 
               {loading && (

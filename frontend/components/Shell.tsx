@@ -178,9 +178,6 @@ export default function Shell({ children }: { children: ReactNode }) {
               <LogOut size={14} color="#8A98A3" />
             </button>
           </div>
-          <div className="mt-3">
-            <LanguageToggle />
-          </div>
         </div>
       </div>
 
@@ -191,8 +188,11 @@ export default function Shell({ children }: { children: ReactNode }) {
               Dowa Gas Agency — <span className="text-slate-900 font-bold">{t("shell.topbarBold")}</span>
               {t("shell.topbarSuffix")}
             </div>
-            <div className="font-mono text-[12px] font-semibold text-slate-800 bg-paper px-3.5 py-1.5 rounded-full border border-hairline">
-              {new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Karachi" })}
+            <div className="flex items-center gap-3">
+              <div className="font-mono text-[12px] font-semibold text-slate-800 bg-paper px-3.5 py-1.5 rounded-full border border-hairline">
+                {new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Karachi" })}
+              </div>
+              <LanguageToggle variant="light" />
             </div>
           </div>
           <CylinderStripe />

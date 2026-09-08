@@ -30,6 +30,7 @@ Urdu text needs real work ReportLab does not do on its own:
 """
 import io
 import os
+import re
 from decimal import Decimal
 from xml.sax.saxutils import escape
 
@@ -75,6 +76,77 @@ def _urdu_span(text: str, bold: bool = False) -> str:
     otherwise defaults to Helvetica — see module docstring point 3."""
     face = URDU_FONT_BOLD if bold else URDU_FONT
     return f'<font face="{face}">{_ur(text)}</font>'
+
+
+# Matches Arabic-script code points, including the Presentation-Forms
+# blocks arabic_reshaper emits (contextual joining forms) — used to find
+# which runs of a post-bidi VISUAL string are Urdu (so they can be routed
+# to the Urdu font) versus plain Latin/digit/punctuation (colons, the em
+# dash, dates, names) that must stay on the paragraph's default Helvetica
+# font, since Noto Naskh Arabic has no glyphs for those (module docstring
+# point 3).
+_ARABIC_RUN = re.compile(
+    "[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]+"
+)
+
+# Explicit LTR embedding marks (Unicode LRE/PDF). A value like a date
+# ("2026-09-07") dropped as-is into an RTL logical string gets its
+# hyphen-separated number groups reordered by the bidi algorithm — the
+# hyphens are "common separator" characters that pick up the surrounding
+# RTL paragraph direction, so the algorithm treats each digit group as its
+# own island and reshuffles them (observed: "2026-09-07" -> "07-09-2026").
+# Wrapping the value in LRE...PDF forces it to resolve as one strict-LTR
+# run regardless of context, so its internal order is untouched; the marks
+# themselves carry no glyph and are dropped by get_display() before the
+# text reaches ReportLab.
+_LRE, _PDF = "‪", "‬"
+
+
+def _ltr(text: str) -> str:
+    """Wrap a Latin/digit value so bidi reordering can't touch its
+    internal character order — see _LRE/_PDF comment above."""
+    return _LRE + text + _PDF
+
+
+def _mixed_line(logical: str, bold: bool = False) -> str:
+    """Shape + bidi-reorder ONE full line built in natural logical reading
+    order (e.g. "Label1: Value1 — Label2: Value2", with Urdu labels and
+    Latin/digit values interleaved) and return markup ready to drop into a
+    right-aligned Paragraph.
+
+    Earlier versions of this function built each "Label: Value" piece by
+    calling _ur()/label() on the Urdu label ALONE, then manually
+    concatenating it with the (untouched) Latin value in whatever order
+    was needed to make it draw in the right screen position. That works
+    for exactly one pair, but breaks for a line with two label:value pairs
+    joined by "—": there is no ordering of a flat, already-isolated-per-
+    piece concatenation that reverses label/value *within* each pair
+    without also reversing which pair comes first — reversing the whole
+    chain swaps pair order along with it.
+
+    The fix is to not pre-reorder anything by hand: build the LOGICAL
+    string in natural reading order (label1, value1, dash, label2, value2
+    — exactly as a human would read it aloud) using the raw, unshaped Urdu
+    label text, then run arabic_reshaper + get_display ONCE over the
+    entire line. The Unicode bidi algorithm (UAX#9) is specifically
+    designed for "RTL paragraph with embedded LTR runs": it reverses each
+    Urdu run in place, leaves each Latin/digit run's internal character
+    order untouched, and positions the runs relative to each other
+    correctly — i.e. it fixes each pair's internal order while preserving
+    pair-to-pair sequence, which is exactly what a hand-rolled reversal
+    cannot do.
+    """
+    visual = get_display(arabic_reshaper.reshape(logical))
+    face = URDU_FONT_BOLD if bold else URDU_FONT
+    out: list[str] = []
+    last = 0
+    for m in _ARABIC_RUN.finditer(visual):
+        if m.start() > last:
+            out.append(visual[last:m.start()])
+        out.append(f'<font face="{face}">{m.group()}</font>')
+        last = m.end()
+    out.append(visual[last:])
+    return "".join(out)
 
 
 # Fixed section-key -> Urdu label map. Reuses the exact wording already
@@ -211,40 +283,27 @@ def render_daily_report_pdf(
     cell_style = ParagraphStyle("Cell", parent=styles["Normal"], fontSize=8)
 
     title_text = f"DOWA Gas Agency — {_urdu_span('روزانہ رپورٹ') if is_ur else 'Daily Report'}"
-    # Urdu label:value order (§ Urdu label:value ordering bug) — label(key)
-    # already shapes+bidi-reorders the Urdu text in ISOLATION (get_display()
-    # only sees that one piece), so its own internal word order is correct
-    # RTL. But this whole paragraph is right-aligned (alignment=rtl above)
-    # and ReportLab draws left-to-right in plain Python-concatenation
-    # order with no bidi pass of its own — so whichever piece comes LAST in
-    # the f-string ends up drawn furthest right, i.e. read FIRST by an RTL
-    # reader once the line is shifted to hug the right margin. label+value
-    # (the natural-looking logical order) therefore rendered as
-    # value-then-label visually — the value ended up rightmost, read
-    # before the label. Fixed by reversing to value-then-label in the
-    # Python string, in Urdu ONLY, so the label (last in this order) lands
-    # rightmost: the value is a plain LTR run either way, so its own
-    # internal digit order is unaffected by which side of the label it's on.
+    # Both header lines below are built as ONE logical string in natural
+    # reading order — label(s) then value(s), left pair before right pair,
+    # exactly as read aloud — and, in Urdu, run through _mixed_line() ONCE
+    # so the bidi algorithm (not hand-rolled reversal) reorders each
+    # label:value pair internally while preserving pair-to-pair sequence.
+    # See _mixed_line()'s docstring for why per-piece manual reversal
+    # cannot do this for a line with more than one pair.
     business_date_text = (
-        (escape(data.business_date) + label("business_date_prefix")) if is_ur
+        _mixed_line(strings["business_date_prefix"] + _ltr(escape(data.business_date))) if is_ur
         else (label("business_date_prefix") + escape(data.business_date))
     )
     # The " — " separator is deliberately plain literal text (default
     # Helvetica), never inside a _urdu_span() tag — Noto Naskh Arabic has
     # no em-dash glyph (confirmed by inspecting its cmap), so embedding it
-    # in a shaped Urdu string silently drops it.
+    # in a shaped Urdu string silently drops it. _mixed_line() leaves it on
+    # Helvetica automatically since "—" falls outside _ARABIC_RUN.
     dash = " — " if is_ur else ""
-    # Same reversal as business_date_text above, applied to the whole
-    # "by X — on Y" chain: for a right-aligned RTL line, the piece that
-    # should be read FIRST (label 1) must be LAST in draw order, so the
-    # entire logical sequence [label1, value1, dash, label2, value2] is
-    # reversed piece-by-piece (not just swapped within each pair) —
-    # verified empirically against the rendered PDF's actual glyph
-    # x-positions, not assumed.
     generated_text = (
-        (
-            escape(generated_at) + label("generated_on_prefix") + dash
-            + escape(generated_by) + label("generated_by_prefix")
+        _mixed_line(
+            strings["generated_by_prefix"] + _ltr(escape(generated_by)) + dash
+            + strings["generated_on_prefix"] + _ltr(escape(generated_at))
         ) if is_ur else (
             label("generated_by_prefix") + escape(generated_by) + dash
             + label("generated_on_prefix") + escape(generated_at)
