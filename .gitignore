@@ -1,3 +1,6 @@
+# docker-compose secrets (POSTGRES_PASSWORD) — see docker-compose.yml
+/.env
+
 # backend
 backend/venv/
 backend/__pycache__/

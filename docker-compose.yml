@@ -1,0 +1,70 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dowa
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: dowa_gas
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dowa -d dowa_gas"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: ./backend/.env
+    environment:
+      # Overrides any DATABASE_URL in backend/.env — the app always talks to
+      # the "db" service on the compose network, never an external DB.
+      DATABASE_URL: postgresql://dowa:${POSTGRES_PASSWORD}@db:5432/dowa_gas
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - backend_reports:/app/app/generated_reports
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Baked into the JS bundle at build time — must match the Nginx
+        # location that proxies to the backend (nginx/conf.d/app.conf).
+        NEXT_PUBLIC_API_URL: /api
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - certbot_www:/var/www/certbot
+      - certbot_conf:/etc/letsencrypt
+    depends_on:
+      - frontend
+      - backend
+
+  certbot:
+    image: certbot/certbot
+    volumes:
+      - certbot_www:/var/www/certbot
+      - certbot_conf:/etc/letsencrypt
+    # Idle until run manually for the first certificate issuance; after
+    # that, renews automatically every 12h (a no-op unless within 30 days
+    # of expiry).
+    entrypoint: sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h; done'
+
+volumes:
+  pgdata:
+  certbot_www:
+  certbot_conf:
+  backend_reports:

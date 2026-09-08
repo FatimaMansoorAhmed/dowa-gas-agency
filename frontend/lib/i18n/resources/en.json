@@ -670,7 +670,9 @@
     "creatingAccount": "Creating account…",
     "createAccount": "Create Account",
     "alreadyHaveAccount": "Already have an account?",
-    "signIn2": "Sign in"
+    "signIn2": "Sign in",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password"
   },
   "users": {
     "accessControl": "Access Control",

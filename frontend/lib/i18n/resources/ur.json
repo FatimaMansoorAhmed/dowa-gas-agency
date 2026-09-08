@@ -670,7 +670,9 @@
     "creatingAccount": "اکاؤنٹ بن رہا ہے…",
     "createAccount": "اکاؤنٹ بنائیں",
     "alreadyHaveAccount": "پہلے سے اکاؤنٹ ہے؟",
-    "signIn2": "سائن ان کریں"
+    "signIn2": "سائن ان کریں",
+    "showPassword": "پاس ورڈ دکھائیں",
+    "hidePassword": "پاس ورڈ چھپائیں"
   },
   "users": {
     "accessControl": "رسائی کنٹرول",
