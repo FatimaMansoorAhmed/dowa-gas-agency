@@ -9,10 +9,10 @@ from app.database import get_db
 from app import models, schemas
 from app.deps import require_active_user, require_csrf
 from app.reporting.invoice_pdf import render_shop_sale_invoice_pdf
-from app.utils import next_display_id, get_or_create_shop_account
+from app.utils import next_display_id, get_or_create_shop_account, log_audit
 from app.timezone import KARACHI_TZ, karachi_day_bounds, karachi_today_str
 from app.routers.board_rates import resolve_board_rate
-from app.routers.ledger import _customer_corrections
+from app.routers.ledger import _customer_corrections, _opening_balance_corrections
 
 router = APIRouter(prefix="/shops", tags=["shops"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
@@ -616,15 +616,58 @@ def get_shop_detail(
         ))
     shop_sale_corrections.sort(key=lambda r: r.corrected_at, reverse=True)
 
+    # Opening Cash corrections (§ Opening Balance) — the shop's Opening
+    # Balance tile reads shop_account.opening_balance (NOT
+    # customers.opening_balance/shop_opening_cash, the latter confirmed
+    # dead), so its corrections come from a separate AuditLog lookup keyed
+    # on the account id, merged with the customer-side corrections and
+    # re-sorted together.
+    corrections = _customer_corrections(db, shop_id, month_start, next_month) + _opening_balance_corrections(
+        db, "shop_cash_account", shop_account.id, "shop_opening_cash", shop.display_id, month_start, next_month,
+    )
+    corrections.sort(key=lambda r: r.corrected_at, reverse=True)
+
     return schemas.ShopDetailOut(
         customer=shop,
         stock=stock,
         cash=cash,
         account=shop_account,
         transactions=transactions,
-        corrections=_customer_corrections(db, shop_id, month_start, next_month),
+        corrections=corrections,
         shop_sale_corrections=shop_sale_corrections,
     )
+
+
+# CORRECT OPENING CASH (§ Opening Balance) — a Shop's "Opening Balance"
+# tile is neither Customer's nor Company's: it's derived (_compute_cash_
+# summary above) from shop_account.opening_balance forward, NOT from
+# customers.opening_balance/shop_opening_cash (the latter confirmed dead —
+# grep across the repo shows it's never written, only declared). Same
+# edit-in-place + delta-shift-current_balance + required-reason pattern as
+# Customer/Company, just targeting the shop's own PaymentAccount row.
+@router.patch("/{shop_id}/opening-cash", response_model=schemas.PaymentAccountOut)
+def correct_shop_opening_cash(
+    shop_id: UUID,
+    payload: schemas.OpeningBalanceUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
+    shop = _get_shop(db, shop_id)
+    reason = (payload.reason or "").strip()
+    if not reason:
+        raise HTTPException(400, "A reason is required to correct the Opening Balance")
+
+    account = get_or_create_shop_account(db, shop)
+    old_value = account.opening_balance
+    delta = payload.new_value - old_value
+    account.opening_balance = payload.new_value
+    account.current_balance = account.current_balance + delta
+    db.add(account)
+    log_audit(db, "shop_cash_account", account.id, "update", current_user.name,
+              field="opening_balance", old=old_value, new=payload.new_value, reason=reason)
+    db.commit()
+    db.refresh(account)
+    return account
 
 
 @router.get("/{shop_id}/stock", response_model=schemas.ShopStockSummary)
@@ -683,6 +726,78 @@ def list_shop_batches(
         row.source_display_id = source_sale.display_id if source_sale else None
         out.append(row)
     return out
+
+
+@router.post("/{shop_id}/stock-batches", response_model=schemas.ShopStockBatchOut, status_code=201)
+def create_manual_stock_batch(
+    shop_id: UUID, payload: schemas.ShopStockBatchCreate, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
+    """Add Filled Cylinder Stock — see schemas.ShopStockBatchCreate. The
+    only ShopStockBatch creation path with no backing Sale (source_sale_id
+    stays NULL, source_type="manual_add"): it adds physical stock only,
+    exactly like Add Empty Cylinder (routers/cylinder_returns.py,
+    mode="manual_add") does for the empty-cylinder side. load_rate_per_kg
+    is resolved from the Board Rate in effect on the entry date purely for
+    historical record-keeping — see ShopStockBatch.load_rate_per_kg's
+    docstring: it is NEVER used to price a ShopSale."""
+    shop = _get_shop(db, shop_id)
+    product = db.query(models.Product).get(payload.product_id)
+    if not product:
+        raise HTTPException(404, "Product not found")
+    if payload.quantity <= 0:
+        raise HTTPException(400, "Quantity must be positive")
+
+    date = payload.date or datetime.utcnow()
+    board_rate = resolve_board_rate(db, date)
+
+    batch = models.ShopStockBatch(
+        customer_id=shop.id,
+        product_id=payload.product_id,
+        source_sale_id=None,
+        source_type="manual_add",
+        transaction_date=date,
+        quantity_received=payload.quantity,
+        quantity_remaining=payload.quantity,
+        load_rate_per_kg=board_rate.rate_per_kg,
+        notes=payload.notes,
+        status="active",
+        entered_by=current_user.name,
+    )
+    db.add(batch)
+    db.commit()
+    db.refresh(batch)
+    return batch
+
+
+@router.patch("/stock-batches/{batch_id}/cancel", response_model=schemas.ShopStockBatchOut)
+def cancel_manual_stock_batch(batch_id: UUID, by: str = Query(...), db: Session = Depends(get_db)):
+    """Undo a manual stock-batch add (create_manual_stock_batch above).
+    Never touches a Load-derived batch (source_type == "load") — reversing
+    one of those is Sale-cancellation's job (_reverse_sale in
+    routers/sales.py), which also unwinds the Customer.current_balance/
+    Purchase-side effects a plain status flip here would miss entirely.
+    Blocked once any of this batch has actually been sold (quantity_
+    remaining < quantity_received) — pulling stock out from under an
+    already-consumed ShopSale would silently break that sale's own FIFO
+    consumption record."""
+    batch = db.query(models.ShopStockBatch).get(batch_id)
+    if not batch:
+        raise HTTPException(404, "Stock batch not found")
+    if batch.source_type != "manual_add":
+        raise HTTPException(400, "Only a manually-added stock batch can be cancelled this way")
+    if batch.status != "active":
+        raise HTTPException(400, "Stock batch is already cancelled")
+    if batch.quantity_remaining < batch.quantity_received:
+        raise HTTPException(400, "Cannot cancel — some of this batch has already been sold")
+
+    batch.status = "cancelled"
+    batch.modified_at = datetime.utcnow()
+    batch.modified_by = by
+    db.add(batch)
+    db.commit()
+    db.refresh(batch)
+    return batch
 
 
 # ---------- Shop Sales ----------

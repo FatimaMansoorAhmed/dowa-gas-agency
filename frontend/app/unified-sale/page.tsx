@@ -7,12 +7,12 @@ import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, 
 import NewPlantModal from "@/components/NewPlantModal";
 import AmountInput from "@/components/AmountInput";
 import CorrectTransactionModal, { CorrectableKind } from "@/components/CorrectTransactionModal";
-import PaymentReceiptModal from "@/components/PaymentReceiptModal";
-import { api } from "@/lib/api";
+import { api, apiErrorMessage } from "@/lib/api";
 import { pkr, fmtTime, todayLocalInput, toKarachiDateString, ACCOUNT_TYPE_LABELS, resolveAccountLabel, fmtNumber } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
+import { resolveRate, NO_PARTY_VALUE } from "@/lib/rates";
 import type {
-  Company, Customer, Product, ExpenseCategory, RateEntry, PaymentAccount,
+  Company, Customer, Product, ExpenseCategory, RateEntry, PaymentAccount, Party,
   UnifiedSaleBatch, UnifiedSaleResult, DestinationType, AccountType,
   Sale, Payment, Purchase,
 } from "@/lib/types";
@@ -91,18 +91,22 @@ function UnifiedSaleBody() {
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
   const [rates, setRates] = useState<RateEntry[]>([]);
+  const [parties, setParties] = useState<Party[]>([]);
   const [recent, setRecent] = useState<UnifiedSaleBatch[]>([]);
 
   const [showNewPlant, setShowNewPlant] = useState(false);
   const [showSaleForm, setShowSaleForm] = useState(false);
   // Payment-Only mode (§ Part A) — a customer who's only paying, no sale
-  // happening. Deliberately a separate action opening PaymentReceiptModal
-  // rather than making every New Sale field optional: Unified Sale requires
-  // a purchase plant + runs a two-stage pending->approve workflow built for
-  // actual loads, neither of which a bare payment needs. Reuses the exact
-  // same instant, single-step /payment-receipts flow the Payments Register
-  // page uses — see components/PaymentReceiptModal.tsx.
-  const [showPaymentOnly, setShowPaymentOnly] = useState(false);
+  // happening. A Mode Switch on this same form, not a separate modal: Full
+  // Sale still posts through POST /sales/unified (pending -> approve, needs
+  // a purchase plant + items) exactly as before; Payment Only instead posts
+  // straight through POST /payment-receipts — the same instant, single-step
+  // flow the Payments Register page's PaymentReceiptModal already uses —
+  // since a bare payment has no purchase plant and nothing to approve.
+  // Only meaningful for a NEW entry: editingId is always a Unified Sale
+  // batch (Payment Receipts post instantly and are never "pending"), so
+  // editing always forces Full Sale mode — see resetForm/handleEditTransaction.
+  const [formMode, setFormMode] = useState<"full_sale" | "payment_only">("full_sale");
   // Approved Sale / Approved Payments (§3/§4) — plain, individual Sale/
   // Payment records (system-wide, not scoped to Unified Sale batches),
   // with Edit wired to the existing, already-proven reverse-then-repost
@@ -135,6 +139,11 @@ function UnifiedSaleBody() {
   const [customerSearch, setCustomerSearch] = useState("");
   const [companyId, setCompanyId] = useState("");
   const [companySearch, setCompanySearch] = useState("");
+  // "" means "not yet resolved" (only reachable when the selected company
+  // has >1 party and the user hasn't picked one) — see the auto-select
+  // effect below and lib/rates.ts's resolveRate, which treats "" as
+  // "don't guess."
+  const [partyId, setPartyId] = useState("");
   const [gatePassNo, setGatePassNo] = useState("");
   const [vehicleNo, setVehicleNo] = useState("");
   const [notes, setNotes] = useState("");
@@ -147,9 +156,13 @@ function UnifiedSaleBody() {
   const [gstEnabled, setGstEnabled] = useState(false);
   const [gstRate, setGstRate] = useState("");
 
-  // Payment Format & Settlement Amounts
+  // Payment Format & Settlement Amounts. Full Sale only ever folds this
+  // into a free-text note (POST /sales/unified has no structured method
+  // field); Payment Only sends it as the real, required `method` on
+  // POST /payment-receipts — so the option set has to be a valid method
+  // for that endpoint ("cash" | "bank_transfer" | "cheque" | "online" | "other").
   const [totalCreditReceived, setTotalCreditReceived] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState<"cash" | "online" | "cheque" | "deposit">("cash");
+  const [paymentMethod, setPaymentMethod] = useState<"cash" | "bank_transfer" | "cheque" | "online">("cash");
 
   const [homeExpenseAmount, setHomeExpenseAmount] = useState("");
   const [homeExpenseCategoryId, setHomeExpenseCategoryId] = useState("");
@@ -165,6 +178,9 @@ function UnifiedSaleBody() {
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Payment Only now goes through the same pending -> approve workflow as
+  // a Full Sale (§ Payment-Only Pending Approval) — this same card shows
+  // it too, no separate instant-success banner needed anymore.
   const [lastResult, setLastResult] = useState<UnifiedSaleResult | null>(null);
   const [selectedTransaction, setSelectedTransaction] = useState<UnifiedSaleResult | null>(null);
   const [loadingTransaction, setLoadingTransaction] = useState(false);
@@ -172,9 +188,10 @@ function UnifiedSaleBody() {
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
 
   const load = async () => {
-    const [c, cu, p, cat, acc, r, ru, sales, payments, purchases] = await Promise.all([
+    const [c, cu, p, cat, acc, r, parties, ru, sales, payments, purchases] = await Promise.all([
       api.companies.list(), api.customers.list(), api.products.list(),
       api.expenseCategories.list(), api.paymentAccounts.list(), api.rates.latest(),
+      api.parties.list(),
       api.unifiedSale.list(),
       // Approved Sale / Approved Payments (§3/§4) — refreshed on the exact
       // same triggers as `recent` above (mount + after every create/
@@ -189,7 +206,7 @@ function UnifiedSaleBody() {
     // "stop working", since the calc keys off product118/product454's
     // specific id, which the duplicate never matched.
     setCompanies(c); setCustomers(cu); setProducts(p.filter((x) => x.active === "active"));
-    setCategories(cat); setAccounts(acc); setRates(r); setRecent(ru);
+    setCategories(cat); setAccounts(acc); setRates(r); setParties(parties); setRecent(ru);
     setAllSales(sales); setAllPayments(payments); setAllPurchases(purchases);
   };
   useEffect(() => { load(); }, []);
@@ -208,16 +225,41 @@ function UnifiedSaleBody() {
     !companySearch.trim() || c.name.toLowerCase().includes(companySearch.toLowerCase())
   );
 
+  // A Company can have multiple Parties (e.g. "Houch" has H.GULF, H.Wardak,
+  // ...), each with its own separately-entered, genuinely different rate —
+  // see lib/rates.ts. Auto-select the common case (0 or 1 party) so most
+  // entries need no extra click; require an explicit pick only when there's
+  // real ambiguity (>1 party).
+  const companyParties = useMemo(
+    () => parties.filter((p) => p.company_id === companyId),
+    [parties, companyId]
+  );
+
   useEffect(() => {
-    if (!companyId) return;
-    const latest = rates
-      .filter((r) => r.company_id === companyId)
-      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
-    if (!latest) return;
+    if (!companyId) { setPartyId(""); return; }
+    if (companyParties.length === 0) { setPartyId(NO_PARTY_VALUE); return; }
+    if (companyParties.length === 1) { setPartyId(companyParties[0].id); return; }
+    // >1 parties: keep the current pick only if it's still valid for this
+    // company (e.g. re-render after rates refresh); otherwise require a
+    // fresh, explicit choice rather than silently reusing another party's.
+    setPartyId((prev) =>
+      prev === NO_PARTY_VALUE || companyParties.some((p) => p.id === prev) ? prev : ""
+    );
+  }, [companyId, companyParties]);
+
+  // Resolves against the exact (company, party) pair the Rate Dashboard
+  // already tracks (§ lib/rates.ts) — never "whichever rate for this
+  // company was entered most recently," which silently picks the wrong
+  // party's rate whenever a plant has more than one (confirmed happening
+  // in production: Houch's 3 parties currently have 3 different rates).
+  const resolvedRate = resolveRate(rates, companyId, partyId);
+
+  useEffect(() => {
+    if (!companyId || !partyId || !resolvedRate) return;
     setItems((prev) => {
       const next = { ...prev };
       products.forEach((p) => {
-        const rate = Math.abs(parseFloat(p.weight_kg) - 11.8) < 0.01 ? latest.rate_118 : latest.rate_454;
+        const rate = Math.abs(parseFloat(p.weight_kg) - 11.8) < 0.01 ? resolvedRate.rate_118 : resolvedRate.rate_454;
         const existing = next[p.id] || { qty: "", purchaseRate: "", sellingRate: "" };
         next[p.id] = {
           qty: existing.qty,
@@ -227,7 +269,7 @@ function UnifiedSaleBody() {
       });
       return next;
     });
-  }, [companyId, rates, products]);
+  }, [companyId, partyId, resolvedRate, products]);
 
   // 45.4 KG selling price is always derived from the 11.8 KG selling price
   // by the actual weight ratio — never hard-coded, never entered
@@ -319,17 +361,34 @@ function UnifiedSaleBody() {
 
   // Vehicle No is only meaningful when cylinders are actually moving —
   // a pure settlement (no items, credit-only) never has a vehicle to
-  // record, so it must not block submission.
-  const vehicleRequired = activeItems.length > 0;
+  // record, so it must not block submission. Always false in Payment Only
+  // mode too, since activeItems is necessarily empty there (Items Section
+  // is hidden, nothing to fill in).
+  const vehicleRequired = formMode === "full_sale" && activeItems.length > 0;
+
+  // Payment Only has no purchase plant to fall back on (unlike Full Sale,
+  // where an empty Target Plant silently defaults to companyId — see
+  // handleSubmit) — POST /payment-receipts' resolve_settlement_destination
+  // requires an explicit target_plant_id when routing to a plant, so this
+  // mirrors that requirement here rather than letting a 400 surface it.
+  const paymentOnlyDestinationValid =
+    netPlantPayment <= 0 || destinationType !== "plant" || !!targetPlantId;
+
   const canSubmit =
-    !!customerId && !!companyId && !!date &&
-    (!vehicleRequired || !!vehicleNo.trim()) &&
-    (activeItems.length > 0 || totalCreditNum > 0 || deliveryChargesNum > 0) &&
-    settlementValid &&
-    (homeExpenseNum <= 0 || !!homeExpenseCategoryId) &&
-    (!gstEnabled || parseFloat(gstRate) > 0);
+    formMode === "payment_only"
+      ? !!customerId && !!date && totalCreditNum > 0 &&
+        settlementValid &&
+        (homeExpenseNum <= 0 || !!homeExpenseCategoryId) &&
+        paymentOnlyDestinationValid
+      : !!customerId && !!companyId && !!date &&
+        (!vehicleRequired || !!vehicleNo.trim()) &&
+        (activeItems.length > 0 || totalCreditNum > 0 || deliveryChargesNum > 0) &&
+        settlementValid &&
+        (homeExpenseNum <= 0 || !!homeExpenseCategoryId) &&
+        (!gstEnabled || parseFloat(gstRate) > 0);
 
   const resetForm = () => {
+    setFormMode("full_sale");
     setItems({});
     setDeliveryCharges("");
     setGstEnabled(false); setGstRate("");
@@ -357,6 +416,12 @@ function UnifiedSaleBody() {
   };
 
   const handleEditTransaction = async (row: UnifiedSaleBatch) => {
+    // Payment-Only batches (company_id null — § Payment-Only Pending
+    // Approval) have no purchase plant/items for this Full-Sale-shaped edit
+    // form to load into; Cancel + re-enter is the only path for these, same
+    // as any other pending entry that turns out wrong.
+    if (row.company_id == null) return;
+    setFormMode("full_sale");
     setError(null);
     try {
       const full = await api.unifiedSale.get(row.id);
@@ -365,7 +430,7 @@ function UnifiedSaleBody() {
       setShowSaleForm(true);
       setDate(full.date.slice(0, 10));
       setCustomerId(full.customer_id);
-      setCompanyId(full.company_id);
+      setCompanyId(full.company_id || "");
       setCompanySearch("");
 
       setDestinationType(full.destination_type || "plant");
@@ -441,6 +506,27 @@ function UnifiedSaleBody() {
     }
   };
 
+  // Payment-Only batches (company_id null — § Payment-Only Pending
+  // Approval) have no separate sale/load event for a human to approve —
+  // this approves both sides atomically in one request instead of the two
+  // independent approve calls above.
+  const handleApprovePaymentOnly = async (id: string) => {
+    if (!user || actionBusyId) return;
+    setActionBusyId(id);
+    try {
+      const reference = paymentReferenceDrafts[id]?.trim() || undefined;
+      const result = await api.unifiedSale.approve(id, user.name, reference);
+      if (selectedTransaction?.id === id) setSelectedTransaction(result);
+      setLastResult((prev) => (prev?.id === id ? result : prev));
+      await load();
+    } catch (e) {
+      setTransactionError(e instanceof Error ? e.message : t("unifiedSale.paymentApprovalFailed"));
+      await load();
+    } finally {
+      setActionBusyId(null);
+    }
+  };
+
   const handleCancel = async (id: string) => {
     if (!user || actionBusyId) return;
     if (!window.confirm(t("unifiedSale.confirmCancelOrder"))) return;
@@ -457,6 +543,28 @@ function UnifiedSaleBody() {
     }
   };
 
+  // Cancel an individual Approved Payment row (§ Unified Sale Payment
+  // Cancel) — the only way to fix a wrong amount on a unified-sale-linked
+  // payment, since its own correction path deliberately can't touch amount
+  // (see routers/unified_sale.py::correct_unified_sale_settlement). Cancel
+  // then re-enter correctly. Backend resyncs the batch's Collected/
+  // Outstanding (total_credit_received/net_plant_payment) as part of this
+  // (routers/payments.py::cancel_payment), so this table's own next load()
+  // picks up the corrected figures.
+  const handleCancelApprovedPayment = async (id: string) => {
+    if (!user || actionBusyId) return;
+    if (!window.confirm(t("payments.confirmCancelPayment"))) return;
+    setActionBusyId(id);
+    try {
+      await api.payments.cancel(id, user.name);
+      await load();
+    } catch (e) {
+      alert(apiErrorMessage(e, t("payments.failedCancelPayment")));
+    } finally {
+      setActionBusyId(null);
+    }
+  };
+
   const handleSubmit = async () => {
     if (!canSubmit || !user) return;
     setSaving(true);
@@ -467,6 +575,42 @@ function UnifiedSaleBody() {
         destinationType === "account" ? `Category: ${accountCategory}` : "",
         notes,
       ].filter(Boolean).join(" | ");
+
+      if (formMode === "payment_only") {
+        // Rides the same pending -> approve Unified Sale machinery as a
+        // Full Sale (§ Payment-Only Pending Approval) — POST /sales/unified
+        // with items: [] and no plant_id (the DB column is nullable
+        // specifically for this). Never touches /payment-receipts, which
+        // stays the standalone Payment Register's own instant, single-step
+        // flow (see PaymentReceiptModal) — completely untouched by this.
+        // company_id ends up NULL, which is how the pending queues below
+        // and the approval endpoint tell a Payment-Only batch apart from
+        // an ordinary Full Sale.
+        const result = await api.unifiedSale.create({
+          date: new Date(`${date}T${new Date().toTimeString().slice(0, 8)}`).toISOString(),
+          customer_id: customerId,
+          plant_id: undefined,
+          items: [],
+          delivery_charges: 0,
+          settlement: {
+            total_credit_received: totalCreditNum,
+            cash_received: 0,
+            home_expense_amount: homeExpenseNum,
+            home_expense_category_id: homeExpenseCategoryId || undefined,
+            owner_drawings_amount: ownerDrawingsNum,
+            destination_type: destinationType,
+            target_plant_id: destinationType === "plant" ? targetPlantId : undefined,
+            account_id: destinationType === "account" ? accountCategory : undefined,
+            payment_reference: paymentReference.trim() || undefined,
+          },
+          notes: combinedNotes || undefined,
+          entered_by: user.name,
+        });
+        setLastResult(result);
+        resetForm();
+        await load();
+        return;
+      }
 
       const payload = {
         date: new Date(`${date}T${new Date().toTimeString().slice(0, 8)}`).toISOString(),
@@ -510,11 +654,40 @@ function UnifiedSaleBody() {
     }
   };
 
+  // Payment-Only batch (§ Payment-Only Pending Approval) — no purchase
+  // plant, no items. The discriminator the create endpoint leaves behind.
+  const isPaymentOnlyBatch = (r: UnifiedSaleBatch) => r.company_id == null;
+
   // Sale/Load and Plant Payment/Settlement are independent — a batch shows
   // up in one, both, or neither of these two queues depending on which
-  // side(s) are still pending.
-  const salePendingOrders = useMemo(() => recent.filter((r) => r.sale_status === "pending"), [recent]);
+  // side(s) are still pending. A Payment-Only batch is excluded from the
+  // Sale/Load queue entirely — there's no load for a human to check there;
+  // it sits in the Settlement queue only, approved as one atomic action
+  // (see handleApprovePaymentOnly) rather than the two independent steps.
+  const salePendingOrders = useMemo(
+    () => recent.filter((r) => r.sale_status === "pending" && !isPaymentOnlyBatch(r)),
+    [recent]
+  );
   const paymentPendingOrders = useMemo(() => recent.filter((r) => r.payment_status === "pending"), [recent]);
+
+  // § Bug Fix — Approved Payments destination display. A Payment's own
+  // account_id is only meaningful for a plain quick-pay row — for a
+  // Unified-Sale/Payment-Receipt-sourced row that settled straight to a
+  // plant or Owner Home, account_id is legitimately null and
+  // resolveAccountLabel's null fallback ("Office Cash") is simply wrong.
+  // destination_type/target_plant_id/account_category (resolved backend-
+  // side — see routers/payments.py._attach_destination_info) are the real
+  // source of truth for where this payment actually went.
+  const resolvePaymentAccountLabel = (p: Payment) => {
+    if (p.destination_type === "plant") {
+      const plant = companies.find((c) => c.id === p.target_plant_id);
+      return plant ? t("payments.plantLabel", { name: plant.name }) : t("payments.plantSettlementBadge");
+    }
+    if (p.destination_type === "account") {
+      return resolveAccountLabel(p.account_category ?? p.account_id, accounts);
+    }
+    return resolveAccountLabel(p.account_id, accounts);
+  };
 
   const getDestinationLabel = (r: UnifiedSaleBatch) => {
     if (r.destination_type === "account") {
@@ -596,7 +769,7 @@ function UnifiedSaleBody() {
         caption={t("unifiedSale.caption")}
       />
 
-      <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-4">
         <button
           type="button"
           onClick={() => { resetForm(); setShowSaleForm(true); }}
@@ -610,21 +783,6 @@ function UnifiedSaleBody() {
           </div>
           <div className="mt-4 font-display text-lg font-bold text-ink">{t("unifiedSale.newSale")}</div>
           <div className="mt-1 font-body text-xs text-steel">{t("unifiedSale.newSaleCaption")}</div>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setShowPaymentOnly(true)}
-          className="group rounded-xl border border-teal/30 bg-teal/5 hover:bg-teal/10 transition-colors p-5 text-left"
-        >
-          <div className="flex items-center justify-between">
-            <div className="h-10 w-10 rounded-lg bg-teal text-white flex items-center justify-center">
-              <Wallet size={19} />
-            </div>
-            <span className="font-mono text-[10px] uppercase tracking-wide text-teal font-semibold">{t("unifiedSale.createBadge")}</span>
-          </div>
-          <div className="mt-4 font-display text-lg font-bold text-ink">{t("unifiedSale.recordPayment")}</div>
-          <div className="mt-1 font-body text-xs text-steel">{t("unifiedSale.recordPaymentCaption")}</div>
         </button>
 
         <Panel className="!p-5">
@@ -670,12 +828,6 @@ function UnifiedSaleBody() {
         </button>
       </div>
 
-      <PaymentReceiptModal
-        isOpen={showPaymentOnly}
-        onClose={() => setShowPaymentOnly(false)}
-        onSuccess={load}
-      />
-
       <div className="space-y-6">
 
         {/* NEW / EDIT SALE MODAL */}
@@ -687,9 +839,15 @@ function UnifiedSaleBody() {
             <div className="w-full max-w-5xl max-h-[94vh] overflow-hidden bg-white rounded-xl shadow-2xl flex flex-col">
               <div className="flex items-center justify-between px-5 py-4 border-b border-hairline shrink-0">
                 <div>
-                  <Eyebrow>{editingId ? t("unifiedSale.editPendingSale") : t("unifiedSale.newUnifiedSale")}</Eyebrow>
+                  <Eyebrow>
+                    {editingId
+                      ? t("unifiedSale.editPendingSale")
+                      : formMode === "payment_only" ? t("unifiedSale.modePaymentOnly") : t("unifiedSale.newUnifiedSale")}
+                  </Eyebrow>
                   <div className="font-body text-xs text-steel mt-1">
-                    {editingId ? t("unifiedSale.editingId", { id: editingDisplayId }) : t("unifiedSale.createSaleSettlementRouting")}
+                    {editingId
+                      ? t("unifiedSale.editingId", { id: editingDisplayId })
+                      : formMode === "payment_only" ? t("unifiedSale.paymentOnlyCaption") : t("unifiedSale.createSaleSettlementRouting")}
                   </div>
                 </div>
                 <button
@@ -713,45 +871,107 @@ function UnifiedSaleBody() {
                 </div>
               )}
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Mode Switch — editing is always a Full Sale (a Unified Sale
+                  batch); Payment Only posts instantly via /payment-receipts
+                  and has no pending state to edit back into, so the toggle
+                  only makes sense for a brand-new entry. */}
+              {!editingId && (
+                <div className="grid grid-cols-2 gap-2 p-1 bg-paper rounded-lg border border-hairline">
+                  <button
+                    type="button"
+                    onClick={() => setFormMode("full_sale")}
+                    className={`py-2 rounded-md font-body text-[13px] font-semibold transition-colors ${
+                      formMode === "full_sale" ? "bg-teal text-white" : "text-steel hover:bg-white"
+                    }`}
+                  >
+                    {t("unifiedSale.modeFullSale")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFormMode("payment_only")}
+                    className={`py-2 rounded-md font-body text-[13px] font-semibold transition-colors ${
+                      formMode === "payment_only" ? "bg-teal text-white" : "text-steel hover:bg-white"
+                    }`}
+                  >
+                    {t("unifiedSale.modePaymentOnly")}
+                  </button>
+                </div>
+              )}
+
+              <div className={`grid grid-cols-1 ${formMode === "full_sale" ? "sm:grid-cols-2" : ""} gap-3`}>
                 <Field label={t("unifiedSale.date")}>
                   <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} />
                 </Field>
-                <Field label={t("unifiedSale.purchasePlant")}>
-                  <div className="relative">
-                    <div className="flex gap-1.5">
-                      <input
-                        value={selectedCompany ? selectedCompany.name : companySearch}
-                        onChange={(e) => { setCompanyId(""); setCompanySearch(e.target.value); }}
-                        placeholder={t("unifiedSale.searchOrAddPlant")}
-                        className={`${inputClass} flex-1`}
-                      />
-                      <Button variant="outline" onClick={() => setShowNewPlant(true)}><PlusCircle size={14} /></Button>
-                    </div>
-                    {!companyId && companySearch.trim() && (
-                      <div className="absolute z-20 top-full left-0 right-0 bg-white border border-hairline rounded-md mt-1 max-h-52 overflow-y-auto shadow-lg">
-                        {filteredCompanies.slice(0, 8).map((c) => (
-                          <button
-                            key={c.id}
-                            onClick={() => { setCompanyId(c.id); setCompanySearch(""); }}
-                            className="w-full text-left px-3 py-2 hover:bg-paper font-body text-[13px]"
-                          >
-                            <span className="font-semibold text-ink">{c.name}</span>
-                          </button>
-                        ))}
-                        {!filteredCompanies.length && (
-                          <button
-                            onClick={() => setShowNewPlant(true)}
-                            className="w-full text-left px-3 py-2 hover:bg-paper font-body text-[13px] text-teal"
-                          >
-                            {t("unifiedSale.addAsNewPlant", { name: companySearch.trim() })}
-                          </button>
-                        )}
+                {formMode === "full_sale" && (
+                  <Field label={t("unifiedSale.purchasePlant")}>
+                    <div className="relative">
+                      <div className="flex gap-1.5">
+                        <input
+                          value={selectedCompany ? selectedCompany.name : companySearch}
+                          onChange={(e) => { setCompanyId(""); setCompanySearch(e.target.value); }}
+                          placeholder={t("unifiedSale.searchOrAddPlant")}
+                          className={`${inputClass} flex-1`}
+                        />
+                        <Button variant="outline" onClick={() => setShowNewPlant(true)}><PlusCircle size={14} /></Button>
                       </div>
-                    )}
-                  </div>
-                </Field>
+                      {!companyId && companySearch.trim() && (
+                        <div className="absolute z-20 top-full left-0 right-0 bg-white border border-hairline rounded-md mt-1 max-h-52 overflow-y-auto shadow-lg">
+                          {filteredCompanies.slice(0, 8).map((c) => (
+                            <button
+                              key={c.id}
+                              onClick={() => { setCompanyId(c.id); setCompanySearch(""); }}
+                              className="w-full text-left px-3 py-2 hover:bg-paper font-body text-[13px]"
+                            >
+                              <span className="font-semibold text-ink">{c.name}</span>
+                            </button>
+                          ))}
+                          {!filteredCompanies.length && (
+                            <button
+                              onClick={() => setShowNewPlant(true)}
+                              className="w-full text-left px-3 py-2 hover:bg-paper font-body text-[13px] text-teal"
+                            >
+                              {t("unifiedSale.addAsNewPlant", { name: companySearch.trim() })}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </Field>
+                )}
               </div>
+
+              {/* Party — only shown when the selected plant genuinely has
+                  more than one (auto-selected silently for 0 or 1, so the
+                  common case needs no extra click; see the effect above). */}
+              {formMode === "full_sale" && companyId && companyParties.length > 1 && (
+                <Field label={t("rateDashboard.party")}>
+                  <select
+                    value={partyId}
+                    onChange={(e) => setPartyId(e.target.value)}
+                    className={inputClass}
+                  >
+                    <option value="">{t("rateDashboard.selectParty")}</option>
+                    <option value={NO_PARTY_VALUE}>{t("rateDashboard.noPartyOption")}</option>
+                    {companyParties.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </Field>
+              )}
+
+              {formMode === "full_sale" && companyId && partyId && !resolvedRate && (
+                <div className="px-3 py-2.5 rounded-lg border flex items-center gap-2 bg-[#FBEAEA] border-[#EFC3C3]">
+                  <AlertTriangle size={15} className="text-brand-red flex-shrink-0" />
+                  <span className="font-body text-xs">
+                    {t("rateDashboard.noRateForPair", {
+                      company: selectedCompany?.name || "",
+                      party: partyId === NO_PARTY_VALUE
+                        ? t("rateDashboard.noPartyOption")
+                        : companyParties.find((p) => p.id === partyId)?.name || "",
+                    })}
+                  </span>
+                </div>
+              )}
 
               <Field label={t("unifiedSale.customer")}>
                 <div className="relative">
@@ -773,6 +993,32 @@ function UnifiedSaleBody() {
                   )}
                 </div>
               </Field>
+
+              {/* Delivery Details, Items, GST — Full Sale only. Payment Only
+                  has no physical delivery, no items, and nothing to charge
+                  GST against; hiding rather than disabling avoids a form
+                  full of irrelevant empty/disabled sections. */}
+              {formMode === "full_sale" && (
+              <>
+              <div className="border-t border-hairline pt-4">
+                <Eyebrow>{t("unifiedSale.deliveryDetails")}</Eyebrow>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
+                  <Field label={vehicleRequired ? t("unifiedSale.vehicleNoRequired") : t("unifiedSale.vehicleNoOptional")}>
+                    <input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} required={vehicleRequired} className={inputClass} />
+                  </Field>
+                  <Field label={t("unifiedSale.gatePassNo")}>
+                    <input value={gatePassNo} onChange={(e) => setGatePassNo(e.target.value)} className={inputClass} />
+                  </Field>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+                  <Field label={t("unifiedSale.deliveryChargesRs")}>
+                    <AmountInput value={deliveryCharges} onChange={setDeliveryCharges} placeholder="0" className={inputClass} />
+                  </Field>
+                  <Field label={t("unifiedSale.notes")}>
+                    <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t("unifiedSale.remarksPlaceholder")} className={inputClass} />
+                  </Field>
+                </div>
+              </div>
 
               {/* Items Section */}
               <div className="border-t border-hairline pt-4">
@@ -814,27 +1060,6 @@ function UnifiedSaleBody() {
                     </div>
                   </div>
                 )}
-              </div>
-
-              {/* Delivery Details */}
-              <div className="border-t border-hairline pt-4">
-                <Eyebrow>{t("unifiedSale.deliveryDetails")}</Eyebrow>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
-                  <Field label={vehicleRequired ? t("unifiedSale.vehicleNoRequired") : t("unifiedSale.vehicleNoOptional")}>
-                    <input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} required={vehicleRequired} className={inputClass} />
-                  </Field>
-                  <Field label={t("unifiedSale.gatePassNo")}>
-                    <input value={gatePassNo} onChange={(e) => setGatePassNo(e.target.value)} className={inputClass} />
-                  </Field>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
-                  <Field label={t("unifiedSale.deliveryChargesRs")}>
-                    <AmountInput value={deliveryCharges} onChange={setDeliveryCharges} placeholder="0" className={inputClass} />
-                  </Field>
-                  <Field label={t("unifiedSale.notes")}>
-                    <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t("unifiedSale.remarksPlaceholder")} className={inputClass} />
-                  </Field>
-                </div>
               </div>
 
               {/* GST Section (§ GST on Sale) — optional, applies to the
@@ -883,6 +1108,8 @@ function UnifiedSaleBody() {
                   </div>
                 )}
               </div>
+              </>
+              )}
 
               {/* Settlement Section */}
               <div className="border-t border-hairline pt-4 space-y-3">
@@ -897,7 +1124,7 @@ function UnifiedSaleBody() {
                       <option value="cash">{t("unifiedSale.methodCash")}</option>
                       <option value="online">{t("unifiedSale.methodOnline")}</option>
                       <option value="cheque">{t("unifiedSale.methodCheque")}</option>
-                      <option value="deposit">{t("unifiedSale.methodDeposit")}</option>
+                      <option value="bank_transfer">{t("expenses.methodBankTransfer")}</option>
                     </select>
                   </Field>
 
@@ -964,9 +1191,18 @@ function UnifiedSaleBody() {
                   </div>
 
                   {destinationType === "plant" ? (
-                    <Field label={t("unifiedSale.targetPlantDefault")}>
+                    // Payment Only has no purchase plant to fall back on, so
+                    // the "same as purchase plant" default option (blank
+                    // value) only makes sense in Full Sale mode — an
+                    // explicit pick is required here instead (see
+                    // paymentOnlyDestinationValid in canSubmit above).
+                    <Field label={formMode === "full_sale" ? t("unifiedSale.targetPlantDefault") : t("unifiedSale.targetPlantRequired")}>
                       <select value={targetPlantId} onChange={(e) => setTargetPlantId(e.target.value)} className={inputClass}>
-                        <option value="">{t("unifiedSale.sameAsPurchasePlant", { name: selectedCompany?.name || t("unifiedSale.selectedFallback") })}</option>
+                        {formMode === "full_sale" ? (
+                          <option value="">{t("unifiedSale.sameAsPurchasePlant", { name: selectedCompany?.name || t("unifiedSale.selectedFallback") })}</option>
+                        ) : (
+                          <option value="">{t("unifiedSale.selectPlant")}</option>
+                        )}
                         {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                       </select>
                     </Field>
@@ -1033,7 +1269,11 @@ function UnifiedSaleBody() {
               {error && <div className="font-body text-xs text-brand-red">{error}</div>}
 
               <Button variant="primary" onClick={handleSubmit} disabled={!canSubmit || saving}>
-                {saving ? t("unifiedSale.saving") : editingId ? t("unifiedSale.saveChanges") : t("unifiedSale.saveUnifiedSalePending")}
+                {saving
+                  ? t("unifiedSale.saving")
+                  : editingId
+                  ? t("unifiedSale.saveChanges")
+                  : formMode === "payment_only" ? t("unifiedSale.modePaymentOnly") : t("unifiedSale.saveUnifiedSalePending")}
               </Button>
             </div>
                 </Panel>
@@ -1091,15 +1331,25 @@ function UnifiedSaleBody() {
                   </div>
                 )}
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {lastResult.sale_status === "pending" && (
-                    <Button variant="teal" onClick={() => handleApproveSale(lastResult.id)} disabled={actionBusyId === lastResult.id}>
-                      <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approveSale")}
-                    </Button>
-                  )}
-                  {lastResult.payment_status === "pending" && (
-                    <Button variant="teal" onClick={() => handleApprovePayment(lastResult.id)} disabled={actionBusyId === lastResult.id}>
-                      <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approvePayment")}
-                    </Button>
+                  {isPaymentOnlyBatch(lastResult) ? (
+                    lastResult.payment_status === "pending" && (
+                      <Button variant="teal" onClick={() => handleApprovePaymentOnly(lastResult.id)} disabled={actionBusyId === lastResult.id}>
+                        <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approvePayment")}
+                      </Button>
+                    )
+                  ) : (
+                    <>
+                      {lastResult.sale_status === "pending" && (
+                        <Button variant="teal" onClick={() => handleApproveSale(lastResult.id)} disabled={actionBusyId === lastResult.id}>
+                          <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approveSale")}
+                        </Button>
+                      )}
+                      {lastResult.payment_status === "pending" && (
+                        <Button variant="teal" onClick={() => handleApprovePayment(lastResult.id)} disabled={actionBusyId === lastResult.id}>
+                          <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approvePayment")}
+                        </Button>
+                      )}
+                    </>
                   )}
                   {lastResult.sale_status === "pending" && lastResult.payment_status === "pending" && (
                     <Button variant="outline" onClick={() => handleCancel(lastResult.id)} disabled={actionBusyId === lastResult.id}>
@@ -1259,6 +1509,10 @@ function UnifiedSaleBody() {
                     const plant = companies.find((x) => x.id === r.company_id);
                     const busy = actionBusyId === r.id;
                     const canEditOrCancel = r.sale_status === "pending";
+                    const paymentOnly = isPaymentOnlyBatch(r);
+                    // Payment-Only never shows Edit (§ handleEditTransaction) —
+                    // Cancel + re-enter only.
+                    const canEdit = canEditOrCancel && !paymentOnly;
                     const netAmount = Number(r.net_plant_payment || 0) || Number(r.total_credit_received || 0);
 
                     return (
@@ -1299,7 +1553,7 @@ function UnifiedSaleBody() {
                         <Td color="#8E8E93"><span className="whitespace-nowrap">{r.notes || "—"}</span></Td>
                         <Td right>
                           <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
-                            {canEditOrCancel && (
+                            {canEdit && (
                               <button
                                 type="button"
                                 title={t("unifiedSale.editTransaction")}
@@ -1315,7 +1569,7 @@ function UnifiedSaleBody() {
                               type="button"
                               title={t("unifiedSale.approvePayment")}
                               disabled={busy}
-                              onClick={() => handleApprovePayment(r.id)}
+                              onClick={() => (paymentOnly ? handleApprovePaymentOnly(r.id) : handleApprovePayment(r.id))}
                               className="h-8 shrink-0 inline-flex items-center justify-center gap-1 px-2.5 rounded-md bg-teal/10 hover:bg-teal/20 text-teal border border-teal/30 font-medium text-xs transition-colors disabled:opacity-50"
                             >
                               <CheckCircle2 size={13} />
@@ -1550,7 +1804,7 @@ function UnifiedSaleBody() {
                                 <Td bold>{c?.name || "—"}</Td>
                                 <Td right mono bold color="#1E8A5F">{pkr(p.amount)}</Td>
                                 <Td mono>{p.method}</Td>
-                                <Td mono color="#8E8E93">{resolveAccountLabel(p.account_id, accounts)}</Td>
+                                <Td mono color="#8E8E93">{resolvePaymentAccountLabel(p)}</Td>
                                 <Td right mono color="#8E8E93">{rate ? pkr(rate) : "—"}</Td>
                                 <Td mono>{p.entered_by}</Td>
                                 <Td center>
@@ -1561,6 +1815,20 @@ function UnifiedSaleBody() {
                                     <a href={api.payments.invoiceUrl(p.id)} target="_blank" rel="noreferrer" className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title={t("unifiedSale.viewPrintInvoice")}>
                                       <Printer size={13} />
                                     </a>
+                                    {/* Unified-Sale-linked only — its own correction path can't
+                                        change the amount (see handleCancelApprovedPayment above),
+                                        so cancel-then-re-enter is the only fix for a wrong amount. */}
+                                    {!!p.unified_sale_id && (
+                                      <button
+                                        type="button"
+                                        disabled={actionBusyId === p.id}
+                                        onClick={() => handleCancelApprovedPayment(p.id)}
+                                        className="p-1.5 rounded-md text-slate-400 hover:text-brand-red hover:bg-red-50 disabled:opacity-50"
+                                        title={t("unifiedSale.cancelThisPayment")}
+                                      >
+                                        <Ban size={13} />
+                                      </button>
+                                    )}
                                   </div>
                                 </Td>
                               </tr>
@@ -1690,7 +1958,7 @@ function UnifiedSaleBody() {
 
                   <div className="flex justify-between items-center pt-1">
                     <div className="flex flex-wrap gap-2">
-                      {selectedTransaction.sale_status === "pending" && selectedTransaction.payment_status === "pending" && (
+                      {selectedTransaction.sale_status === "pending" && selectedTransaction.payment_status === "pending" && !isPaymentOnlyBatch(selectedTransaction) && (
                         <Button
                           variant="outline"
                           onClick={() => { const row = recent.find((r) => r.id === selectedTransaction.id); if (row) handleEditTransaction(row); setSelectedTransaction(null); }}
@@ -1698,15 +1966,25 @@ function UnifiedSaleBody() {
                           <Pencil size={13} className="mr-1" /> {t("unifiedSale.edit")}
                         </Button>
                       )}
-                      {selectedTransaction.sale_status === "pending" && (
-                        <Button variant="teal" onClick={() => handleApproveSale(selectedTransaction.id)} disabled={actionBusyId === selectedTransaction.id}>
-                          <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approveSale")}
-                        </Button>
-                      )}
-                      {selectedTransaction.payment_status === "pending" && (
-                        <Button variant="teal" onClick={() => handleApprovePayment(selectedTransaction.id)} disabled={actionBusyId === selectedTransaction.id}>
-                          <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approvePayment")}
-                        </Button>
+                      {isPaymentOnlyBatch(selectedTransaction) ? (
+                        selectedTransaction.payment_status === "pending" && (
+                          <Button variant="teal" onClick={() => handleApprovePaymentOnly(selectedTransaction.id)} disabled={actionBusyId === selectedTransaction.id}>
+                            <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approvePayment")}
+                          </Button>
+                        )
+                      ) : (
+                        <>
+                          {selectedTransaction.sale_status === "pending" && (
+                            <Button variant="teal" onClick={() => handleApproveSale(selectedTransaction.id)} disabled={actionBusyId === selectedTransaction.id}>
+                              <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approveSale")}
+                            </Button>
+                          )}
+                          {selectedTransaction.payment_status === "pending" && (
+                            <Button variant="teal" onClick={() => handleApprovePayment(selectedTransaction.id)} disabled={actionBusyId === selectedTransaction.id}>
+                              <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approvePayment")}
+                            </Button>
+                          )}
+                        </>
                       )}
                       {selectedTransaction.sale_status === "pending" && selectedTransaction.payment_status === "pending" && (
                         <Button variant="outline" onClick={() => handleCancel(selectedTransaction.id)} disabled={actionBusyId === selectedTransaction.id}>

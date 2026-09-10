@@ -47,12 +47,19 @@ export function Th({ children, right = false, center = false }: { children: Reac
 }
 
 export function Td({
-  children, right = false, center = false, mono = false, color, bold = false, colSpan,
-}: { children: ReactNode; right?: boolean; center?: boolean; mono?: boolean; color?: string; bold?: boolean; colSpan?: number }) {
+  children, right = false, center = false, mono = false, color, bold = false, colSpan, className = "", title,
+}: {
+  children: ReactNode; right?: boolean; center?: boolean; mono?: boolean; color?: string; bold?: boolean; colSpan?: number;
+  // className: e.g. "max-w-[200px] truncate" for a long free-text column
+  // (Reason/Description) that shouldn't force the table wider — pair with
+  // `title` so the full text is still readable on hover.
+  className?: string; title?: string;
+}) {
   return (
     <td
       colSpan={colSpan}
-      className={`text-[13px] px-2.5 py-2.5 border-b border-hairline whitespace-nowrap ${mono ? "font-mono" : "font-body"} ${center ? "text-center" : right ? "text-right" : "text-left"} ${bold ? "font-semibold" : "font-normal"}`}
+      title={title}
+      className={`text-[13px] px-2.5 py-2.5 border-b border-hairline whitespace-nowrap ${mono ? "font-mono" : "font-body"} ${center ? "text-center" : right ? "text-right" : "text-left"} ${bold ? "font-semibold" : "font-normal"} ${className}`}
       style={{ color: color || "#0B2138" }}
     >
       {children}

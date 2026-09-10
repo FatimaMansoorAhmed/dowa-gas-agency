@@ -1,12 +1,12 @@
 "use client";
 import { useEffect, useState } from "react";
-import { X, Check } from "lucide-react";
+import { X, Check, Building2, Wallet } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Field, inputClass, Button } from "./ui";
-import { api } from "@/lib/api";
+import { api, apiErrorMessage } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { toKarachiDateString } from "@/lib/format";
-import type { PaymentAccount, Sale, Payment, Purchase, CompanyPayment, ShopSale, ShopSupplyCustomer, ShopListRow } from "@/lib/types";
+import { toKarachiDateString, pkr } from "@/lib/format";
+import type { PaymentAccount, Sale, Payment, Purchase, CompanyPayment, ShopSale, ShopSupplyCustomer, ShopListRow, Company, ExpenseCategory, DestinationType, AccountType } from "@/lib/types";
 
 export type CorrectableKind = "sale" | "payment" | "purchase" | "companyPayment" | "shopSale";
 
@@ -35,9 +35,41 @@ export default function CorrectTransactionModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // § Bug Fix — Correction Modal Routing. A "payment" transaction is one of
+  // three shapes: a plain quick-pay row (destination_type/unified_sale_id
+  // both null — the original, unchanged form below), a Payment Receipt-
+  // sourced row (destination_type set directly on it — its own amount is
+  // still correctable), or a Unified-Sale-originated audit-trail row
+  // (unified_sale_id set; its amount is fixed by the sale side — only WHERE
+  // the money went is correctable here, via the parent batch's settlement).
+  //
+  // unified_sale_id, never destination_type, is what tells these apart —
+  // routers/payments.py._attach_destination_info deliberately COPIES the
+  // parent batch's destination_type onto a Unified-Sale row's `transaction`
+  // here (purely so this form can pre-fill routing/account fields below),
+  // which means destination_type is NEVER actually null on one of these by
+  // the time it reaches this modal. Checking `destination_type == null` for
+  // isUnifiedSaleSourced (as this used to) was therefore always false —
+  // every such payment fell through to isReceiptSourced instead, submitting
+  // through api.paymentReceipts.correct with method pre-filled as the
+  // invalid value "unified_sale_credit", which the backend correctly
+  // rejected (422) while this form's generic catch (see handleSubmit)
+  // silently swallowed the real reason.
+  const isUnifiedSaleSourced = kind === "payment" && !!(transaction as Payment).unified_sale_id;
+  const isReceiptSourced =
+    kind === "payment" && !isUnifiedSaleSourced && (transaction as Payment).destination_type != null;
+  const showRouting = isReceiptSourced || isUnifiedSaleSourced;
+
+  const [companies, setCompanies] = useState<Company[]>([]);
+  const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([]);
+
   useEffect(() => {
     if (kind === "payment" || kind === "companyPayment" || kind === "shopSale") {
       api.paymentAccounts.list().then(setAccounts);
+    }
+    if (showRouting) {
+      api.companies.list().then(setCompanies);
+      api.expenseCategories.list().then(setExpenseCategories);
     }
     if (kind === "shopSale") {
       api.shops.customers.list((transaction as ShopSale).customer_id).then(setSupplyCustomers);
@@ -131,6 +163,37 @@ export default function CorrectTransactionModal({
   // correcting a Payment. Optional/empty for an ordinary customer's payment.
   const [sourceAccountId, setSourceAccountId] = useState(kind === "payment" ? payment.source_account_id || "" : "");
 
+  // Settlement routing (§ Bug Fix — Correction Modal Routing) — pre-filled
+  // from the transaction's own (already-resolved, see showRouting above)
+  // destination fields for both receipt- and Unified-Sale-sourced rows.
+  // home_expense_category_id has no source field to pre-fill from (neither
+  // PaymentOut nor PaymentReceiptOut exposes it) — starts blank and, same
+  // as a brand-new entry, is required before submitting whenever
+  // homeExpenseAmount > 0 (see canSubmit below).
+  const [destinationType, setDestinationType] = useState<DestinationType>(
+    showRouting ? (payment.destination_type as DestinationType) || "plant" : "plant"
+  );
+  const [targetPlantId, setTargetPlantId] = useState(showRouting ? payment.target_plant_id || "" : "");
+  const [accountCategory, setAccountCategory] = useState<AccountType>(
+    showRouting ? ((payment.account_category as AccountType) || "office_cash") : "office_cash"
+  );
+  const [homeExpenseAmount, setHomeExpenseAmount] = useState(showRouting ? payment.home_expense_amount || "0" : "0");
+  const [homeExpenseCategoryId, setHomeExpenseCategoryId] = useState("");
+  const [ownerDrawingsAmount, setOwnerDrawingsAmount] = useState(showRouting ? payment.owner_drawings_amount || "0" : "0");
+
+  // § Amount Correction for Unified-Sale-Linked Payments — a separate,
+  // independent action from the routing correction below (own reason,
+  // own save, own error), not the shared reason/canSubmit/handleSubmit
+  // every other kind uses. Two independent actions rather than one
+  // combined submit specifically to avoid a partial-failure state where
+  // one half saves and the other doesn't.
+  const [amountCorrectionReason, setAmountCorrectionReason] = useState("");
+  const [amountSaving, setAmountSaving] = useState(false);
+  const [amountError, setAmountError] = useState<string | null>(null);
+  const [routingReason, setRoutingReason] = useState("");
+  const [routingSaving, setRoutingSaving] = useState(false);
+  const [routingError, setRoutingError] = useState<string | null>(null);
+
   const kindLabel = {
     sale: t("unifiedSale.colSale"),
     payment: t("customerLedger.colPayment"),
@@ -138,6 +201,18 @@ export default function CorrectTransactionModal({
     companyPayment: t("modals.plantPaymentSingular"),
     shopSale: t("shopDetail.shopSale"),
   }[kind];
+
+  // § Bug Fix — Correction Modal Routing. Same shape as the Unified Sale
+  // page's own settlement validity check (unifiedSale.settlementValid) —
+  // the split can't exceed the amount, Home Expense needs a category the
+  // moment it's non-zero, and "plant" needs an actual plant picked (no
+  // "same as purchase plant" fallback here — a correction has no purchase
+  // plant context to default to).
+  const bypassSum = (parseFloat(homeExpenseAmount) || 0) + (parseFloat(ownerDrawingsAmount) || 0);
+  const routingValid =
+    bypassSum <= (parseFloat(amount) || 0) + 0.01 &&
+    (parseFloat(homeExpenseAmount) <= 0 || !!homeExpenseCategoryId) &&
+    (destinationType !== "plant" || !!targetPlantId);
 
   const canSubmit =
     reason.trim().length > 0 &&
@@ -152,7 +227,9 @@ export default function CorrectTransactionModal({
       ? parseFloat(quantity) > 0 && (paymentType === "cash" || !!supplyCustomerId)
         && (paymentType === "cash" || (parseFloat(amountReceived) || 0) >= 0)
       : parseFloat(amount) > 0) &&
-    ((kind !== "payment" && kind !== "companyPayment") || accountId || kind === "companyPayment");
+    (showRouting
+      ? routingValid
+      : (kind !== "payment" && kind !== "companyPayment") || accountId || kind === "companyPayment");
 
   const buildIsoDate = () => {
     const now = new Date();
@@ -206,6 +283,25 @@ export default function CorrectTransactionModal({
           correction_reason: reason,
           corrected_by: user.name,
         });
+      } else if (kind === "payment" && isReceiptSourced) {
+        // § Bug Fix — Correction Modal Routing, Case 1.
+        await api.paymentReceipts.correct(payment.id, {
+          date: isoDate,
+          customer_id: payment.customer_id,
+          amount: parseFloat(amount),
+          method: method as "cash" | "bank_transfer" | "cheque" | "online" | "other",
+          home_expense_amount: parseFloat(homeExpenseAmount) || 0,
+          home_expense_category_id: parseFloat(homeExpenseAmount) > 0 ? homeExpenseCategoryId || undefined : undefined,
+          owner_drawings_amount: parseFloat(ownerDrawingsAmount) || 0,
+          destination_type: destinationType,
+          target_plant_id: destinationType === "plant" ? targetPlantId || undefined : undefined,
+          account_id: destinationType === "account" ? accountCategory : undefined,
+          reference_no: referenceNo || undefined,
+          notes: notes || undefined,
+          entered_by: user.name,
+          correction_reason: reason,
+          corrected_by: user.name,
+        });
       } else if (kind === "payment") {
         await api.payments.correct(payment.id, {
           date: isoDate,
@@ -253,11 +349,123 @@ export default function CorrectTransactionModal({
       }
       onSaved();
     } catch (e) {
-      setError(t("modals.couldNotSaveCorrection"));
+      setError(apiErrorMessage(e, t("modals.couldNotSaveCorrection")));
     } finally {
       setSaving(false);
     }
   };
+
+  // § Amount Correction for Unified-Sale-Linked Payments — independent
+  // of handleSubmit above (which still owns the routing-only save for
+  // isReceiptSourced/plain payments); see api.unifiedSale.correctAmount.
+  const amountCorrectionValid = parseFloat(amount) > 0 && amountCorrectionReason.trim().length > 0;
+  const handleSaveAmountCorrection = async () => {
+    if (!amountCorrectionValid || !user) return;
+    setAmountSaving(true);
+    setAmountError(null);
+    try {
+      await api.unifiedSale.correctAmount(payment.unified_sale_id!, {
+        amount: parseFloat(amount),
+        correction_reason: amountCorrectionReason,
+        corrected_by: user.name,
+      });
+      onSaved();
+    } catch (e) {
+      setAmountError(apiErrorMessage(e, t("modals.couldNotSaveCorrection")));
+    } finally {
+      setAmountSaving(false);
+    }
+  };
+
+  // Independent routing save for isUnifiedSaleSourced specifically — same
+  // api.unifiedSale.correctSettlement call handleSubmit's isUnifiedSaleSourced
+  // branch already made, just with its own reason/busy/error instead of the
+  // shared ones (which isReceiptSourced/plain payments still use via
+  // handleSubmit — this payment type is the only one with two independent
+  // actions, so it's the only one that needs its own reason field).
+  const handleSaveRoutingCorrection = async () => {
+    if (!routingValid || !routingReason.trim() || !user) return;
+    setRoutingSaving(true);
+    setRoutingError(null);
+    try {
+      await api.unifiedSale.correctSettlement(payment.unified_sale_id!, {
+        home_expense_amount: parseFloat(homeExpenseAmount) || 0,
+        home_expense_category_id: parseFloat(homeExpenseAmount) > 0 ? homeExpenseCategoryId || undefined : undefined,
+        owner_drawings_amount: parseFloat(ownerDrawingsAmount) || 0,
+        destination_type: destinationType,
+        target_plant_id: destinationType === "plant" ? targetPlantId || undefined : undefined,
+        account_id: destinationType === "account" ? accountCategory : undefined,
+        payment_reference: referenceNo || undefined,
+        correction_reason: routingReason,
+        corrected_by: user.name,
+      });
+      onSaved();
+    } catch (e) {
+      setRoutingError(apiErrorMessage(e, t("modals.couldNotSaveCorrection")));
+    } finally {
+      setRoutingSaving(false);
+    }
+  };
+
+  // § Bug Fix — Correction Modal Routing. Shared by both showRouting
+  // branches below — same fields/behavior as the Unified Sale page's own
+  // Settlement Section (see app/unified-sale/page.tsx), in compact form.
+  const routingFields = (
+    <>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <Field label={t("unifiedSale.homeExpense")}>
+          <input type="number" value={homeExpenseAmount} onChange={(e) => setHomeExpenseAmount(e.target.value)} className={inputClass} />
+        </Field>
+        <Field label={t("unifiedSale.expenseCategory")}>
+          <select value={homeExpenseCategoryId} onChange={(e) => setHomeExpenseCategoryId(e.target.value)} className={inputClass}>
+            <option value="">{t("unifiedSale.selectCategory")}</option>
+            {expenseCategories.filter((c) => c.active === "active").map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </Field>
+      </div>
+      <Field label={t("unifiedSale.ownerDrawings")}>
+        <input type="number" value={ownerDrawingsAmount} onChange={(e) => setOwnerDrawingsAmount(e.target.value)} className={inputClass} />
+      </Field>
+      <div className="p-3 bg-paper rounded-lg border border-hairline space-y-2">
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => setDestinationType("plant")}
+            className={`flex items-center justify-center gap-2 py-2 px-3 rounded-md border text-xs font-semibold transition-all ${
+              destinationType === "plant" ? "bg-teal/10 border-teal text-teal" : "border-hairline bg-white text-steel hover:bg-paper"
+            }`}
+          >
+            <Building2 size={14} /> {t("unifiedSale.plantSettlementOption")}
+          </button>
+          <button
+            type="button"
+            onClick={() => setDestinationType("account")}
+            className={`flex items-center justify-center gap-2 py-2 px-3 rounded-md border text-xs font-semibold transition-all ${
+              destinationType === "account" ? "bg-teal/10 border-teal text-teal" : "border-hairline bg-white text-steel hover:bg-paper"
+            }`}
+          >
+            <Wallet size={14} /> {t("unifiedSale.accountDepositOption")}
+          </button>
+        </div>
+        {destinationType === "plant" ? (
+          <Field label={t("unifiedSale.targetPlantRequired")}>
+            <select value={targetPlantId} onChange={(e) => setTargetPlantId(e.target.value)} className={inputClass}>
+              <option value="">{t("unifiedSale.selectPlant")}</option>
+              {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+        ) : (
+          <Field label={t("unifiedSale.targetAccount")}>
+            <select value={accountCategory} onChange={(e) => setAccountCategory(e.target.value as AccountType)} className={inputClass}>
+              <option value="office_cash">{t("payments.officeCash")}</option>
+              <option value="dowa_account">{t("payments.dowaAccount")}</option>
+              <option value="owner_home">{t("payments.ownerHome")}</option>
+            </select>
+          </Field>
+        )}
+      </div>
+    </>
+  );
 
   return (
     <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-4 sm:p-6">
@@ -410,7 +618,83 @@ export default function CorrectTransactionModal({
             </>
           )}
 
-          {(kind === "payment" || kind === "companyPayment") && (
+          {kind === "payment" && isUnifiedSaleSourced && (
+            <>
+              {/* Two independent actions — each with its own reason/save/
+                  error — rather than one combined submit, so fixing just
+                  the amount, just the routing, or both (one after the
+                  other) never risks a partial-failure state. */}
+              <div className="p-3.5 rounded-lg border border-hairline space-y-3">
+                <div>
+                  <div className="font-display font-bold text-[13px] text-ink">{t("modals.correctAmountSectionTitle")}</div>
+                  <div className="font-body text-[11px] text-steel mt-0.5">{t("modals.correctAmountSectionCaption")}</div>
+                </div>
+                <Field label={t("modals.amountField")}>
+                  <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} className={inputClass} />
+                </Field>
+                <Field label={t("modals.reasonForCorrection")}>
+                  <textarea
+                    value={amountCorrectionReason}
+                    onChange={(e) => setAmountCorrectionReason(e.target.value)}
+                    rows={2}
+                    className={inputClass}
+                    placeholder={t("modals.reasonPlaceholder")}
+                  />
+                </Field>
+                {amountError && <div className="font-body text-xs text-brand-red">{amountError}</div>}
+                <Button variant="primary" onClick={handleSaveAmountCorrection} disabled={!amountCorrectionValid || amountSaving}>
+                  <Check size={14} /> {amountSaving ? t("unifiedSale.saving") : t("modals.saveAmountCorrection")}
+                </Button>
+              </div>
+
+              <div className="p-3.5 rounded-lg border border-hairline space-y-3">
+                <div>
+                  <div className="font-display font-bold text-[13px] text-ink">{t("modals.correctRoutingSectionTitle")}</div>
+                  <div className="font-body text-[11px] text-steel mt-0.5">{t("modals.correctRoutingSectionCaption")}</div>
+                </div>
+                {routingFields}
+                <Field label={t("modals.referenceNumberOptional")}>
+                  <input value={referenceNo} onChange={(e) => setReferenceNo(e.target.value)} className={inputClass} />
+                </Field>
+                <Field label={t("modals.reasonForCorrection")}>
+                  <textarea
+                    value={routingReason}
+                    onChange={(e) => setRoutingReason(e.target.value)}
+                    rows={2}
+                    className={inputClass}
+                    placeholder={t("modals.reasonPlaceholder")}
+                  />
+                </Field>
+                {routingError && <div className="font-body text-xs text-brand-red">{routingError}</div>}
+                <Button variant="primary" onClick={handleSaveRoutingCorrection} disabled={!routingValid || !routingReason.trim() || routingSaving}>
+                  <Check size={14} /> {routingSaving ? t("unifiedSale.saving") : t("modals.saveRoutingCorrection")}
+                </Button>
+              </div>
+            </>
+          )}
+
+          {kind === "payment" && isReceiptSourced && (
+            <>
+              <Field label={t("modals.amountField")}>
+                <input type="number" autoFocus value={amount} onChange={(e) => setAmount(e.target.value)} className={inputClass} />
+              </Field>
+              <Field label={t("expenses.paymentMethod")}>
+                <select value={method} onChange={(e) => setMethod(e.target.value)} className={inputClass}>
+                  <option value="cash">{t("unifiedSale.methodCash")}</option>
+                  <option value="bank_transfer">{t("expenses.methodBankTransfer")}</option>
+                  <option value="cheque">{t("unifiedSale.methodCheque")}</option>
+                  <option value="online">{t("expenses.methodOnlinePayment")}</option>
+                  <option value="other">{t("expenses.methodOther")}</option>
+                </select>
+              </Field>
+              {routingFields}
+              <Field label={t("modals.referenceNumberOptional")}>
+                <input value={referenceNo} onChange={(e) => setReferenceNo(e.target.value)} className={inputClass} />
+              </Field>
+            </>
+          )}
+
+          {(kind === "payment" && !showRouting || kind === "companyPayment") && (
             <>
               <Field label={t("modals.amountField")}>
                 <input type="number" autoFocus value={amount} onChange={(e) => setAmount(e.target.value)} className={inputClass} />
@@ -452,29 +736,35 @@ export default function CorrectTransactionModal({
             </>
           )}
 
-          <Field label={t("modals.notesOptional")}>
-            <input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputClass} />
-          </Field>
+          {!isUnifiedSaleSourced && (
+            <Field label={t("modals.notesOptional")}>
+              <input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputClass} />
+            </Field>
+          )}
 
-          <Field label={t("modals.reasonForCorrection")}>
-            <textarea
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              rows={3}
-              className={inputClass}
-              placeholder={t("modals.reasonPlaceholder")}
-            />
-          </Field>
+          {!isUnifiedSaleSourced && (
+            <>
+              <Field label={t("modals.reasonForCorrection")}>
+                <textarea
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  rows={3}
+                  className={inputClass}
+                  placeholder={t("modals.reasonPlaceholder")}
+                />
+              </Field>
 
-          <div className="font-body text-[11px] text-steel">
-            {t("modals.staysInHistoryNote", { id: transaction.display_id })}
-          </div>
+              <div className="font-body text-[11px] text-steel">
+                {t("modals.staysInHistoryNote", { id: transaction.display_id })}
+              </div>
 
-          {error && <div className="font-body text-xs text-brand-red">{error}</div>}
+              {error && <div className="font-body text-xs text-brand-red">{error}</div>}
 
-          <Button variant="primary" onClick={handleSubmit} disabled={!canSubmit || saving}>
-            <Check size={14} /> {saving ? t("unifiedSale.saving") : t("modals.saveCorrection")}
-          </Button>
+              <Button variant="primary" onClick={handleSubmit} disabled={!canSubmit || saving}>
+                <Check size={14} /> {saving ? t("unifiedSale.saving") : t("modals.saveCorrection")}
+              </Button>
+            </>
+          )}
         </div>
       </div>
     </div>

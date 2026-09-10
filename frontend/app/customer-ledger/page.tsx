@@ -11,6 +11,7 @@ import ReceivePaymentModal from "@/components/ReceivePaymentModal";
 import CorrectTransactionModal, { CorrectableKind } from "@/components/CorrectTransactionModal";
 import ReturnCylinderModal from "@/components/ReturnCylinderModal";
 import AddEmptyCylinderModal from "@/components/AddEmptyCylinderModal";
+import EditOpeningBalanceModal from "@/components/EditOpeningBalanceModal";
 import type { Customer, CustomerLedgerSummary, CustomerFlag, LedgerRow, Sale, Payment } from "@/lib/types";
 
 // Derived from the Asia/Karachi-aware todayLocalInput() ("YYYY-MM-DD"), so
@@ -43,6 +44,7 @@ function CustomerLedgerBody() {
   const [correctTarget, setCorrectTarget] = useState<{ kind: CorrectableKind; transaction: Sale | Payment } | null>(null);
   const [correctLoading, setCorrectLoading] = useState<string | null>(null);
   const [showCorrections, setShowCorrections] = useState(false);
+  const [showEditOpening, setShowEditOpening] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [shareStatus, setShareStatus] = useState<{ type: "info" | "error"; msg: string } | null>(null);
 
@@ -338,7 +340,16 @@ function CustomerLedgerBody() {
                   {/* Financial Stats */}
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
                     <Panel>
-                      <Eyebrow>{t("customerLedger.openingBalance")}</Eyebrow>
+                      <div className="flex items-center justify-between">
+                        <Eyebrow>{t("customerLedger.openingBalance")}</Eyebrow>
+                        <button
+                          onClick={() => setShowEditOpening(true)}
+                          className="print:hidden bg-transparent border-none cursor-pointer text-steel hover:text-ink"
+                          aria-label={t("modals.editOpeningBalanceTitle", { id: summary.customer.display_id })}
+                        >
+                          <Pencil size={12} />
+                        </button>
+                      </div>
                       <div className="font-display font-bold text-lg text-ink">{pkr(summary.opening_balance)}</div>
                     </Panel>
                     <Panel>
@@ -570,6 +581,19 @@ function CustomerLedgerBody() {
           onClose={() => setCorrectTarget(null)}
           onSaved={() => {
             setCorrectTarget(null);
+            loadLedger();
+          }}
+        />
+      )}
+
+      {showEditOpening && summary && (
+        <EditOpeningBalanceModal
+          title={t("modals.editOpeningBalanceTitle", { id: summary.customer.display_id })}
+          currentValue={parseFloat(summary.opening_balance)}
+          onClose={() => setShowEditOpening(false)}
+          onSave={async (newValue, reason) => {
+            await api.customers.correctOpeningBalance(customerId, { new_value: newValue, reason });
+            setShowEditOpening(false);
             loadLedger();
           }}
         />

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { PlusCircle, Search, Truck, Wallet, Pencil, Printer } from "lucide-react";
+import { PlusCircle, Search, Truck, Wallet, Pencil, Printer, Share2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Th, Td, inputClass, BalanceTag, Button } from "@/components/ui";
@@ -8,7 +8,7 @@ import NewPlantModal from "@/components/NewPlantModal";
 import AddPurchaseModal from "@/components/AddPurchaseModal";
 import RecordPlantPaymentModal from "@/components/RecordPlantPaymentModal";
 import CorrectTransactionModal, { CorrectableKind } from "@/components/CorrectTransactionModal";
-import PrintButton from "@/components/PrintButton";
+import EditOpeningBalanceModal from "@/components/EditOpeningBalanceModal";
 import { api } from "@/lib/api";
 import { pkr, fmtTime, fmtClock, todayLocalInput, fmtNumber } from "@/lib/format";
 import type { PlantLedgerSummaryRow, CompanyLedgerSummary, CompanyLedgerRow, Purchase, CompanyPayment } from "@/lib/types";
@@ -35,6 +35,9 @@ function PurchasesBody() {
   const [correctTarget, setCorrectTarget] = useState<{ kind: CorrectableKind; transaction: Purchase | CompanyPayment } | null>(null);
   const [correctLoading, setCorrectLoading] = useState<string | null>(null);
   const [showCorrections, setShowCorrections] = useState(false);
+  const [showEditOpening, setShowEditOpening] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [shareStatus, setShareStatus] = useState<{ type: "info" | "error"; msg: string } | null>(null);
 
   // Ledger Correction — the ledger row only carries a summary shape; fetch
   // the full Purchase/CompanyPayment record (scoped to this plant) so the
@@ -82,6 +85,71 @@ function PurchasesBody() {
   const MONTH_KEYS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
   const monthNames = MONTH_KEYS.map((k) => t(`monthsFull.${k}`));
   const yearOptions = [2025, 2026, 2027];
+
+  // Send via WhatsApp — same client-side-only pattern as Customer Ledger's
+  // own shareStatement (app/customer-ledger/page.tsx), just pointed at the
+  // Plant Statement PDF instead (app.routers.ledger's
+  // /company/{id}/statement, the same backend-rendered PDF the "Download
+  // Statement" link opens). navigator.share needs an actual File/Blob, not
+  // a URL, hence fetching it here rather than just linking to it.
+  const shareStatement = async () => {
+    if (!selectedCompanyId || !detail) return;
+    setShareStatus(null);
+    setSharing(true);
+    try {
+      const res = await fetch(api.ledger.companyStatementUrl(selectedCompanyId, month), { credentials: "include" });
+      if (!res.ok) throw new Error(t("customerLedger.shareWhatsappError"));
+      const blob = await res.blob();
+      const filename = `Statement-${detail.company.name}-${month}.pdf`;
+      const file = new File([blob], filename, { type: "application/pdf" });
+      const shareText = t("purchases.shareWhatsappPlantText", { name: detail.company.name, mo, year });
+
+      // Same capability check as Customer Ledger — canShare({ files }) is
+      // the real signal (Android/iOS Chrome & Safari support it; desktop
+      // Chrome/Edge/Firefox currently do not), wrapped in try/catch since
+      // some older implementations throw on an unrecognized shape.
+      let canShareFile = false;
+      try {
+        canShareFile =
+          typeof navigator.canShare === "function" &&
+          typeof navigator.share === "function" &&
+          navigator.canShare({ files: [file] });
+      } catch {
+        canShareFile = false;
+      }
+
+      if (canShareFile) {
+        try {
+          await navigator.share({ files: [file], title: filename, text: shareText });
+        } catch (err) {
+          // AbortError = user closed the native share sheet without
+          // picking anything — not a failure, say nothing.
+          if (err instanceof Error && err.name !== "AbortError") throw err;
+        }
+        return;
+      }
+
+      // Desktop fallback: navigator.share with files isn't supported, and
+      // WhatsApp's wa.me click-to-chat links have no way to pre-attach a
+      // file, so we download the PDF (for staff to attach by hand) and
+      // open a WhatsApp chat draft in parallel.
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(blobUrl);
+
+      window.open(`https://wa.me/?text=${encodeURIComponent(shareText)}`, "_blank", "noopener,noreferrer");
+      setShareStatus({ type: "info", msg: t("customerLedger.shareWhatsappFallbackInstruction") });
+    } catch (err) {
+      setShareStatus({ type: "error", msg: err instanceof Error ? err.message : t("customerLedger.shareWhatsappError") });
+    } finally {
+      setSharing(false);
+    }
+  };
 
   const totals = summaryRows.reduce(
     (acc, r) => {
@@ -228,13 +296,48 @@ function PurchasesBody() {
                   <div className="hidden print:block font-mono text-xs text-steel mt-1">{t("customerLedger.periodLabel", { mo, year })}</div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="print:hidden"><PrintButton label={t("purchases.printPlantLedger")} /></span>
+                  <a
+                    href={api.ledger.companyStatementUrl(selectedCompanyId, month)}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={t("purchases.downloadPlantStatementTitle")}
+                    className="print:hidden inline-flex items-center gap-2 font-body text-[13px] font-medium px-4 py-2.5 rounded-md bg-transparent text-ink border border-hairline cursor-pointer"
+                  >
+                    <Printer size={14} /> {t("purchases.downloadPlantStatement")}
+                  </a>
+                  <Button variant="outline" onClick={shareStatement} disabled={sharing}>
+                    <Share2 size={14} /> {sharing ? t("customerLedger.sharingWhatsapp") : t("customerLedger.shareWhatsapp")}
+                  </Button>
                   <BalanceTag amount={detail.closing_balance} />
                 </div>
               </div>
 
+              {shareStatus && (
+                <div
+                  className={`print:hidden mt-1 mb-3 font-body text-[12.5px] px-3 py-2 rounded-md border ${
+                    shareStatus.type === "info"
+                      ? "bg-[#EAF6F6] text-tealdeep border-[#BFE3E3]"
+                      : "bg-red-50 text-red-600 border-red-200"
+                  }`}
+                >
+                  {shareStatus.msg}
+                </div>
+              )}
+
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-                <Panel><Eyebrow>{t("purchases.panelOpening")}</Eyebrow><div className="font-display font-bold text-base text-ink">{pkr(detail.opening_balance)}</div></Panel>
+                <Panel>
+                  <div className="flex items-center justify-between">
+                    <Eyebrow>{t("purchases.panelOpening")}</Eyebrow>
+                    <button
+                      onClick={() => setShowEditOpening(true)}
+                      className="print:hidden bg-transparent border-none cursor-pointer text-steel hover:text-ink"
+                      aria-label={t("modals.editOpeningBalanceTitle", { id: detail.company.name })}
+                    >
+                      <Pencil size={12} />
+                    </button>
+                  </div>
+                  <div className="font-display font-bold text-base text-ink">{pkr(detail.opening_balance)}</div>
+                </Panel>
                 <Panel><Eyebrow>{t("purchases.panelPurchases")}</Eyebrow><div className="font-display font-bold text-base text-ink">{pkr(detail.total_purchases)}</div></Panel>
                 <Panel><Eyebrow>{t("purchases.panelPaid")}</Eyebrow><div className="font-display font-bold text-base text-brand-green">{pkr(detail.total_payments)}</div></Panel>
                 <Panel><Eyebrow>{t("purchases.panelClosing")}</Eyebrow><div className="font-display font-bold text-base text-ink">{pkr(detail.closing_balance)}</div></Panel>
@@ -331,34 +434,36 @@ function PurchasesBody() {
                   >
                     <Eyebrow>{t("customerLedger.correctionHistory", { count: detail.corrections.length })}</Eyebrow>
                   </button>
-                  <table className={`w-full border-collapse mt-2 ${showCorrections ? "" : "hidden print:table"}`}>
-                    <thead>
-                      <tr>
-                        <Th>{t("customerLedger.colDate")}</Th>
-                        <Th>{t("customerLedger.colOriginalId")}</Th>
-                        <Th>{t("customerLedger.colDescription")}</Th>
-                        <Th right>{t("customerLedger.colOriginalAmount")}</Th>
-                        <Th>{t("customerLedger.colReason")}</Th>
-                        <Th>{t("customerLedger.colCorrectedBy")}</Th>
-                        <Th>{t("customerLedger.colCorrectedAt")}</Th>
-                        <Th>{t("customerLedger.colReplacedBy")}</Th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {detail.corrections.map((c) => (
-                        <tr key={c.ref_id}>
-                          <Td mono>{fmtTime(c.date)}</Td>
-                          <Td mono color="#9B4A4A">{c.display_id}</Td>
-                          <Td>{c.description}</Td>
-                          <Td right mono>{pkr(c.original_amount)}</Td>
-                          <Td>{c.correction_reason}</Td>
-                          <Td mono>{c.corrected_by}</Td>
-                          <Td mono>{fmtTime(c.corrected_at)}</Td>
-                          <Td mono>{c.corrected_display_id ?? "—"}</Td>
+                  <div className={`overflow-x-auto w-full ${showCorrections ? "" : "hidden print:block"}`}>
+                    <table className="w-full min-w-full border-collapse mt-2">
+                      <thead>
+                        <tr>
+                          <Th>{t("customerLedger.colDate")}</Th>
+                          <Th>{t("customerLedger.colOriginalId")}</Th>
+                          <Th>{t("customerLedger.colDescription")}</Th>
+                          <Th right>{t("customerLedger.colOriginalAmount")}</Th>
+                          <Th>{t("customerLedger.colReason")}</Th>
+                          <Th>{t("customerLedger.colCorrectedBy")}</Th>
+                          <Th>{t("customerLedger.colCorrectedAt")}</Th>
+                          <Th>{t("customerLedger.colReplacedBy")}</Th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {detail.corrections.map((c) => (
+                          <tr key={c.ref_id}>
+                            <Td mono>{fmtTime(c.date)}</Td>
+                            <Td mono color="#9B4A4A">{c.display_id}</Td>
+                            <Td className="max-w-[200px] truncate" title={c.description}>{c.description}</Td>
+                            <Td right mono>{pkr(c.original_amount)}</Td>
+                            <Td className="max-w-[200px] truncate" title={c.correction_reason}>{c.correction_reason}</Td>
+                            <Td mono>{c.corrected_by}</Td>
+                            <Td mono>{fmtTime(c.corrected_at)}</Td>
+                            <Td mono>{c.corrected_display_id ?? "—"}</Td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </>
@@ -390,6 +495,19 @@ function PurchasesBody() {
           onClose={() => setCorrectTarget(null)}
           onSaved={() => {
             setCorrectTarget(null);
+            refreshAfterAction();
+          }}
+        />
+      )}
+
+      {showEditOpening && detail && (
+        <EditOpeningBalanceModal
+          title={t("modals.editOpeningBalanceTitle", { id: detail.company.name })}
+          currentValue={parseFloat(detail.opening_balance)}
+          onClose={() => setShowEditOpening(false)}
+          onSave={async (newValue, reason) => {
+            await api.companies.correctOpeningBalance(detail.company.id, { new_value: newValue, reason });
+            setShowEditOpening(false);
             refreshAfterAction();
           }}
         />

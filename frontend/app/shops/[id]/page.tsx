@@ -23,6 +23,7 @@ import {
   AlertCircle,
   Zap,
   Printer,
+  PackagePlus,
 } from "lucide-react";
 
 import AuthGate from "@/components/AuthGate";
@@ -43,6 +44,8 @@ import RecordSupplyCustomerPaymentModal from "@/components/RecordSupplyCustomerP
 import SupplyCustomerLedgerModal from "@/components/SupplyCustomerLedgerModal";
 import RecordShopExpenseModal from "@/components/RecordShopExpenseModal";
 import EmergencyTransferModal from "@/components/EmergencyTransferModal";
+import AddFilledCylinderStockModal from "@/components/AddFilledCylinderStockModal";
+import EditOpeningBalanceModal from "@/components/EditOpeningBalanceModal";
 import CorrectTransactionModal, {
   CorrectableKind,
 } from "@/components/CorrectTransactionModal";
@@ -464,6 +467,7 @@ function ShopDetailBody() {
 
   const [showPay, setShowPay] = useState(false);
   const [showSale, setShowSale] = useState(false);
+  const [showAddStock, setShowAddStock] = useState(false);
   const [showCorrections, setShowCorrections] = useState(false);
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [showEmergencyTransfer, setShowEmergencyTransfer] = useState(false);
@@ -496,6 +500,8 @@ function ShopDetailBody() {
   const [correctLoading, setCorrectLoading] = useState<string | null>(
     null
   );
+
+  const [showEditOpening, setShowEditOpening] = useState(false);
 
   // Stock Batches (FIFO Breakdown) — `batches` is always the LIVE/
   // unfiltered queue (the Inventory Flow Summary Bar's "carrying
@@ -651,6 +657,14 @@ function ShopDetailBody() {
               >
                 <ShoppingCart size={14} />
                 {t("shopDetail.recordShopSale")}
+              </Button>
+
+              <Button
+                variant="outline"
+                onClick={() => setShowAddStock(true)}
+              >
+                <PackagePlus size={14} />
+                {t("shopDetail.addFilledStock")}
               </Button>
 
               <Button
@@ -922,9 +936,18 @@ function ShopDetailBody() {
             <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
 
               <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
-                <span className="block text-xs font-medium text-slate-500">
-                  {t("shopDetail.openingCash")}
-                </span>
+                <div className="flex items-center justify-between">
+                  <span className="block text-xs font-medium text-slate-500">
+                    {t("shopDetail.openingCash")}
+                  </span>
+                  <button
+                    onClick={() => setShowEditOpening(true)}
+                    className="print:hidden bg-transparent border-none cursor-pointer text-slate-400 hover:text-slate-700"
+                    aria-label={t("modals.editOpeningBalanceTitle", { id: detail.customer.display_id })}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                </div>
 
                 <span className="mt-1 block font-mono text-sm font-semibold text-slate-800">
                   {pkr(detail.cash.opening_cash)}
@@ -1760,6 +1783,13 @@ function ShopDetailBody() {
       )}
 
 
+      <AddFilledCylinderStockModal
+        isOpen={showAddStock}
+        shopId={shopId}
+        onClose={() => setShowAddStock(false)}
+        onSuccess={load}
+      />
+
       {showExpense && (
         <RecordShopExpenseModal
           shopId={shopId}
@@ -1829,6 +1859,19 @@ function ShopDetailBody() {
           onClose={() => setCorrectTarget(null)}
           onSaved={() => {
             setCorrectTarget(null);
+            load();
+          }}
+        />
+      )}
+
+      {showEditOpening && detail && (
+        <EditOpeningBalanceModal
+          title={t("modals.editOpeningBalanceTitle", { id: detail.customer.display_id })}
+          currentValue={parseFloat(detail.cash.opening_cash)}
+          onClose={() => setShowEditOpening(false)}
+          onSave={async (newValue, reason) => {
+            await api.shops.correctOpeningCash(shopId, { new_value: newValue, reason });
+            setShowEditOpening(false);
             load();
           }}
         />

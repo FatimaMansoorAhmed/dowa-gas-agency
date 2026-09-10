@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app import models, schemas
 from app.deps import require_active_user, require_csrf
-from app.reporting.invoice_pdf import render_customer_statement_pdf
+from app.reporting.invoice_pdf import render_customer_statement_pdf, render_company_statement_pdf
 from app.timezone import KARACHI_TZ
 
 router = APIRouter(prefix="/ledger", tags=["ledger"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
@@ -38,6 +38,40 @@ def _batch_cylinder_totals(db: Session, model, batch_id, products: dict) -> tupl
         elif 44.0 <= w <= 47.0:
             q454 += it.quantity
     return q118, q454, kg
+
+
+def _opening_balance_corrections(
+    db: Session, entity_type: str, entity_id, kind: str, display_label: str,
+    month_start: datetime, next_month: datetime,
+) -> list[schemas.CorrectionHistoryRow]:
+    """Opening Balance corrections (§ Opening Balance) — read straight from
+    the generic AuditLog table rather than a dedicated correction column
+    like Sale/Payment/Purchase/CompanyPayment use: there's no reversed-and-
+    reposted pair of rows here, just a direct in-place edit of the one
+    anchor value, so old -> new is folded into `description` instead of a
+    separate field, and corrected_display_id is always None."""
+    rows = (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.entity_type == entity_type,
+            models.AuditLog.entity_id == entity_id,
+            models.AuditLog.field == "opening_balance",
+            models.AuditLog.timestamp >= month_start,
+            models.AuditLog.timestamp < next_month,
+        )
+        .all()
+    )
+    out: list[schemas.CorrectionHistoryRow] = []
+    for r in rows:
+        out.append(schemas.CorrectionHistoryRow(
+            kind=kind, date=r.timestamp, ref_id=r.id, display_id=display_label,
+            description=f"Opening Balance: {r.old_value} → {r.new_value}",
+            original_amount=Decimal(r.old_value or "0"),
+            correction_reason=r.reason or "", corrected_by=r.performed_by,
+            corrected_at=r.timestamp,
+        ))
+    out.sort(key=lambda r: r.corrected_at, reverse=True)
+    return out
 
 
 def _customer_corrections(db: Session, customer_id, month_start: datetime, next_month: datetime) -> list[schemas.CorrectionHistoryRow]:
@@ -74,6 +108,10 @@ def _customer_corrections(db: Session, customer_id, month_start: datetime, next_
             correction_reason=p.correction_reason or "", corrected_by=p.corrected_by or "",
             corrected_at=p.corrected_at, corrected_display_id=replacement.display_id if replacement else None,
         ))
+    customer_display_id = db.query(models.Customer.display_id).filter(models.Customer.id == customer_id).scalar()
+    out.extend(_opening_balance_corrections(
+        db, "customer", customer_id, "customer_opening_balance", customer_display_id or "", month_start, next_month,
+    ))
     out.sort(key=lambda r: r.corrected_at, reverse=True)
     return out
 
@@ -109,6 +147,10 @@ def _company_corrections(db: Session, company_id, month_start: datetime, next_mo
             correction_reason=p.correction_reason or "", corrected_by=p.corrected_by or "",
             corrected_at=p.corrected_at, corrected_display_id=replacement.display_id if replacement else None,
         ))
+    company_name = db.query(models.Company.name).filter(models.Company.id == company_id).scalar()
+    out.extend(_opening_balance_corrections(
+        db, "company", company_id, "company_opening_balance", company_name or "", month_start, next_month,
+    ))
     out.sort(key=lambda r: r.corrected_at, reverse=True)
     return out
 
@@ -312,12 +354,25 @@ def customer_monthly_ledger(
             p: models.Payment = e["obj"]
             running -= p.amount
             total_payments += p.amount
+            # Payment Receipt rows (destination_type set — created via
+            # POST /payment-receipts, e.g. the Unified Sale form's Payment
+            # Only mode) are NOT correctable through this generic pencil:
+            # PATCH /payments/{id}/correct's _apply_payment/_reverse_payment
+            # only know how to reverse a plain Payment's own account_id
+            # balance effect — they have no idea about the Expense/
+            # OwnerDrawings/CompanyPayment settlement children
+            # apply_settlement_routing created alongside it, and outright
+            # 404 on a plant-routed receipt (account_id is legitimately
+            # None there). Void + re-enter via /payment-receipts/{id}/cancel
+            # (which does know how to reverse those) is the only safe path
+            # until a dedicated correct endpoint exists for receipts.
+            is_payment_receipt = p.destination_type is not None
             rows.append(schemas.LedgerRow(
                 date=p.date, kind="payment", ref_id=p.id, display_id=p.display_id,
-                description=f"Payment · {p.method}",
+                description=f"Payment Receipt · {p.method}" if is_payment_receipt else f"Payment · {p.method}",
                 sale_amount=0, payment_amount=p.amount, running_balance=running,
                 qty_118=Decimal("0"), qty_454=Decimal("0"),
-                entered_by=p.entered_by, correctable=True,
+                entered_by=p.entered_by, correctable=not is_payment_receipt,
             ))
         elif e["kind"] == "unified_sale":
             # One row for the whole Unified Sale batch — never split by line item.
@@ -444,6 +499,28 @@ def customer_statement_pdf(
     return Response(
         content=pdf_bytes, media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="Statement-{summary.customer.display_id}-{month}.pdf"'},
+    )
+
+
+@router.get("/company/{company_id}/statement")
+def company_statement_pdf(
+    company_id: UUID,
+    month: str = Query(..., description="YYYY-MM, e.g. 2026-08"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
+    """Read-only, on-demand PDF of the same statement the Plant Ledger
+    screen shows — mirrors customer_statement_pdf above exactly, on the
+    payable side. Calls company_monthly_ledger directly (a plain function
+    call — the @router.get decorator above returns it unchanged) rather
+    than re-deriving the ledger math a second time, so the PDF is built
+    from the exact same CompanyLedgerSummary the screen renders."""
+    summary = company_monthly_ledger(company_id, month, db)
+    generated_at = datetime.now(KARACHI_TZ).strftime("%Y-%m-%d %H:%M")
+    pdf_bytes = render_company_statement_pdf(summary, current_user.name, generated_at)
+    return Response(
+        content=pdf_bytes, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="Statement-{summary.company.name}-{month}.pdf"'},
     )
 
 

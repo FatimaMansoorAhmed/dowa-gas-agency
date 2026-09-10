@@ -103,6 +103,16 @@ def _fmt_amount(value) -> str:
     return f"{Decimal(value):,.2f}"
 
 
+def _fmt_qty(value, decimals: int = 0) -> str:
+    """Plain thousands-separated number, no forced 2-decimal money padding
+    — mirrors frontend/lib/format.ts's fmtNumber() for quantities/KG/ton on
+    the Customer Ledger summary cards (as opposed to _fmt_amount above,
+    which is for cash amounts)."""
+    if value is None:
+        value = 0
+    return f"{Decimal(value):,.{decimals}f}"
+
+
 # ---------------------------------------------------------------------------
 # Amount-in-words — no existing helper/library for this in the codebase
 # (checked: not in requirements.txt, no num2words, no in-repo utility), so a
@@ -581,8 +591,59 @@ def _statement_gst_cell(r: "schemas.LedgerRow") -> str:
     return "-"
 
 
+def _statement_qty_cell(value) -> str:
+    """Mirrors the Customer Ledger screen's own 11.8kg/45.4kg columns
+    (frontend/app/customer-ledger/page.tsx: `parseFloat(r.qty_118) ?
+    r.qty_118 : "—"`) — a dash (this PDF's own empty-cell convention,
+    see _statement_rate_cell/_statement_gst_cell above) when this row
+    sold none of this specific size, the plain quantity otherwise."""
+    if not value or Decimal(value) == 0:
+        return "-"
+    return _fmt_qty(value)
+
+
+def _summary_metrics_row(s, metrics: list[tuple[str, str, str]]) -> Table:
+    """One row of bordered 'summary card' cells — label on top (small,
+    uppercase, gray), value below (bold, optionally colored) — the PDF
+    equivalent of the Panel/Eyebrow summary cards on the Customer Ledger
+    screen (frontend/app/customer-ledger/page.tsx's "Financial Stats" /
+    "Cylinder Inventory Stats" grids). `metrics` is (label, value,
+    hex_color_for_value); every value here is read straight off the same
+    CustomerLedgerSummary the screen renders — see render_customer_statement_pdf
+    below — never recomputed."""
+    label_style = ParagraphStyle("CardLabel", parent=s["label_cell"], fontSize=7, textColor=colors.HexColor("#64748B"))
+    value_style = ParagraphStyle("CardValue", parent=s["value_cell"], fontSize=11, fontName="Helvetica-Bold")
+
+    n = len(metrics)
+    col_width = PAGE_WIDTH / n
+    cells = [
+        [Paragraph(label.upper(), label_style), Paragraph(f'<font color="{color}">{value}</font>', value_style)]
+        for label, value, color in metrics
+    ]
+    t = Table([cells], colWidths=[col_width] * n)
+    t.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#C5C1B4")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.75, colors.HexColor("#C5C1B4")),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FAFAF8")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return t
+
+
 def _statement_table(s, summary: "schemas.CustomerLedgerSummary"):
-    headers = ["Date", "ID", "Description", "Rate", "GST", "Sale", "Payment", "Balance"]
+    # Column order mirrors the Customer Ledger screen's own table exactly
+    # (frontend/app/customer-ledger/page.tsx: Date, ID, Description, Rate,
+    # 11.8 KG, 45.4 KG, GST, Sale, Payment, Balance) — the PDF is a printable
+    # copy of what's on screen, not a separate layout. Sale/Payment/Balance
+    # (the financial columns) keep their original widths unchanged; the
+    # 28mm the two new quantity columns need is taken from Date/ID/
+    # Description/Rate/GST instead — Description wraps (via Paragraph)
+    # rather than clipping, so it's the most compressible.
+    headers = ["Date", "ID", "Description", "Rate", "11.8 KG", "45.4 KG", "GST", "Sale", "Payment", "Balance"]
     header_row = [Paragraph(f"<b>{h}</b>", s["value_cell"]) for h in headers]
     data = [header_row]
 
@@ -590,7 +651,8 @@ def _statement_table(s, summary: "schemas.CustomerLedgerSummary"):
     data.append([
         Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
         Paragraph("Opening Balance", opening_row_style),
-        Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
+        Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
+        Paragraph("-", s["value_cell"]),
         Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
         Paragraph(_fmt_amount(summary.opening_balance), opening_row_style),
     ])
@@ -604,13 +666,23 @@ def _statement_table(s, summary: "schemas.CustomerLedgerSummary"):
             Paragraph(r.display_id, s["value_cell"]),
             Paragraph(r.description, s["value_cell"]),
             Paragraph(_statement_rate_cell(r), s["value_cell"]),
+            Paragraph(_statement_qty_cell(r.qty_118), s["value_cell"]),
+            Paragraph(_statement_qty_cell(r.qty_454), s["value_cell"]),
             Paragraph(_statement_gst_cell(r), s["value_cell"]),
             Paragraph(_fmt_amount(r.sale_amount) if r.sale_amount else "-", s["value_cell"]),
             Paragraph(_fmt_amount(r.payment_amount) if r.payment_amount else "-", s["value_cell"]),
             Paragraph(_fmt_amount(r.running_balance), ParagraphStyle("BalCell", parent=s["value_cell"], fontName="Helvetica-Bold")),
         ])
 
-    t = Table(data, colWidths=[20 * mm, 22 * mm, 38 * mm, 18 * mm, 18 * mm, 20 * mm, 20 * mm, 26 * mm], repeatRows=1)
+    # Sums to 182mm — the exact usable width on A4 (210mm - 14mm left/right
+    # margins, see render_customer_statement_pdf's SimpleDocTemplate), same
+    # as before this change; Sale/Payment/Balance keep their original
+    # 20/20/26mm untouched.
+    t = Table(
+        data,
+        colWidths=[18 * mm, 20 * mm, 22 * mm, 16 * mm, 14 * mm, 14 * mm, 12 * mm, 20 * mm, 20 * mm, 26 * mm],
+        repeatRows=1,
+    )
     t.setStyle(TableStyle([
         ("FONTSIZE", (0, 0), (-1, -1), 8.5),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
@@ -651,17 +723,170 @@ def render_customer_statement_pdf(summary: "schemas.CustomerLedgerSummary", gene
     if addr_bits:
         party_lines.append(", ".join(addr_bits))
 
+    # Opening/Total Sales/Total Payments/Closing Balance move to the Summary
+    # Cards section below instead of duplicating them here.
     details_rows = [
         ("Statement Period", _statement_period_label(summary.month)),
         ("Customer ID", customer.display_id),
-        ("Opening Balance", _fmt_amount(summary.opening_balance)),
-        ("Total Sales", _fmt_amount(summary.total_sales)),
-        ("Total Payments", _fmt_amount(summary.total_payments)),
     ]
     story.append(_party_and_details(s, "Statement For", [customer.name] + party_lines, details_rows))
     story.append(Spacer(1, 5 * mm))
 
+    # Summary Cards — every value here comes straight off `summary` (the
+    # same CustomerLedgerSummary the Customer Ledger screen renders; see
+    # app.routers.ledger.customer_statement_pdf, which calls
+    # customer_monthly_ledger directly rather than re-querying), scoped to
+    # this one customer/month exactly like the screen's own summary cards
+    # (frontend/app/customer-ledger/page.tsx). No recalculation happens here.
+    story.append(Paragraph("Summary", s["section"]))
+    story.append(_summary_metrics_row(s, [
+        ("Opening Balance", _fmt_amount(summary.opening_balance), "#0B2138"),
+        ("Total Sales", _fmt_amount(summary.total_sales), "#0B2138"),
+        ("Total Payments", _fmt_amount(summary.total_payments), "#1E8A5F"),
+        ("Closing Cash Balance", _fmt_amount(summary.closing_balance), "#0B2138"),
+    ]))
+    story.append(Spacer(1, 2 * mm))
+    story.append(_summary_metrics_row(s, [
+        ("11.8 KG Sold", _fmt_qty(summary.total_118), "#D98E04"),
+        ("45.4 KG Sold", _fmt_qty(summary.total_454), "#9333EA"),
+        ("Total KG Sold", _fmt_qty(summary.total_kg), "#0B2138"),
+        ("Total Ton", _fmt_qty(summary.total_ton, decimals=2), "#0B2138"),
+        ("Empty Cyl. (11.8k / 45.4k)", f"{_fmt_qty(customer.empty_cylinders_118)} / {_fmt_qty(customer.empty_cylinders_454)}", "#0B2138"),
+    ]))
+    story.append(Spacer(1, 5 * mm))
+
     story.append(_statement_table(s, summary))
+    story.append(Spacer(1, 4 * mm))
+    story.append(_totals_block(s, [("Closing Balance", summary.closing_balance)]))
+
+    story.append(Spacer(1, 6 * mm))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#CBD5E1")))
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph(f"System-generated document — printed by {generated_by} on {generated_at}.", s["footer"]))
+    doc.build(story)
+    return buf.getvalue()
+
+
+def _company_statement_qty_cell(value) -> str:
+    """Same convention as _statement_qty_cell above, for a
+    CompanyLedgerRow's qty_118/qty_454 instead of a customer LedgerRow's."""
+    if not value or Decimal(value) == 0:
+        return "-"
+    return _fmt_qty(value)
+
+
+def _company_statement_table(s, summary: "schemas.CompanyLedgerSummary"):
+    # Column order mirrors the Plant Ledger screen's own table exactly
+    # (frontend/app/purchases/page.tsx: Date, Time, ID, Description,
+    # Vehicle, 11.8 KG, 45.4 KG, Purchase, Payment, Balance) — same
+    # "PDF is a printable copy of what's on screen" convention as
+    # _statement_table (Customer Statement) above. Description/Vehicle use
+    # Paragraph cells, same as every other column here, so long text wraps
+    # within the cell instead of clipping or widening the table.
+    headers = ["Date", "Time", "ID", "Description", "Vehicle", "11.8 KG", "45.4 KG", "Purchase", "Payment", "Balance"]
+    header_row = [Paragraph(f"<b>{h}</b>", s["value_cell"]) for h in headers]
+    data = [header_row]
+
+    opening_row_style = ParagraphStyle("OpeningRow", parent=s["value_cell"], fontName="Helvetica-Bold")
+    data.append([
+        Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
+        Paragraph("Opening Balance", opening_row_style),
+        Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
+        Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
+        Paragraph(_fmt_amount(summary.opening_balance), opening_row_style),
+    ])
+
+    # summary.rows is latest-first for on-screen display (Global Sorting
+    # Standard); a running-balance statement reads top-to-bottom
+    # oldest-first, same reasoning as _statement_table above.
+    for r in reversed(summary.rows):
+        data.append([
+            Paragraph(r.date.strftime("%Y-%m-%d"), s["value_cell"]),
+            Paragraph(r.date.strftime("%H:%M"), s["value_cell"]),
+            Paragraph(r.display_id, s["value_cell"]),
+            Paragraph(r.description, s["value_cell"]),
+            Paragraph(r.vehicle_no or "-", s["value_cell"]),
+            Paragraph(_company_statement_qty_cell(r.qty_118), s["value_cell"]),
+            Paragraph(_company_statement_qty_cell(r.qty_454), s["value_cell"]),
+            Paragraph(_fmt_amount(r.purchase_amount) if r.purchase_amount else "-", s["value_cell"]),
+            Paragraph(_fmt_amount(r.payment_amount) if r.payment_amount else "-", s["value_cell"]),
+            Paragraph(_fmt_amount(r.running_balance), ParagraphStyle("BalCell", parent=s["value_cell"], fontName="Helvetica-Bold")),
+        ])
+
+    # Sums to 182mm, the usable width on A4 (210mm - 14mm left/right
+    # margins, see render_company_statement_pdf's SimpleDocTemplate) — same
+    # total _statement_table (Customer Statement) fits within, just split
+    # across this table's own 10 columns (Date/Time replace Rate/GST here).
+    t = Table(
+        data,
+        colWidths=[16 * mm, 13 * mm, 18 * mm, 26 * mm, 15 * mm, 12 * mm, 12 * mm, 20 * mm, 20 * mm, 30 * mm],
+        repeatRows=1,
+    )
+    t.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F8B8D")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#F8FAFC")),
+        ("ALIGN", (5, 0), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    return t
+
+
+def render_company_statement_pdf(summary: "schemas.CompanyLedgerSummary", generated_by: str, generated_at: str) -> bytes:
+    """Full-statement PDF for one plant/month — the Plant Ledger's
+    equivalent of render_customer_statement_pdf above, same "reuses the
+    exact summary the screen renders" guarantee (see
+    app.routers.ledger.company_monthly_ledger)."""
+    company = summary.company
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        topMargin=14 * mm, bottomMargin=14 * mm, leftMargin=14 * mm, rightMargin=14 * mm,
+    )
+    s = _styles()
+    story = []
+    story.extend(_header_block(s))
+    story.append(Paragraph("Plant Statement", s["doctype"]))
+
+    party_lines = []
+    if company.mobile:
+        party_lines.append(company.mobile)
+
+    details_rows = [
+        ("Statement Period", _statement_period_label(summary.month)),
+    ]
+    story.append(_party_and_details(s, "Statement For", [company.name] + party_lines, details_rows))
+    story.append(Spacer(1, 5 * mm))
+
+    # Summary Cards — same layout/convention as the Customer Statement's
+    # own two summary rows above; every value comes straight off `summary`
+    # (the same CompanyLedgerSummary the Plant Ledger screen renders — see
+    # app.routers.ledger.company_statement_pdf, which calls
+    # company_monthly_ledger directly rather than re-querying).
+    story.append(Paragraph("Summary", s["section"]))
+    story.append(_summary_metrics_row(s, [
+        ("Opening Balance", _fmt_amount(summary.opening_balance), "#0B2138"),
+        ("Total Purchases", _fmt_amount(summary.total_purchases), "#0B2138"),
+        ("Total Paid", _fmt_amount(summary.total_payments), "#1E8A5F"),
+        ("Closing Balance", _fmt_amount(summary.closing_balance), "#0B2138"),
+    ]))
+    story.append(Spacer(1, 2 * mm))
+    story.append(_summary_metrics_row(s, [
+        ("11.8 KG Purchased", _fmt_qty(summary.total_118), "#D98E04"),
+        ("45.4 KG Purchased", _fmt_qty(summary.total_454), "#9333EA"),
+        ("Total KG", _fmt_qty(summary.total_kg), "#0B2138"),
+        ("Total Ton", _fmt_qty(summary.total_ton, decimals=2), "#0B2138"),
+    ]))
+    story.append(Spacer(1, 5 * mm))
+
+    story.append(_company_statement_table(s, summary))
     story.append(Spacer(1, 4 * mm))
     story.append(_totals_block(s, [("Closing Balance", summary.closing_balance)]))
 

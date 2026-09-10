@@ -82,13 +82,36 @@ async function request<T>(path: string, options?: RequestInit, _retried = false)
   return res.json();
 }
 
+// Every throw above shares the "API {path} failed ({status}): {body}" shape,
+// where {body} is the raw response text — typically FastAPI's own JSON,
+// `{"detail": "..."}` for a plain HTTPException or `{"detail": [{"msg":
+// ...}, ...]}` for a 422 Pydantic validation error. Callers that catch an
+// API error and show it to the user should extract the real message through
+// this instead of a generic fallback string, which just hides whatever
+// actually went wrong (see CorrectTransactionModal.handleSubmit).
+export function apiErrorMessage(e: unknown, fallback: string): string {
+  if (!(e instanceof Error)) return fallback;
+  const match = e.message.match(/^API .+ failed \(\d+\): ([\s\S]*)$/);
+  const body = match ? match[1] : e.message;
+  try {
+    const detail = JSON.parse(body)?.detail;
+    if (typeof detail === "string" && detail.trim()) return detail;
+    if (Array.isArray(detail) && detail.length) {
+      return detail.map((d) => (d && typeof d === "object" ? d.msg || JSON.stringify(d) : String(d))).join("; ");
+    }
+  } catch {
+    // Not JSON (or no `detail`) — fall through to the raw body/message.
+  }
+  return body.trim() || fallback;
+}
+
 import type {
   Company, Party, RateEntry, Customer, Product, PaymentAccount, ExpenseCategory,
   Sale, Payment, Expense, CustomerLedgerSummary, CustomerFlag, Purchase, CompanyPayment,
   CompanyLedgerSummary, PlantLedgerSummaryRow, CylinderTransaction, CylinderBalance, OwnerDrawing, UnifiedSaleBatch, UnifiedSaleResult, DestinationType,
   AccountType, AccountTransferResult, CylinderTransactionCreate, CustomerCombinedLedger, CylinderReturn,
   OwnerCapital, OwnerCapitalDestination, DailyReportData, GeneratedReport, SendWhatsAppResult,
-  BoardRate, ShopListRow, ShopDetailOut, ShopSale, ShopStockBatch,
+  BoardRate, ShopListRow, ShopDetailOut, ShopSale, ShopStockBatch, ShopStockBatchCreate,
   ShopSupplyCustomer, ShopSupplyCustomerLedgerOut, ShopCustomerPayment, ShopExpenseTransaction, ShopBusinessLedgerOut,
   AccountTransferRecord, User, UserAccessAuditRow,
 } from "./types";
@@ -99,6 +122,8 @@ export const api = {
     get: (id: string) => request<Company>(`/companies/${id}`),
     create: (payload: { name: string; mobile?: string; opening_balance?: number; opening_balance_date?: string }) =>
       request<Company>("/companies", { method: "POST", body: JSON.stringify(payload) }),
+    correctOpeningBalance: (id: string, payload: { new_value: number; reason: string }) =>
+      request<Company>(`/companies/${id}/opening-balance`, { method: "PATCH", body: JSON.stringify(payload) }),
   },
   parties: {
     list: (companyId?: string) => request<Party[]>(`/parties${companyId ? `?company_id=${companyId}` : ""}`),
@@ -126,6 +151,8 @@ export const api = {
     }) => request<Customer>("/customers/", { method: "POST", body: JSON.stringify(payload) }),
     adjust: (id: string, kind: "payment" | "charge", amount: number) =>
       request<Customer>(`/customers/${id}/adjust`, { method: "PATCH", body: JSON.stringify({ kind, amount }) }),
+    correctOpeningBalance: (id: string, payload: { new_value: number; reason: string }) =>
+      request<Customer>(`/customers/${id}/opening-balance`, { method: "PATCH", body: JSON.stringify(payload) }),
     addCylinderTransaction: (customerId: string, payload: CylinderTransactionCreate) =>
       request<{ status: string; data: CylinderTransaction }>(`/customers/${customerId}/cylinders`, {
         method: "POST",
@@ -240,6 +267,27 @@ export const api = {
       entered_by: string;
     }) => request<Payment>("/payment-receipts", { method: "POST", body: JSON.stringify(payload) }),
     cancel: (id: string, by: string) => request<Payment>(`/payment-receipts/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
+    // § Bug Fix — Correction Modal Routing, Case 1. Same shape as create,
+    // plus the correction fields — reverses the original's routing and
+    // reposts with the corrected values (see routers/payment_receipts.py::
+    // correct_payment_receipt).
+    correct: (id: string, payload: {
+      date: string;
+      customer_id: string;
+      amount: number;
+      method: "cash" | "bank_transfer" | "cheque" | "online" | "other";
+      home_expense_amount?: number;
+      home_expense_category_id?: string;
+      owner_drawings_amount?: number;
+      destination_type: DestinationType;
+      target_plant_id?: string;
+      account_id?: string;
+      reference_no?: string;
+      notes?: string;
+      entered_by: string;
+      correction_reason: string;
+      corrected_by: string;
+    }) => request<Payment>(`/payment-receipts/${id}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
   },
 
   // Return Cylinder (Customer Ledger) / Add Empty Cylinder — one endpoint
@@ -292,6 +340,8 @@ export const api = {
       `${BASE}/ledger/customer/${customerId}/statement?month=${month}`,
     companyMonth: (companyId: string, month: string) =>
       request<CompanyLedgerSummary>(`/ledger/company/${companyId}?month=${month}`),
+    companyStatementUrl: (companyId: string, month: string) =>
+      `${BASE}/ledger/company/${companyId}/statement?month=${month}`,
     plantSummary: (month: string) =>
       request<PlantLedgerSummaryRow[]>(`/ledger/companies?month=${month}`),
     customerFlags: (month: string) =>
@@ -388,11 +438,14 @@ export const api = {
     get: (id: string) =>
       request<UnifiedSaleResult>(`/sales/unified/${id}`),
 
-    create: (payload: { 
-      date: string; 
-      customer_id: string; 
-      plant_id: string; 
-      items: { 
+    create: (payload: {
+      date: string;
+      customer_id: string;
+      // Absent for a Payment-Only batch (§ Payment-Only Pending Approval) —
+      // no purchase plant, items always []. Required whenever items is
+      // non-empty (enforced server-side).
+      plant_id?: string;
+      items: {
         product_id: string; 
         quantity: number; 
         purchase_rate: number;
@@ -489,6 +542,51 @@ export const api = {
       request<UnifiedSaleResult>(`/sales/unified/${id}/cancel${cancelled_by ? `?by=${encodeURIComponent(cancelled_by)}` : ""}`, {
         method: "POST",
       }),
+
+    // Payment-Only batches only (company_id null) — approves both sides
+    // atomically in one request, since there's no separate sale/load event
+    // for a human to approve. approveSale/approvePayment above are for a
+    // Full Sale's independent two-step approval.
+    approve: (id: string, approved_by?: string, reference?: string) => {
+      const params = new URLSearchParams();
+      if (approved_by) params.set("by", approved_by);
+      if (reference) params.set("reference", reference);
+      const q = params.toString();
+      return request<UnifiedSaleResult>(`/sales/unified/${id}/approve${q ? `?${q}` : ""}`, {
+        method: "POST",
+      });
+    },
+    // § Bug Fix — Correction Modal Routing, Case 2. Corrects WHERE an
+    // already-approved settlement's money went (and the home_expense/
+    // owner_drawings split) — never total_credit_received itself, which
+    // stays whatever the sale side already posted (see
+    // routers/unified_sale.py::correct_unified_sale_settlement).
+    correctSettlement: (id: string, payload: {
+      home_expense_amount?: number;
+      home_expense_category_id?: string;
+      owner_drawings_amount?: number;
+      destination_type: DestinationType;
+      target_plant_id?: string;
+      account_id?: string;
+      payment_reference?: string;
+      correction_reason: string;
+      corrected_by: string;
+    }) => request<UnifiedSaleResult>(`/sales/unified/${id}/correct-settlement`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+    // § Amount Correction for Unified-Sale-Linked Payments — the sibling
+    // of correctSettlement above. Corrects ONLY total_credit_received
+    // (see routers/unified_sale.py::correct_unified_sale_amount); routing
+    // is untouched here, same "one concern each" split as the backend.
+    correctAmount: (id: string, payload: {
+      amount: number;
+      correction_reason: string;
+      corrected_by: string;
+    }) => request<UnifiedSaleResult>(`/sales/unified/${id}/correct-amount`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
     // One combined invoice PDF for the whole batch (§ One Invoice for
     // Multi-Item Sales) — every line item on one document, not a separate
     // invoice per product.
@@ -553,6 +651,15 @@ export const api = {
       request<ShopDetailOut["stock"]>(`/shops/${id}/stock${date ? `?date=${date}` : ""}`),
     batches: (id: string, month?: string) =>
       request<ShopStockBatch[]>(`/shops/${id}/batches${month ? `?month=${month}` : ""}`),
+    correctOpeningCash: (id: string, payload: { new_value: number; reason: string }) =>
+      request<PaymentAccount>(`/shops/${id}/opening-cash`, { method: "PATCH", body: JSON.stringify(payload) }),
+    // Add Filled Cylinder Stock (§ Shop Management) — manually adds an
+    // existing batch to this shop's FIFO stock, e.g. onboarding a shop
+    // that already has physical stock on-site. No backing Sale.
+    addStockBatch: (shopId: string, payload: ShopStockBatchCreate) =>
+      request<ShopStockBatch>(`/shops/${shopId}/stock-batches`, { method: "POST", body: JSON.stringify(payload) }),
+    cancelStockBatch: (batchId: string, by: string) =>
+      request<ShopStockBatch>(`/shops/stock-batches/${batchId}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
     getSale: (saleId: string) => request<ShopSale>(`/shops/sales/${saleId}`),
     createSale: (shopId: string, payload: {
       date: string; product_id: string; quantity: number; unit?: "cylinder" | "kg";

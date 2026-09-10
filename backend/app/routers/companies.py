@@ -7,6 +7,7 @@ from app.database import get_db
 from app import models, schemas
 from app.deps import require_active_user, require_csrf
 from app.timezone import karachi_month_str
+from app.utils import log_audit
 
 router = APIRouter(prefix="/companies", tags=["companies"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
@@ -57,6 +58,44 @@ def create_company(payload: schemas.CompanyCreate, db: Session = Depends(get_db)
         opening_balance_month=_current_month(),
     )
     db.add(company)
+    db.commit()
+    db.refresh(company)
+    return company
+
+
+# CORRECT OPENING BALANCE (§ Opening Balance) — same pattern as Customer's
+# (routers/customers.py::correct_customer_opening_balance): edit the stored
+# anchor, shift current_balance by the identical delta so it never drifts
+# from what company_monthly_ledger derives, log to AuditLog with a
+# required reason. NOTE (flagged during the Opening Balance audit, left
+# out of scope for this change): unlike Customer, a Company's
+# opening_balance is a rolling monthly snapshot (_roll_month_if_needed
+# above resets it to current_balance on the next request after a month
+# rolls over) rather than a fixed year-anchor — company_monthly_ledger's
+# derivation is only correct for whichever month's rollover most recently
+# ran, a pre-existing bug unrelated to this endpoint.
+@router.patch("/{company_id}/opening-balance", response_model=schemas.CompanyOut)
+def correct_company_opening_balance(
+    company_id: UUID,
+    payload: schemas.OpeningBalanceUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
+    company = db.query(models.Company).get(company_id)
+    if not company:
+        raise HTTPException(404, "Company not found")
+
+    reason = (payload.reason or "").strip()
+    if not reason:
+        raise HTTPException(400, "A reason is required to correct the Opening Balance")
+
+    old_value = company.opening_balance
+    delta = payload.new_value - old_value
+    company.opening_balance = payload.new_value
+    company.current_balance = company.current_balance + delta
+    db.add(company)
+    log_audit(db, "company", company.id, "update", current_user.name,
+              field="opening_balance", old=old_value, new=payload.new_value, reason=reason)
     db.commit()
     db.refresh(company)
     return company

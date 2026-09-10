@@ -148,6 +148,11 @@ export type Payment = {
   target_plant_id?: string | null;
   account_category?: string | null;
   net_settlement_amount?: string | null;
+  // Resolved server-side from the linked Expense/OwnerDrawings child rows
+  // (§ Part B, destination labeling) — "0" unless this receipt's amount
+  // was routed there. Present only on rows from /payment-receipts.
+  home_expense_amount?: string;
+  owner_drawings_amount?: string;
 } & CorrectionFields;
 
 export type Expense = {
@@ -196,7 +201,8 @@ export type LedgerRow = {
 // One superseded (status="corrected") original transaction, kept for the
 // read-only Correction History panel (§1) — never mixed into `rows` above.
 export type CorrectionHistoryRow = {
-  kind: "sale" | "payment" | "purchase" | "company_payment";
+  kind: "sale" | "payment" | "purchase" | "company_payment"
+    | "customer_opening_balance" | "company_opening_balance" | "shop_opening_cash";
   date: string; ref_id: string; display_id: string; description: string;
   original_amount: string; correction_reason: string;
   corrected_by: string; corrected_at: string;
@@ -375,7 +381,10 @@ export type UnifiedSaleBatch = {
   display_id: string;
   date: string;
   customer_id: string;
-  company_id: string;
+  // null for a Payment-Only batch (§ Payment-Only Pending Approval) — no
+  // purchase plant, no items. This is the discriminator the Unified Sale
+  // page uses to tell a Payment-Only entry apart from a Full Sale.
+  company_id: string | null;
   total_selling_amount: string;
   total_purchase_amount: string;
   delivery_charges: string;
@@ -567,11 +576,21 @@ export type ShopStockBatch = {
   quantity_received: string;
   quantity_remaining: string;
   load_rate_per_kg: string;
+  source_type: "load" | "manual_add";
+  notes: string | null;
   status: string;
   entered_by: string;
   created_at: string;
   product_name?: string | null;
   source_display_id?: string | null;
+};
+
+// Add Filled Cylinder Stock (§ Shop Management) — see api.shops.addStockBatch.
+export type ShopStockBatchCreate = {
+  date?: string;
+  product_id: string;
+  quantity: number;
+  notes?: string;
 };
 
 export type ShopSale = {

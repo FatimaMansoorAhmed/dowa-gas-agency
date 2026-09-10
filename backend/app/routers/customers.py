@@ -7,7 +7,7 @@ from sqlalchemy import func
 from app.database import get_db
 from app import models, schemas
 from app.deps import require_active_user, require_csrf
-from app.utils import next_display_id
+from app.utils import next_display_id, log_audit
 
 router = APIRouter(prefix="/customers", tags=["customers"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
@@ -172,6 +172,39 @@ def adjust_customer(customer_id: UUID, payload: schemas.CustomerAdjust, db: Sess
         customer.current_balance = customer.current_balance + amount
 
     db.add(customer)
+    db.commit()
+    db.refresh(customer)
+    return customer
+
+
+# 5b. CORRECT OPENING BALANCE (§ Opening Balance) — the "Year Opening
+# Balance" anchor every month's ledger derives from (routers/ledger.py::
+# customer_monthly_ledger). Editing it alone self-heals every month's
+# displayed ledger automatically; current_balance is a SEPARATE running
+# total that would otherwise drift permanently out of sync with what the
+# ledger itself shows, so it's shifted by the identical delta here.
+@router.patch("/{customer_id}/opening-balance", response_model=schemas.CustomerOut)
+def correct_customer_opening_balance(
+    customer_id: UUID,
+    payload: schemas.OpeningBalanceUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
+    customer = db.query(models.Customer).get(customer_id)
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+
+    reason = (payload.reason or "").strip()
+    if not reason:
+        raise HTTPException(400, "A reason is required to correct the Opening Balance")
+
+    old_value = customer.opening_balance
+    delta = payload.new_value - old_value
+    customer.opening_balance = payload.new_value
+    customer.current_balance = customer.current_balance + delta
+    db.add(customer)
+    log_audit(db, "customer", customer.id, "update", current_user.name,
+              field="opening_balance", old=old_value, new=payload.new_value, reason=reason)
     db.commit()
     db.refresh(customer)
     return customer

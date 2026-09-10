@@ -14,6 +14,60 @@ from app.utils import next_display_id, resync_unified_sale_batch_totals
 router = APIRouter(prefix="/payments", tags=["payments"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
+def _attach_destination_info(db: Session, rows: list[models.Payment]) -> list[models.Payment]:
+    """A Payment Receipt-sourced row already carries its own destination_
+    type/target_plant_id/account_category columns (set by
+    routers/payment_receipts.py) — its home_expense_amount/
+    owner_drawings_amount still need resolving from the linked Expense/
+    OwnerDrawings (source_payment_id), same as
+    routers/payment_receipts.py._attach_bypass_amounts does for its own
+    endpoints (this mirrors it rather than importing it — payment_receipts
+    imports FROM this module's sibling utils, not the other way around, and
+    the two queries are cheap/simple enough not to be worth a shared-utils
+    detour). A Unified-Sale-originated audit-trail row (method=
+    "unified_sale_credit") has NONE of this on itself — that settlement
+    routing lives on the parent UnifiedSaleBatch instead (see
+    approve_unified_sale_payment) — so everything resolves from there
+    instead. Without this, the UI's only fallback is "no account_id ->
+    Office Cash", which is wrong for a payment that actually settled
+    straight to a plant/Owner Home, and CorrectTransactionModal would
+    silently pre-fill 0 for a bypass amount that was actually routed
+    somewhere (§ Bug Fix — Approved Payments destination display /
+    Correction Modal Routing pre-fill)."""
+    receipt_rows = [r for r in rows if r.destination_type is not None]
+    unified_rows = [r for r in rows if r.destination_type is None and r.unified_sale_id is not None]
+
+    if receipt_rows:
+        payment_ids = [r.id for r in receipt_rows]
+        expenses = db.query(models.Expense).filter(
+            models.Expense.source_payment_id.in_(payment_ids), models.Expense.status != "cancelled",
+        ).all()
+        drawings = db.query(models.OwnerDrawings).filter(
+            models.OwnerDrawings.source_payment_id.in_(payment_ids), models.OwnerDrawings.status != "cancelled",
+        ).all()
+        expense_by_payment = {e.source_payment_id: e.amount for e in expenses}
+        drawing_by_payment = {d.source_payment_id: d.amount for d in drawings}
+        for r in receipt_rows:
+            r.home_expense_amount = expense_by_payment.get(r.id, 0)
+            r.owner_drawings_amount = drawing_by_payment.get(r.id, 0)
+
+    if unified_rows:
+        batch_ids = [r.unified_sale_id for r in unified_rows]
+        batches = db.query(models.UnifiedSaleBatch).filter(models.UnifiedSaleBatch.id.in_(batch_ids)).all()
+        batch_by_id = {b.id: b for b in batches}
+        for r in unified_rows:
+            batch = batch_by_id.get(r.unified_sale_id)
+            if not batch:
+                continue
+            r.destination_type = batch.destination_type
+            r.target_plant_id = batch.target_plant_id
+            r.account_category = batch.account_id
+            r.home_expense_amount = batch.home_expense_amount
+            r.owner_drawings_amount = batch.owner_drawings_amount
+
+    return rows
+
+
 @router.get("", response_model=list[schemas.PaymentOut])
 def list_payments(
     customer_id: UUID | None = Query(None),
@@ -26,7 +80,7 @@ def list_payments(
     rows = q.order_by(models.Payment.date.desc(), models.Payment.created_at.desc()).all()
     if month:
         rows = [r for r in rows if r.date.strftime("%Y-%m") == month]
-    return rows
+    return _attach_destination_info(db, rows)
 
 
 def _apply_payment(db: Session, payload: schemas.PaymentCreate, entered_by: str) -> models.Payment:
@@ -152,9 +206,20 @@ def cancel_payment(payment_id: UUID, by: str = Query(...), db: Session = Depends
     payment.modified_at = datetime.utcnow()
     payment.modified_by = by
     db.add(payment)
+    db.flush()
+    # Keep a Unified-Sale-linked batch's stored Collected/Outstanding
+    # figures (total_credit_received/net_plant_payment) in sync — same fix
+    # correct_payment already applies below its own status change (§ Bug
+    # Fix — Unified Sale Payment Cancel Resync). Without this, cancelling
+    # this payment's contribution left those two fields stale, exactly the
+    # bug already found and fixed once for delivery_charges on USALE-000003.
+    # A no-op for a payment with no unified_sale_id (resync_unified_sale_
+    # batch_totals returns immediately in that case).
+    resync_unified_sale_batch_totals(db, payment.unified_sale_id)
 
     db.commit()
     db.refresh(payment)
+    _attach_destination_info(db, [payment])
     return payment
 
 
@@ -195,6 +260,7 @@ def correct_payment(
 
     db.commit()
     db.refresh(corrected)
+    _attach_destination_info(db, [corrected])
     return corrected
 
 

@@ -513,7 +513,11 @@ class UnifiedSaleBatch(Base):
     display_id = Column(String, unique=True, nullable=False)  # e.g. USALE-000123
     date = Column(DateTime, nullable=False)
     customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
-    company_id = Column(GUID(), ForeignKey("companies.id"), nullable=False)
+    # Nullable — a Payment-Only batch (§ Payment-Only Pending Approval) has
+    # no purchase plant at all: no items, nothing loaded, only a payment to
+    # route. NULL is exactly how routers/unified_sale.py tells a Payment-
+    # Only batch apart from an ordinary Full Sale (which always has one).
+    company_id = Column(GUID(), ForeignKey("companies.id"), nullable=True)
 
     total_selling_amount = Column(Numeric(14, 2), nullable=False, default=0)
     total_purchase_amount = Column(Numeric(14, 2), nullable=False, default=0)
@@ -581,6 +585,20 @@ class UnifiedSaleBatch(Base):
     # number) — filled in whenever it becomes available, typically right
     # before payment approval.
     payment_reference = Column(String, nullable=True)
+    # Settlement Correction (§ Bug Fix — Correction Modal Routing) — set by
+    # PATCH /sales/unified/{id}/correct-settlement whenever an ALREADY-
+    # APPROVED settlement's destination/split is corrected. The batch's own
+    # destination_type/target_plant_id/account_id/home_expense_amount/
+    # owner_drawings_amount/net_plant_payment columns above are mutated in
+    # place to the corrected values (there's only ever one batch — unlike
+    # Sale/Payment/Purchase/CompanyPayment, correcting this never creates a
+    # sibling row) — these three just record that a correction happened.
+    # Null until the first correction; only ever holds the MOST RECENT
+    # correction's info (the CompanyPayment/Expense/OwnerDrawings children
+    # below carry the full history — old ones cancelled, never mutated).
+    settlement_corrected_by = Column(String, nullable=True)
+    settlement_corrected_at = Column(DateTime, nullable=True)
+    settlement_correction_reason = Column(String, nullable=True)
 
     # GST on Sale, extended to Unified Sale (optional, locked at entry) —
     # same convention as models.Sale.gst_enabled: gst_amount/grand_total
@@ -616,6 +634,10 @@ class AuditLog(Base):
     new_value = Column(String, nullable=True)
     performed_by = Column(String, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # Opening Balance corrections (Customer/Company/Shop Cash) require a
+    # reason, surfaced in the Correction History panel — earlier AuditLog
+    # rows (from routers/sales.py) predate this and have none.
+    reason = Column(String, nullable=True)
 
 
 class Purchase(Base):
@@ -919,6 +941,12 @@ class ShopStockBatch(Base):
     see routers/sales.py's _apply_sale/_reverse_sale. There is no separate
     "enter a shop load" endpoint; a Load is always just a Sale.
 
+    The one exception is source_type == "manual_add" (§ Add Filled Cylinder
+    Stock, routers/shops.py's create_manual_stock_batch) — a batch entered
+    directly against the shop with no backing Sale at all, for onboarding
+    physical stock the shop already had before this system tracked it.
+    source_sale_id is NULL only for these; every "load" row always has one.
+
     quantity_remaining is a LIVE, FIFO-mutated counter used only to decide
     which batch a ShopSale (or Emergency Transfer — see routers/sales.py's
     _consume_shop_stock_for_emergency_transfer, which draws from these same
@@ -946,9 +974,22 @@ class ShopStockBatch(Base):
     quantity_received = Column(Numeric(10, 4), nullable=False)
     quantity_remaining = Column(Numeric(10, 4), nullable=False)
     load_rate_per_kg = Column(Numeric(10, 2), nullable=False)  # historical only — NEVER used to price a ShopSale
+    # "load" (the original/only case — created automatically by a Sale, see
+    # above) vs "manual_add" (§ Add Filled Cylinder Stock — entered directly
+    # against this shop, e.g. onboarding existing physical stock, with no
+    # backing Sale/Purchase/ledger effect at all). Every pre-existing row
+    # gets "load" from the column default, which is exactly what it is.
+    source_type = Column(String(20), nullable=False, default="load")
+    notes = Column(String, nullable=True)  # only ever set on a "manual_add" batch
     status = Column(String, nullable=False, default="active")
     entered_by = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # Set only when a "manual_add" batch is cancelled (routers/shops.py's
+    # cancel_manual_stock_batch) — same convention as ShopCustomerPayment/
+    # ShopExpenseTransaction above. A "load" batch is never cancelled this
+    # way (see that function), so these stay NULL for every one of those.
+    modified_at = Column(DateTime, nullable=True)
+    modified_by = Column(String, nullable=True)
 
     customer = relationship("Customer")
     product = relationship("Product")

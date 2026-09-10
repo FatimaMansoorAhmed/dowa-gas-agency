@@ -128,6 +128,20 @@ def get_or_create_shop_account(db: Session, shop):
     return account
 
 
+def log_audit(db: Session, entity_type: str, entity_id, action: str, by: str, field=None, old=None, new=None, reason=None):
+    """Shared AuditLog writer (§16/§31) — mirrors routers/sales.py's private
+    `_log`, promoted here so Customer/Company/Shop Opening Balance
+    corrections (§ Opening Balance) can share it too instead of each router
+    keeping its own copy."""
+    from app import models  # local import avoids a circular import with models.py
+
+    db.add(models.AuditLog(
+        entity_type=entity_type, entity_id=entity_id, action=action,
+        field=field, old_value=str(old) if old is not None else None,
+        new_value=str(new) if new is not None else None, performed_by=by, reason=reason,
+    ))
+
+
 def compute_gst(
     base_amount: Decimal, gst_enabled: bool, gst_rate: Optional[Decimal]
 ) -> tuple[bool, Optional[Decimal], Decimal, Decimal]:

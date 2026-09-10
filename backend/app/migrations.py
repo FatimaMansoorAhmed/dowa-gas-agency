@@ -184,6 +184,25 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     # Empty Cylinders page's "Sell Cylinder" button passes
     # origin='sell_cylinder' explicitly (see models.CylinderReturn.origin).
     ("cylinder_returns", "origin", "VARCHAR(20) NOT NULL DEFAULT 'return_cylinder'"),
+    # Settlement Correction (§ Bug Fix — Correction Modal Routing) — every
+    # existing batch predates settlement correction and was, by
+    # construction, never corrected, so these are simply NULL for all of
+    # them (see models.UnifiedSaleBatch.settlement_corrected_by).
+    ("unified_sale_batches", "settlement_corrected_by", "VARCHAR(255)"),
+    ("unified_sale_batches", "settlement_corrected_at", "TIMESTAMP"),
+    ("unified_sale_batches", "settlement_correction_reason", "VARCHAR(255)"),
+    # Add Filled Cylinder Stock (§ Shop Management) — every existing batch
+    # predates this distinction and was, by construction, created by a Load
+    # (Sale), so it gets 'load' from the column default. notes is nullable
+    # and only ever set on a 'manual_add' batch.
+    ("shop_stock_batches", "source_type", "VARCHAR(20) NOT NULL DEFAULT 'load'"),
+    ("shop_stock_batches", "notes", "VARCHAR(255)"),
+    ("shop_stock_batches", "modified_at", "TIMESTAMP"),
+    ("shop_stock_batches", "modified_by", "VARCHAR(255)"),
+    # Opening Balance Correction (§ Opening Balance) — every pre-existing
+    # audit_logs row (routers/sales.py's create/cancel/correct logging)
+    # predates this and has no reason to backfill, so it stays NULL.
+    ("audit_logs", "reason", "VARCHAR(255)"),
 ]
 
 
@@ -504,6 +523,16 @@ def run_startup_migrations(engine: Engine) -> None:
                     text("UPDATE payment_accounts SET current_balance = :bal WHERE id = :aid"),
                     {"bal": new_balance, "aid": account_id},
                 )
+
+        # Payment-Only Pending Approval (§ Payment-Only) — unified_sale_batches
+        # .company_id was NOT NULL before a Payment-Only batch (no purchase
+        # plant, no items) started reusing this table. Postgres only, same
+        # reasoning as payments.account_id above; a fresh DB created by
+        # create_all() already has the column nullable.
+        if "unified_sale_batches" in existing_tables and engine.dialect.name == "postgresql":
+            usb_columns = {c["name"]: c for c in inspector.get_columns("unified_sale_batches")}
+            if usb_columns.get("company_id", {}).get("nullable") is False:
+                conn.execute(text("ALTER TABLE unified_sale_batches ALTER COLUMN company_id DROP NOT NULL"))
 
         # One-time backfill: every existing sales row predates GST and was,
         # by construction, GST-free — grand_total (added nullable above)

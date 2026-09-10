@@ -31,7 +31,18 @@ type RegisterRow = {
   display_id: string;
   date: string;
   customer_id: string;
+  // § Part B — always the GROSS amount the customer actually handed over,
+  // never net-after-bypass (that would show "Rs 0 Received" for a payment
+  // that fully routed to Owner Drawings/Home Expense, which is misleading —
+  // the customer paid something, it just never touched a Dowa account).
   amount: string;
+  // What's left after home_expense_amount/owner_drawings_amount are taken
+  // out — this is what a "plant"/"account" destination_type actually
+  // routes. Used for the KPI/route badge, never as the headline "Received"
+  // figure.
+  net_amount: number;
+  home_expense_amount: number;
+  owner_drawings_amount: number;
   destination_type: DestinationType | null;
   target_plant_id: string | null;
   account_id: string | null;
@@ -110,42 +121,50 @@ function PaymentsBody() {
       .map((p) => {
         const gross = parseFloat(p.amount) || 0;
         const net = p.net_settlement_amount != null ? parseFloat(p.net_settlement_amount) : gross;
-        const hasDeduction = Math.abs(net - gross) > 0.01;
         return {
           id: p.id,
           display_id: p.display_id,
           date: p.date,
           customer_id: p.customer_id,
-          amount: p.net_settlement_amount ?? p.amount,
+          amount: p.amount,
+          net_amount: net,
+          home_expense_amount: parseFloat(p.home_expense_amount || "0") || 0,
+          owner_drawings_amount: parseFloat(p.owner_drawings_amount || "0") || 0,
           destination_type: p.destination_type ?? null,
           target_plant_id: p.target_plant_id ?? null,
           account_id: p.account_category ?? p.account_id ?? null,
           reference_no: p.reference_no,
-          notes: hasDeduction
-            ? `${p.notes ? p.notes + " · " : ""}${t("payments.grossLabel", { amount: pkr(gross) })}`
-            : p.notes,
+          notes: p.notes,
           source: "receipt" as const,
         };
       });
 
-    const unifiedRows: RegisterRow[] = unifiedSales.map((b) => {
-      const gross = parseFloat(b.total_credit_received) || 0;
-      const net = parseFloat(b.net_plant_payment) || 0;
-      const hasDeduction = Math.abs(net - gross) > 0.01;
-      return {
-        id: b.id,
-        display_id: b.display_id,
-        date: b.approved_at || b.date,
-        customer_id: b.customer_id,
-        amount: b.net_plant_payment,
-        destination_type: b.destination_type ?? null,
-        target_plant_id: b.target_plant_id ?? null,
-        account_id: b.account_id ?? null,
-        reference_no: null,
-        notes: `${t("payments.unifiedSaleSettlement", { id: b.display_id })}${hasDeduction ? ` · ${t("payments.grossLabel", { amount: pkr(gross) })}` : ""}`,
-        source: "unified_sale" as const,
-      };
-    });
+    // § Part B #1 — a full-credit Unified Sale (total_credit_received = 0,
+    // nothing actually collected) is a real sale row on the Customer Ledger,
+    // but it is NOT a payment and must not show up here as a phantom
+    // "Rs 0 Received" line.
+    const unifiedRows: RegisterRow[] = unifiedSales
+      .filter((b) => (parseFloat(b.total_credit_received) || 0) > 0)
+      .map((b) => {
+        const gross = parseFloat(b.total_credit_received) || 0;
+        const net = parseFloat(b.net_plant_payment) || 0;
+        return {
+          id: b.id,
+          display_id: b.display_id,
+          date: b.approved_at || b.date,
+          customer_id: b.customer_id,
+          amount: b.total_credit_received,
+          net_amount: net,
+          home_expense_amount: parseFloat(b.home_expense_amount || "0") || 0,
+          owner_drawings_amount: parseFloat(b.owner_drawings_amount || "0") || 0,
+          destination_type: b.destination_type ?? null,
+          target_plant_id: b.target_plant_id ?? null,
+          account_id: b.account_id ?? null,
+          reference_no: null,
+          notes: t("payments.unifiedSaleSettlement", { id: b.display_id }),
+          source: "unified_sale" as const,
+        };
+      });
 
     return [...receiptRows, ...unifiedRows].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -204,16 +223,22 @@ function PaymentsBody() {
     let plantSettlements = 0;
 
     filteredRegister.forEach((row) => {
-      const amt = parseFloat(row.amount) || 0;
-      totalCollections += amt;
+      // Total Collections: everything the customer actually handed over,
+      // regardless of where it was routed afterward.
+      totalCollections += parseFloat(row.amount) || 0;
+      // Plant Settlements: only what actually reached the plant — net of
+      // any Home Expense/Owner Drawings bypass, never the gross amount.
       if (row.destination_type === "plant" || row.target_plant_id) {
-        plantSettlements += amt;
+        plantSettlements += row.net_amount;
       }
     });
 
     return { totalCollections, plantSettlements };
   }, [filteredRegister]);
 
+  // The net-routed portion only (what's left after any Home Expense/Owner
+  // Drawings bypass) — § Part B, resolveDestinationBadges below adds the
+  // bypass portion(s) alongside this, never folds them into "Rs 0".
   const resolveRouteBadge = (row: RegisterRow) => {
     if (row.destination_type === "plant" || row.target_plant_id) {
       const plant = companies.find((c) => c.id === row.target_plant_id);
@@ -226,6 +251,26 @@ function PaymentsBody() {
     if (row.account_id === "office_cash") return { label: t("payments.officeCash"), color: "bg-amber-50 text-amber-700 border-amber-200" };
 
     return { label: resolveAccountLabel(row.account_id, accounts), color: "bg-slate-50 text-slate-700 border-slate-200" };
+  };
+
+  // § Part B #2 — every badge this row's gross amount actually landed in:
+  // Home Expense / Owner Drawings bypass badges first (each carries its own
+  // amount, e.g. "Rs 33,333 → Owner Drawings"), then the net-routed
+  // destination badge ONLY if something was actually left to route there
+  // (net_amount > 0) — a fully-bypassed row shows no misleading "Plant"/
+  // "Dowa Account" badge for an amount that never reached one.
+  const resolveDestinationBadges = (row: RegisterRow) => {
+    const badges: { label: string; color: string }[] = [];
+    if (row.home_expense_amount > 0.01) {
+      badges.push({ label: `${pkr(row.home_expense_amount)} → ${t("unifiedSale.homeExpense")}`, color: "bg-amber-50 text-amber-700 border-amber-200" });
+    }
+    if (row.owner_drawings_amount > 0.01) {
+      badges.push({ label: `${pkr(row.owner_drawings_amount)} → ${t("unifiedSale.ownerDrawings")}`, color: "bg-purple-50 text-purple-700 border-purple-200" });
+    }
+    if (row.net_amount > 0.01) {
+      badges.push(resolveRouteBadge(row));
+    }
+    return badges;
   };
 
   return (
@@ -385,7 +430,7 @@ function PaymentsBody() {
               <tbody className="divide-y divide-hairline">
                 {filteredRegister.map((row) => {
                   const cust = customers.find((c) => c.id === row.customer_id);
-                  const routeBadge = resolveRouteBadge(row);
+                  const destinationBadges = resolveDestinationBadges(row);
                   const isBusy = actionBusyId === row.id;
 
                   return (
@@ -399,11 +444,16 @@ function PaymentsBody() {
                         {pkr(row.amount)}
                       </Td>
                       <Td>
-                        <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-medium ${routeBadge.color}`}
-                        >
-                          {routeBadge.label}
-                        </span>
+                        <div className="flex flex-wrap gap-1">
+                          {destinationBadges.map((badge, i) => (
+                            <span
+                              key={i}
+                              className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-medium whitespace-nowrap ${badge.color}`}
+                            >
+                              {badge.label}
+                            </span>
+                          ))}
+                        </div>
                       </Td>
                       <Td color="#8E8E93">
                         <div className="text-[10px] font-mono text-steel/70">{row.display_id}</div>

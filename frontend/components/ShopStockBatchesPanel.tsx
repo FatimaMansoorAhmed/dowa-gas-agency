@@ -151,7 +151,15 @@ export default function ShopStockBatchesPanel({
                     className={`border-b border-slate-100 transition-colors hover:bg-teal/[0.025] ${index % 2 === 0 ? "bg-white" : "bg-slate-50/30"}`}
                   >
                     <td className="border-r border-slate-100 px-4 py-3 font-mono text-xs text-slate-600">
-                      {dateOnly(b.transaction_date)} — {b.source_display_id ? t("shopDetail.loadHash", { id: b.source_display_id }) : t("shopDetail.openingStockSource")}
+                      {dateOnly(b.transaction_date)} —{" "}
+                      {b.source_display_id
+                        ? t("shopDetail.loadHash", { id: b.source_display_id })
+                        : b.source_type === "manual_add"
+                        ? t("shopDetail.manualEntrySource")
+                        : t("shopDetail.openingStockSource")}
+                      {b.notes && (
+                        <div className="mt-0.5 font-sans text-[11px] italic text-slate-400">{b.notes}</div>
+                      )}
                     </td>
                     <td className="border-r border-slate-100 px-4 py-3 text-sm text-slate-700">
                       {b.product_name || "—"}

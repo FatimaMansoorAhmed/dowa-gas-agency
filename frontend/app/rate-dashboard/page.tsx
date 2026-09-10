@@ -26,6 +26,7 @@ import {
 import { api } from "@/lib/api";
 import { fmtTime, isSameKarachiDay } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
+import { latestRateByKey, NO_PARTY_VALUE } from "@/lib/rates";
 
 import type {
   Company,
@@ -34,11 +35,6 @@ import type {
 } from "@/lib/types";
 
 const RATIO = 45.4 / 11.8;
-
-// Sentinel select value for "this rate genuinely has no party" (§ Party
-// optional) — distinct from the disabled placeholder's "", which still
-// means "incomplete, don't submit" (see handleSaveRate's canSubmit guard).
-const NO_PARTY_VALUE = "__no_party__";
 
 // ---------------------------------------------------------
 // HELPER
@@ -156,28 +152,12 @@ function RateDashboardBody() {
   }, []);
 
   // -------------------------------------------------------
-  // LATEST RATE PER (COMPANY, PARTY) — party_id alone would collapse every
-  // no-party company's rows into one "null" key (§ Party optional), hiding
-  // every no-party plant but the most recently updated one. Composite key
-  // matches the backend's own fix in routers/rates.latest_rates.
+  // LATEST RATE PER (COMPANY, PARTY) — see lib/rates.ts's latestRateByKey
+  // for why this is a composite key (party_id alone would collapse every
+  // no-party company's rows into one "null" key, § Party optional). Shared
+  // with the Sale/Purchase forms' rate resolution — one implementation.
   // -------------------------------------------------------
-  const latestByPartyId = useMemo(() => {
-    const m: Record<string, RateEntry> = {};
-
-    rates.forEach((r) => {
-      const key = `${r.company_id}::${r.party_id ?? "none"}`;
-
-      if (
-        !m[key] ||
-        new Date(r.timestamp).getTime() >
-          new Date(m[key].timestamp).getTime()
-      ) {
-        m[key] = r;
-      }
-    });
-
-    return m;
-  }, [rates]);
+  const latestByPartyId = useMemo(() => latestRateByKey(rates), [rates]);
 
   // -------------------------------------------------------
   // GROUP LATEST RATES BY COMPANY

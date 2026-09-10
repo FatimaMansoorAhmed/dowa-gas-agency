@@ -1,6 +1,6 @@
 "use client";
-import { useEffect, useState } from "react";
-import { X, Check, PlusCircle } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { X, Check, PlusCircle, AlertTriangle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Field, inputClass, Button } from "./ui";
 import AmountInput from "./AmountInput";
@@ -8,7 +8,8 @@ import NewPlantModal from "./NewPlantModal";
 import { api } from "@/lib/api";
 import { pkr, todayLocalInput } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
-import type { Company, Product, PaymentAccount, RateEntry } from "@/lib/types";
+import { resolveRate, NO_PARTY_VALUE } from "@/lib/rates";
+import type { Company, Product, PaymentAccount, RateEntry, Party } from "@/lib/types";
 
 const MULTIPLIER_454 = 45.4 / 11.8;
 
@@ -22,6 +23,7 @@ export default function AddPurchaseModal({
   const [products, setProducts] = useState<Product[]>([]);
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
   const [rates, setRates] = useState<RateEntry[]>([]);
+  const [parties, setParties] = useState<Party[]>([]);
   const [showNewPlant, setShowNewPlant] = useState(false);
 
   const [date, setDate] = useState(todayLocalInput());
@@ -30,6 +32,9 @@ export default function AddPurchaseModal({
   const [driverName, setDriverName] = useState("");
   const [driverContact, setDriverContact] = useState("");
   const [companyId, setCompanyId] = useState(initialCompanyId || "");
+  // "" means "not yet resolved" — only reachable when the selected plant
+  // has >1 party and the user hasn't picked one yet (see lib/rates.ts).
+  const [partyId, setPartyId] = useState("");
 
   const [qty118, setQty118] = useState("");
   const [rate118, setRate118] = useState("");
@@ -50,12 +55,14 @@ export default function AddPurchaseModal({
 
   useEffect(() => {
     (async () => {
-      const [c, p, acc, r] = await Promise.all([
+      const [c, p, acc, r, parties] = await Promise.all([
         api.companies.list(), api.products.list(), api.paymentAccounts.list(), api.rates.latest(),
+        api.parties.list(),
       ]);
       // Active-only — see RecordShopSaleModal/unified-sale for why a
       // duplicate product row must never resolve product118/product454.
       setCompanies(c); setProducts(p.filter((x: Product) => x.active === "active")); setAccounts(acc); setRates(r);
+      setParties(parties);
     })();
   }, []);
 
@@ -63,16 +70,34 @@ export default function AddPurchaseModal({
   const product454 = products.find((p) => Number(p.weight_kg) === 45.4 || p.name?.includes("45.4"));
   const selectedCompany = companies.find((c) => c.id === companyId);
 
+  // A Company can have multiple Parties, each with its own separately-
+  // entered, genuinely different rate — see lib/rates.ts. Auto-select the
+  // common case (0 or 1 party) so most purchases need no extra click.
+  const companyParties = useMemo(
+    () => parties.filter((p) => p.company_id === companyId),
+    [parties, companyId]
+  );
+
+  useEffect(() => {
+    if (!companyId) { setPartyId(""); return; }
+    if (companyParties.length === 0) { setPartyId(NO_PARTY_VALUE); return; }
+    if (companyParties.length === 1) { setPartyId(companyParties[0].id); return; }
+    setPartyId((prev) =>
+      prev === NO_PARTY_VALUE || companyParties.some((p) => p.id === prev) ? prev : ""
+    );
+  }, [companyId, companyParties]);
+
+  // Resolves against the exact (company, party) pair — never "whichever
+  // rate for this company was entered most recently," which silently picks
+  // the wrong party's rate whenever a plant has more than one.
+  const resolvedRate = resolveRate(rates, companyId, partyId);
+
   useEffect(() => {
     if (!companyId) { setRate118(""); setRate454(""); return; }
-    const latestForCompany = rates
-      .filter((r) => String(r.company_id) === String(companyId))
-      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
-    if (latestForCompany) {
-      setRate118(latestForCompany.rate_118 ? String(latestForCompany.rate_118) : "");
-      setRate454(latestForCompany.rate_454 ? String(latestForCompany.rate_454) : "");
-    }
-  }, [companyId, rates]);
+    if (!partyId || !resolvedRate) return;
+    setRate118(resolvedRate.rate_118 ? String(resolvedRate.rate_118) : "");
+    setRate454(resolvedRate.rate_454 ? String(resolvedRate.rate_454) : "");
+  }, [companyId, partyId, resolvedRate]);
 
   const handleRate118Change = (val: string) => {
     setRate118(val);
@@ -183,6 +208,32 @@ const isoDate = fullDateTime.toISOString();
               <Button variant="outline" onClick={() => setShowNewPlant(true)}><PlusCircle size={14} /></Button>
             </div>
           </Field>
+
+          {/* Party — only shown when the selected plant genuinely has more
+              than one (auto-selected silently for 0 or 1). */}
+          {companyId && companyParties.length > 1 && (
+            <Field label={t("rateDashboard.party")}>
+              <select value={partyId} onChange={(e) => setPartyId(e.target.value)} className={inputClass}>
+                <option value="">{t("rateDashboard.selectParty")}</option>
+                <option value={NO_PARTY_VALUE}>{t("rateDashboard.noPartyOption")}</option>
+                {companyParties.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </Field>
+          )}
+
+          {companyId && partyId && !resolvedRate && (
+            <div className="px-3 py-2.5 rounded-lg border flex items-center gap-2 bg-[#FBEAEA] border-[#EFC3C3]">
+              <AlertTriangle size={15} className="text-brand-red flex-shrink-0" />
+              <span className="font-body text-xs">
+                {t("rateDashboard.noRateForPair", {
+                  company: selectedCompany?.name || "",
+                  party: partyId === NO_PARTY_VALUE
+                    ? t("rateDashboard.noPartyOption")
+                    : companyParties.find((p) => p.id === partyId)?.name || "",
+                })}
+              </span>
+            </div>
+          )}
 
           <div className="grid grid-cols-3 gap-3">
             <Field label={t("unifiedSale.date")}>

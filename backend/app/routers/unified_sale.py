@@ -11,7 +11,8 @@ from app import models, schemas
 from app.deps import require_active_user, require_csrf
 from app.reporting.invoice_pdf import render_unified_sale_invoice_pdf
 from app.timezone import KARACHI_TZ
-from app.utils import next_display_id, resolve_account_or_bucket, compute_gst
+from app.utils import next_display_id, resolve_account_or_bucket, compute_gst, resync_unified_sale_batch_totals
+from app.routers.payments import _reverse_payment
 
 router = APIRouter(prefix="/sales", tags=["unified-sale"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
@@ -58,9 +59,19 @@ def _validate_and_load(db: Session, payload: schemas.UnifiedSaleCreate):
     customer = db.query(models.Customer).get(payload.customer_id)
     if not customer:
         raise HTTPException(404, "Customer not found")
-    company = db.query(models.Company).get(payload.plant_id)
-    if not company:
-        raise HTTPException(404, "Plant not found")
+
+    # Payment-Only (§ Payment-Only Pending Approval) has no purchase plant —
+    # no items, nothing loaded. plant_id is required whenever there's an
+    # actual item to load; company stays None otherwise (batch.company_id
+    # NULL is how the rest of this module tells a Payment-Only batch apart
+    # from an ordinary Full Sale).
+    company = None
+    if payload.plant_id:
+        company = db.query(models.Company).get(payload.plant_id)
+        if not company:
+            raise HTTPException(404, "Plant not found")
+    elif payload.items:
+        raise HTTPException(400, "plant_id is required when items are present")
 
     products_by_id = {}
     for item in payload.items:
@@ -204,6 +215,9 @@ def _batch_to_out(batch, sales, purchases, plant_payment, expense, owner_drawing
         destination_type=batch.destination_type, target_plant_id=batch.target_plant_id, account_id=batch.account_id,
         vehicle_no=batch.vehicle_no, gate_pass_no=batch.gate_pass_no, notes=batch.notes,
         payment_reference=batch.payment_reference,
+        settlement_corrected_by=batch.settlement_corrected_by,
+        settlement_corrected_at=batch.settlement_corrected_at,
+        settlement_correction_reason=batch.settlement_correction_reason,
         gst_enabled=batch.gst_enabled, gst_rate=batch.gst_rate, gst_amount=batch.gst_amount, grand_total=batch.grand_total,
         status=batch.status, approved_at=batch.approved_at, approved_by=batch.approved_by,
         sale_status=batch.sale_status, sale_approved_at=batch.sale_approved_at, sale_approved_by=batch.sale_approved_by,
@@ -218,11 +232,34 @@ def _batch_to_out(batch, sales, purchases, plant_payment, expense, owner_drawing
 
 
 def _load_children(db: Session, batch_id):
+    """plant_payment/expense/owner_drawing: excludes "cancelled" (not just
+    "active") because approve_unified_sale_payment needs to find the still-
+    "pending" one to activate — but MUST exclude cancelled, and order by
+    newest first, because correct_unified_sale_settlement (§ Bug Fix —
+    Correction Modal Routing) cancels the old one and posts a fresh row
+    with the SAME unified_sale_id rather than mutating it in place (an
+    uncorrupted audit trail — see models.UnifiedSaleBatch.
+    settlement_corrected_by). Without this, a corrected batch would have
+    two rows sharing one unified_sale_id and a bare .first() could return
+    either — the same landmine _batch_cylinder_totals already had to guard
+    against for Sale corrections (see routers/ledger.py)."""
     sales = db.query(models.Sale).filter(models.Sale.unified_sale_id == batch_id).order_by(models.Sale.created_at).all()
     purchases = db.query(models.Purchase).filter(models.Purchase.unified_sale_id == batch_id).order_by(models.Purchase.created_at).all()
-    plant_payment = db.query(models.CompanyPayment).filter(models.CompanyPayment.unified_sale_id == batch_id).first()
-    expense = db.query(models.Expense).filter(models.Expense.unified_sale_id == batch_id).first()
-    owner_drawing = db.query(models.OwnerDrawings).filter(models.OwnerDrawings.unified_sale_id == batch_id).first()
+    plant_payment = (
+        db.query(models.CompanyPayment)
+        .filter(models.CompanyPayment.unified_sale_id == batch_id, models.CompanyPayment.status != "cancelled")
+        .order_by(models.CompanyPayment.created_at.desc()).first()
+    )
+    expense = (
+        db.query(models.Expense)
+        .filter(models.Expense.unified_sale_id == batch_id, models.Expense.status != "cancelled")
+        .order_by(models.Expense.created_at.desc()).first()
+    )
+    owner_drawing = (
+        db.query(models.OwnerDrawings)
+        .filter(models.OwnerDrawings.unified_sale_id == batch_id, models.OwnerDrawings.status != "cancelled")
+        .order_by(models.OwnerDrawings.created_at.desc()).first()
+    )
     return sales, purchases, plant_payment, expense, owner_drawing
 
 
@@ -446,6 +483,187 @@ def edit_unified_sale(
     return _batch_to_out(batch, sales, purchases, payment, expense, owner_drawing)
 
 
+def _do_approve_sale(db: Session, batch: models.UnifiedSaleBatch, sales, purchases, by: str) -> None:
+    """Body of the sale/load approval — customer ledger, purchase-plant
+    payable, Sale/Purchase child rows. No commit/rollback — the caller
+    (approve_unified_sale_sale for a Full Sale, or approve_payment_only for
+    a Payment-Only batch, which has no separate sale side for a human to
+    approve) owns the transaction."""
+    if batch.sale_status != "pending":
+        raise HTTPException(400, f"Cannot approve sale — already {batch.sale_status}")
+
+    customer = db.query(models.Customer).get(batch.customer_id)
+    # None for a Payment-Only batch (no purchase plant) — see
+    # UnifiedSaleCreate.plant_id. Every step below already guards on it.
+    company = db.query(models.Company).get(batch.company_id) if batch.company_id else None
+
+    # ---- Customer Balance Adjustment ----
+    # New Balance = Current Balance + Selling Amount - Credit Received.
+    # total_credit_received is money the customer already handed over
+    # at the point of sale/delivery — it settles the customer's side
+    # right away, independent of whether/when that cash later gets
+    # routed on to the plant or a Dowa account (that's the separate
+    # payment/settlement approval below). All operands Decimal-coerced
+    # — a NULL current_balance must never crash approval.
+    current_balance = _dec(customer.current_balance)
+    # grand_total (incl. GST when enabled), never total_selling_amount —
+    # GST is money the customer owes, not business revenue (§ GST on Sale).
+    # Zero for a Payment-Only batch (no items, nothing sold) — this then
+    # correctly reduces to "balance -= credit_received", a plain payment.
+    selling_amount = _dec(batch.grand_total)
+    credit_received = _dec(batch.total_credit_received)
+
+    balance_before_settlement = current_balance + selling_amount
+    excess = credit_received - balance_before_settlement
+    excess_amount = excess if excess > 0 else None
+
+    customer.current_balance = balance_before_settlement - credit_received
+    customer.last_transaction_at = batch.date
+    customer.last_overpayment_amount = excess_amount
+    customer.last_overpayment_date = batch.date if excess_amount else None
+    if excess_amount:
+        customer.account_credit = _dec(customer.account_credit) + excess_amount
+    db.add(customer)
+
+    # ---- Payment record for total_credit_received (reporting/audit
+    # trail only — SAFETY: this must NEVER go through
+    # routers.payments._apply_payment or replicate its balance-mutating
+    # lines, since customer.current_balance was JUST fully computed
+    # above in one combined formula (selling_amount - credit_received);
+    # calling _apply_payment here would subtract credit_received a
+    # SECOND time. This is a plain models.Payment(...) + db.add() with
+    # zero balance side effects, exactly like the sibling
+    # CompanyPayment/Expense/OwnerDrawings children below (account_id=
+    # None — this cash hasn't landed in any Dowa account yet, it's
+    # routed onward at settlement, see _do_approve_payment).
+    # Only created once credit_received > 0, same "> 0" guard those
+    # siblings use. status="active" immediately, unlike those siblings
+    # (which start "pending"): this row's real-world event and its
+    # balance effect both already happened, right here, gated by
+    # sale_status, not payment_status.
+    if credit_received > 0:
+        db.add(models.Payment(
+            display_id=next_display_id(db, models.Payment, "PAY", width=6),
+            date=batch.date, customer_id=batch.customer_id, amount=credit_received,
+            method="unified_sale_credit", account_id=None, source_account_id=None,
+            notes=f"Collected at Unified Sale {batch.display_id} — routed onward at settlement",
+            status="active", entered_by=batch.entered_by, unified_sale_id=batch.id,
+        ))
+
+    # ---- Purchase Plant Balance (grows by the cost of goods loaded —
+    # this is the sale/load event, regardless of where the settlement
+    # money is later routed to). None for a Payment-Only batch — no plant,
+    # no total_purchase_amount, nothing to post here. ----
+    if company:
+        company.current_balance = _dec(company.current_balance) + _dec(batch.total_purchase_amount)
+        db.add(company)
+
+    # Shop Management (§ Shop spec, "one transaction, no duplication") —
+    # mirrors routers/sales.py's _apply_sale exactly. This is the ONLY
+    # Sale entry point actually reachable from the UI (Shell's "Sale"
+    # nav goes to /unified-sale; /new-sale, which has its own copy of
+    # this block, is not linked), so without this a Load to a Shop
+    # customer would post to the customer's balance/plant payable like
+    # any other Sale but silently never create the ShopStockBatch the
+    # Shop dashboard's stock figures depend on. Posted here rather than
+    # in _create_pending_children because this — approval — is the
+    # moment a Sale actually becomes "active" and posts financially;
+    # a pending, not-yet-approved Load must not already be sitting in
+    # the shop's physical stock. source_sale_id=sale.id lets
+    # routers/sales.py's _reverse_sale (used by /sales/{id}/cancel and
+    # /sales/{id}/correct — see CorrectTransactionModal on the Shop
+    # Detail page) find and reverse this batch precisely, the same way
+    # it already does for a batch created via the direct Sale flow.
+    # Empty for a Payment-Only batch — loop is simply a no-op.
+    for sale in sales:
+        sale.status = "active"
+        db.add(sale)
+        if customer.customer_type == "shop":
+            db.add(models.ShopStockBatch(
+                customer_id=customer.id,
+                product_id=sale.product_id,
+                source_sale_id=sale.id,
+                transaction_date=sale.date,
+                quantity_received=sale.quantity,
+                quantity_remaining=sale.quantity,
+                load_rate_per_kg=(sale.rate_per_cylinder / sale.weight_per_cylinder) if sale.weight_per_cylinder else 0,
+                status="active",
+                entered_by=by,
+            ))
+    for purchase in purchases:
+        purchase.status = "active"
+        db.add(purchase)
+
+    batch.sale_status = "approved"
+    # Naive UTC — matches every other DateTime column's storage
+    # convention (datetime.utcnow()). An AWARE datetime bound to this
+    # naive column would get silently shifted by Postgres's
+    # Asia/Karachi session timezone before storage, then shifted AGAIN
+    # by the frontend's UTC->Asia/Karachi display conversion — a +5h
+    # double offset (§ Double Timezone Offset Fix). See app/timezone.py.
+    batch.sale_approved_at = datetime.utcnow()
+    batch.sale_approved_by = by
+    _sync_legacy_status(batch)
+    db.add(batch)
+
+
+def _do_approve_payment(db: Session, batch: models.UnifiedSaleBatch, payment, expense, owner_drawing, by: str, reference: Optional[str]) -> None:
+    """Body of the plant payment/settlement approval — settlement routing,
+    CompanyPayment/Expense/OwnerDrawings child rows. No commit/rollback —
+    see _do_approve_sale."""
+    if batch.payment_status != "pending":
+        raise HTTPException(400, f"Cannot approve payment — already {batch.payment_status}")
+
+    if reference:
+        batch.payment_reference = reference
+
+    # ---- Settlement Routing ----
+    # Net Plant Payment = Credit Received - Home Expense - Owner Drawings
+    # (already computed onto the batch at create/edit time). Where it
+    # actually posts depends on destination_type — it must NEVER
+    # unconditionally reduce the purchase plant's payable, since the
+    # customer may have routed it to a different plant or a Dowa account
+    # entirely (§ Settlement Routing).
+    net_plant_payment = _dec(batch.net_plant_payment)
+    if net_plant_payment > 0:
+        if batch.destination_type == "account":
+            # A fixed bucket key (office_cash | owner_home | dowa_account)
+            # resolves to the same real PaymentAccount row Cash Management
+            # reads — see resolve_account_or_bucket — so both pages stay
+            # in sync with this credit.
+            account_row = resolve_account_or_bucket(db, batch.account_id)
+            if account_row:
+                account_row.current_balance = _dec(account_row.current_balance) + net_plant_payment
+                db.add(account_row)
+        else:
+            # batch.company_id is None for a Payment-Only batch, but that's
+            # fine — destination_type=="plant" there always has an explicit
+            # target_plant_id (required at create time, see
+            # frontend's paymentOnlyDestinationValid), so this never
+            # actually falls back to a None company_id in practice.
+            target_id = batch.target_plant_id or batch.company_id
+            target_company = db.query(models.Company).get(target_id) if target_id else None
+            if target_company:
+                target_company.current_balance = _dec(target_company.current_balance) - net_plant_payment
+                db.add(target_company)
+
+    if payment:
+        payment.status = "active"
+        db.add(payment)
+    if expense:
+        expense.status = "active"
+        db.add(expense)
+    if owner_drawing:
+        owner_drawing.status = "active"
+        db.add(owner_drawing)
+
+    batch.payment_status = "approved"
+    batch.payment_approved_at = datetime.utcnow()
+    batch.payment_approved_by = by
+    _sync_legacy_status(batch)
+    db.add(batch)
+
+
 @router.post("/unified/{unified_sale_id}/approve-sale", response_model=schemas.UnifiedSaleOut)
 def approve_unified_sale_sale(
     unified_sale_id: UUID,
@@ -456,123 +674,21 @@ def approve_unified_sale_sale(
     purchase-plant payable, and the Sale/Purchase child rows. Never touches
     the plant payment/settlement — see approve_unified_sale_payment, which
     is approved completely independently (§ Independent Sale/Payment
-    Approval). Guarded by sale_status so calling this twice never re-posts."""
+    Approval). Guarded by sale_status so calling this twice never re-posts.
+    A Payment-Only batch (company_id IS NULL) has nothing meaningful to
+    approve here separately — see approve_payment_only instead."""
     batch = db.query(models.UnifiedSaleBatch).get(unified_sale_id)
     if not batch:
         raise HTTPException(404, "Unified sale not found")
-    if batch.sale_status != "pending":
-        raise HTTPException(400, f"Cannot approve sale — already {batch.sale_status}")
 
-    customer = db.query(models.Customer).get(batch.customer_id)
-    company = db.query(models.Company).get(batch.company_id)
     sales, purchases, payment, expense, owner_drawing = _load_children(db, batch.id)
 
     try:
-        # ---- Customer Balance Adjustment ----
-        # New Balance = Current Balance + Selling Amount - Credit Received.
-        # total_credit_received is money the customer already handed over
-        # at the point of sale/delivery — it settles the customer's side
-        # right away, independent of whether/when that cash later gets
-        # routed on to the plant or a Dowa account (that's the separate
-        # payment/settlement approval below). All operands Decimal-coerced
-        # — a NULL current_balance must never crash approval.
-        current_balance = _dec(customer.current_balance)
-        # grand_total (incl. GST when enabled), never total_selling_amount —
-        # GST is money the customer owes, not business revenue (§ GST on Sale).
-        selling_amount = _dec(batch.grand_total)
-        credit_received = _dec(batch.total_credit_received)
-
-        balance_before_settlement = current_balance + selling_amount
-        excess = credit_received - balance_before_settlement
-        excess_amount = excess if excess > 0 else None
-
-        customer.current_balance = balance_before_settlement - credit_received
-        customer.last_transaction_at = batch.date
-        customer.last_overpayment_amount = excess_amount
-        customer.last_overpayment_date = batch.date if excess_amount else None
-        if excess_amount:
-            customer.account_credit = _dec(customer.account_credit) + excess_amount
-        db.add(customer)
-
-        # ---- Payment record for total_credit_received (reporting/audit
-        # trail only — SAFETY: this must NEVER go through
-        # routers.payments._apply_payment or replicate its balance-mutating
-        # lines, since customer.current_balance was JUST fully computed
-        # above in one combined formula (selling_amount - credit_received);
-        # calling _apply_payment here would subtract credit_received a
-        # SECOND time. This is a plain models.Payment(...) + db.add() with
-        # zero balance side effects, exactly like the sibling
-        # CompanyPayment/Expense/OwnerDrawings children below (account_id=
-        # None — this cash hasn't landed in any Dowa account yet, it's
-        # routed onward at settlement, see approve_unified_sale_payment).
-        # Only created once credit_received > 0, same "> 0" guard those
-        # siblings use. status="active" immediately, unlike those siblings
-        # (which start "pending"): this row's real-world event and its
-        # balance effect both already happened, right here, gated by
-        # sale_status, not payment_status.
-        if credit_received > 0:
-            db.add(models.Payment(
-                display_id=next_display_id(db, models.Payment, "PAY", width=6),
-                date=batch.date, customer_id=batch.customer_id, amount=credit_received,
-                method="unified_sale_credit", account_id=None, source_account_id=None,
-                notes=f"Collected at Unified Sale {batch.display_id} — routed onward at settlement",
-                status="active", entered_by=batch.entered_by, unified_sale_id=batch.id,
-            ))
-
-        # ---- Purchase Plant Balance (grows by the cost of goods loaded —
-        # this is the sale/load event, regardless of where the settlement
-        # money is later routed to) ----
-        company.current_balance = _dec(company.current_balance) + _dec(batch.total_purchase_amount)
-        db.add(company)
-
-        # Shop Management (§ Shop spec, "one transaction, no duplication") —
-        # mirrors routers/sales.py's _apply_sale exactly. This is the ONLY
-        # Sale entry point actually reachable from the UI (Shell's "Sale"
-        # nav goes to /unified-sale; /new-sale, which has its own copy of
-        # this block, is not linked), so without this a Load to a Shop
-        # customer would post to the customer's balance/plant payable like
-        # any other Sale but silently never create the ShopStockBatch the
-        # Shop dashboard's stock figures depend on. Posted here rather than
-        # in _create_pending_children because this — approval — is the
-        # moment a Sale actually becomes "active" and posts financially;
-        # a pending, not-yet-approved Load must not already be sitting in
-        # the shop's physical stock. source_sale_id=sale.id lets
-        # routers/sales.py's _reverse_sale (used by /sales/{id}/cancel and
-        # /sales/{id}/correct — see CorrectTransactionModal on the Shop
-        # Detail page) find and reverse this batch precisely, the same way
-        # it already does for a batch created via the direct Sale flow.
-        for sale in sales:
-            sale.status = "active"
-            db.add(sale)
-            if customer.customer_type == "shop":
-                db.add(models.ShopStockBatch(
-                    customer_id=customer.id,
-                    product_id=sale.product_id,
-                    source_sale_id=sale.id,
-                    transaction_date=sale.date,
-                    quantity_received=sale.quantity,
-                    quantity_remaining=sale.quantity,
-                    load_rate_per_kg=(sale.rate_per_cylinder / sale.weight_per_cylinder) if sale.weight_per_cylinder else 0,
-                    status="active",
-                    entered_by=by,
-                ))
-        for purchase in purchases:
-            purchase.status = "active"
-            db.add(purchase)
-
-        batch.sale_status = "approved"
-        # Naive UTC — matches every other DateTime column's storage
-        # convention (datetime.utcnow()). An AWARE datetime bound to this
-        # naive column would get silently shifted by Postgres's
-        # Asia/Karachi session timezone before storage, then shifted AGAIN
-        # by the frontend's UTC->Asia/Karachi display conversion — a +5h
-        # double offset (§ Double Timezone Offset Fix). See app/timezone.py.
-        batch.sale_approved_at = datetime.utcnow()
-        batch.sale_approved_by = by
-        _sync_legacy_status(batch)
-        db.add(batch)
-
+        _do_approve_sale(db, batch, sales, purchases, by)
         db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(500, f"Sale approval failed, nothing was changed: {e}")
@@ -596,63 +712,382 @@ def approve_unified_sale_payment(
     batch = db.query(models.UnifiedSaleBatch).get(unified_sale_id)
     if not batch:
         raise HTTPException(404, "Unified sale not found")
-    if batch.payment_status != "pending":
-        raise HTTPException(400, f"Cannot approve payment — already {batch.payment_status}")
 
     sales, purchases, payment, expense, owner_drawing = _load_children(db, batch.id)
 
     try:
-        if reference:
-            batch.payment_reference = reference
-
-        # ---- Settlement Routing ----
-        # Net Plant Payment = Credit Received - Home Expense - Owner Drawings
-        # (already computed onto the batch at create/edit time). Where it
-        # actually posts depends on destination_type — it must NEVER
-        # unconditionally reduce the purchase plant's payable, since the
-        # customer may have routed it to a different plant or a Dowa account
-        # entirely (§ Settlement Routing).
-        net_plant_payment = _dec(batch.net_plant_payment)
-        if net_plant_payment > 0:
-            if batch.destination_type == "account":
-                # A fixed bucket key (office_cash | owner_home | dowa_account)
-                # resolves to the same real PaymentAccount row Cash Management
-                # reads — see resolve_account_or_bucket — so both pages stay
-                # in sync with this credit.
-                account_row = resolve_account_or_bucket(db, batch.account_id)
-                if account_row:
-                    account_row.current_balance = _dec(account_row.current_balance) + net_plant_payment
-                    db.add(account_row)
-            else:
-                target_id = batch.target_plant_id or batch.company_id
-                target_company = db.query(models.Company).get(target_id)
-                if target_company:
-                    target_company.current_balance = _dec(target_company.current_balance) - net_plant_payment
-                    db.add(target_company)
-
-        if payment:
-            payment.status = "active"
-            db.add(payment)
-        if expense:
-            expense.status = "active"
-            db.add(expense)
-        if owner_drawing:
-            owner_drawing.status = "active"
-            db.add(owner_drawing)
-
-        batch.payment_status = "approved"
-        batch.payment_approved_at = datetime.utcnow()
-        batch.payment_approved_by = by
-        _sync_legacy_status(batch)
-        db.add(batch)
-
+        _do_approve_payment(db, batch, payment, expense, owner_drawing, by, reference)
         db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(500, f"Payment approval failed, nothing was changed: {e}")
 
     db.refresh(batch)
     return _batch_to_out(batch, sales, purchases, payment, expense, owner_drawing)
+
+
+@router.post("/unified/{unified_sale_id}/approve", response_model=schemas.UnifiedSaleOut)
+def approve_payment_only(
+    unified_sale_id: UUID,
+    by: Optional[str] = Query("system"),
+    reference: Optional[str] = Query(None, description="Settlement reference (bank transfer/cheque no.), if now known"),
+    db: Session = Depends(get_db),
+):
+    """Combined, atomic approval for a Payment-Only batch (§ Payment-Only
+    Pending Approval) — company_id IS NULL, no purchase plant, no items.
+    There's nothing meaningful to approve on the sale side separately (no
+    load to verify happened), so this approves both sale_status and
+    payment_status together in one transaction: the customer's balance drops
+    by what they paid AND that money is routed to its destination (plant
+    payable / Dowa account / Owner Drawings / Home Expense) in the same
+    commit. A Full Sale (company_id set) must use approve-sale/
+    approve-payment independently instead — this endpoint refuses those, so
+    a real Load can never skip its own sale-side approval by accident."""
+    batch = db.query(models.UnifiedSaleBatch).get(unified_sale_id)
+    if not batch:
+        raise HTTPException(404, "Unified sale not found")
+    if batch.company_id is not None:
+        raise HTTPException(400, "This endpoint is for Payment-Only batches only — use approve-sale/approve-payment for a Full Sale")
+
+    sales, purchases, payment, expense, owner_drawing = _load_children(db, batch.id)
+
+    try:
+        _do_approve_sale(db, batch, sales, purchases, by)
+        _do_approve_payment(db, batch, payment, expense, owner_drawing, by, reference)
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"Approval failed, nothing was changed: {e}")
+
+    db.refresh(batch)
+    return _batch_to_out(batch, sales, purchases, payment, expense, owner_drawing)
+
+
+@router.patch("/unified/{unified_sale_id}/correct-settlement", response_model=schemas.UnifiedSaleOut)
+def correct_unified_sale_settlement(
+    unified_sale_id: UUID,
+    payload: schemas.UnifiedSaleSettlementCorrect,
+    db: Session = Depends(get_db),
+):
+    """§ Bug Fix — Correction Modal Routing. Corrects where an ALREADY-
+    APPROVED settlement's money went (destination_type/target_plant_id/
+    account_id) and the home_expense/owner_drawings split — never
+    total_credit_received, which is the SALE side's concern and stays
+    exactly what it was (see approve_unified_sale_sale; correcting that
+    would mean re-touching the customer's balance, a different operation
+    from correcting routing). Reverses exactly what the current settlement
+    posted, cancels (never mutates) the old CompanyPayment/Expense/
+    OwnerDrawings children, then posts fresh ones with the corrected
+    values — same cancel + re-create convention every other correctable
+    transaction in this app already uses (see routers/sales.py::
+    correct_sale). The audit-trail Payment row itself (see
+    approve_unified_sale_sale) is untouched — its amount never changes
+    here, and routers/payments.py._attach_destination_info always resolves
+    its displayed destination live from this batch, so it reflects the
+    correction automatically."""
+    if not payload.correction_reason.strip():
+        raise HTTPException(400, "correction_reason is required")
+
+    batch = db.query(models.UnifiedSaleBatch).get(unified_sale_id)
+    if not batch:
+        raise HTTPException(404, "Unified sale not found")
+    if batch.payment_status != "approved":
+        raise HTTPException(400, "Only an approved settlement can be corrected — edit the pending batch instead")
+
+    bypass_sum = payload.home_expense_amount + payload.owner_drawings_amount
+    if bypass_sum > _dec(batch.total_credit_received) + EPSILON:
+        raise HTTPException(
+            400,
+            f"Home expense ({payload.home_expense_amount}) + owner drawings ({payload.owner_drawings_amount}) "
+            f"= {bypass_sum} exceeds total credit received ({batch.total_credit_received}) — "
+            f"nothing would be left to settle.",
+        )
+    if payload.home_expense_amount > 0 and not payload.home_expense_category_id:
+        raise HTTPException(400, "home_expense_category_id is required when home_expense_amount > 0")
+    if payload.home_expense_category_id and not db.query(models.ExpenseCategory).get(payload.home_expense_category_id):
+        raise HTTPException(404, "Expense category not found")
+
+    new_destination_type, new_target_plant_id, new_account_id = _resolve_destination(db, payload, batch.company_id)
+
+    sales, purchases, old_plant_payment, old_expense, old_owner_drawing = _load_children(db, batch.id)
+
+    try:
+        # ---- Reverse exactly what the CURRENT (about-to-be-superseded)
+        # settlement posted — mirrors _do_approve_payment's own posting,
+        # just subtracting instead of adding and vice versa. ----
+        old_net = _dec(batch.net_plant_payment)
+        if old_net > 0:
+            if batch.destination_type == "account":
+                old_account_row = resolve_account_or_bucket(db, batch.account_id)
+                if old_account_row:
+                    old_account_row.current_balance = _dec(old_account_row.current_balance) - old_net
+                    db.add(old_account_row)
+            else:
+                old_target_id = batch.target_plant_id or batch.company_id
+                old_target_company = db.query(models.Company).get(old_target_id) if old_target_id else None
+                if old_target_company:
+                    old_target_company.current_balance = _dec(old_target_company.current_balance) + old_net
+                    db.add(old_target_company)
+
+        # Cancel (never mutate) the old settlement children — an
+        # uncorrupted audit trail, same convention as every other
+        # correctable transaction in this app.
+        for child in (old_plant_payment, old_expense, old_owner_drawing):
+            if child and child.status == "active":
+                child.status = "cancelled"
+                db.add(child)
+
+        # ---- Post the corrected settlement ----
+        new_net_plant_payment = _dec(batch.total_credit_received) - payload.home_expense_amount - payload.owner_drawings_amount
+
+        new_plant_payment = None
+        if new_net_plant_payment > 0 and new_destination_type == "plant":
+            new_plant_payment = models.CompanyPayment(
+                display_id=next_display_id(db, models.CompanyPayment, "CPAY", width=6),
+                date=batch.date, company_id=new_target_plant_id, amount=new_net_plant_payment,
+                method="direct_settlement", account_id=None,
+                notes=f"Settlement correction of Unified Sale {batch.display_id} — {payload.correction_reason}",
+                status="active", entered_by=payload.corrected_by, unified_sale_id=batch.id,
+            )
+            db.add(new_plant_payment)
+            db.flush()
+
+        new_expense = None
+        if payload.home_expense_amount > 0:
+            new_expense = models.Expense(
+                display_id=next_display_id(db, models.Expense, "EXP", width=6),
+                date=batch.date, category_id=payload.home_expense_category_id, amount=payload.home_expense_amount,
+                account_id=None, method="cash",
+                description=f"Settlement correction of Unified Sale {batch.display_id} — {payload.correction_reason}",
+                status="active", entered_by=payload.corrected_by, unified_sale_id=batch.id,
+            )
+            db.add(new_expense)
+            db.flush()
+
+        new_owner_drawing = None
+        if payload.owner_drawings_amount > 0:
+            new_owner_drawing = models.OwnerDrawings(
+                display_id=next_display_id(db, models.OwnerDrawings, "DRAW", width=6),
+                date=batch.date, amount=payload.owner_drawings_amount, account_id=None,
+                notes=f"Settlement correction of Unified Sale {batch.display_id} — {payload.correction_reason}",
+                status="active", entered_by=payload.corrected_by, unified_sale_id=batch.id,
+            )
+            db.add(new_owner_drawing)
+            db.flush()
+
+        if new_net_plant_payment > 0:
+            if new_destination_type == "account":
+                new_account_row = resolve_account_or_bucket(db, new_account_id)
+                if new_account_row:
+                    new_account_row.current_balance = _dec(new_account_row.current_balance) + new_net_plant_payment
+                    db.add(new_account_row)
+            else:
+                new_target_company = db.query(models.Company).get(new_target_plant_id) if new_target_plant_id else None
+                if new_target_company:
+                    new_target_company.current_balance = _dec(new_target_company.current_balance) - new_net_plant_payment
+                    db.add(new_target_company)
+
+        batch.home_expense_amount = payload.home_expense_amount
+        batch.owner_drawings_amount = payload.owner_drawings_amount
+        batch.net_plant_payment = new_net_plant_payment
+        batch.destination_type = new_destination_type
+        batch.target_plant_id = new_target_plant_id
+        batch.account_id = new_account_id
+        if payload.payment_reference:
+            batch.payment_reference = payload.payment_reference
+        batch.settlement_corrected_by = payload.corrected_by
+        batch.settlement_corrected_at = datetime.utcnow()
+        batch.settlement_correction_reason = payload.correction_reason
+        db.add(batch)
+
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"Settlement correction failed, nothing was changed: {e}")
+
+    db.refresh(batch)
+    sales, purchases, plant_payment, expense, owner_drawing = _load_children(db, batch.id)
+    return _batch_to_out(batch, sales, purchases, plant_payment, expense, owner_drawing)
+
+
+@router.patch("/unified/{unified_sale_id}/correct-amount", response_model=schemas.UnifiedSaleOut)
+def correct_unified_sale_amount(
+    unified_sale_id: UUID,
+    payload: schemas.UnifiedSaleAmountCorrect,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_active_user),
+):
+    """§ Amount Correction for Unified-Sale-Linked Payments. Sibling of
+    correct_unified_sale_settlement above — that one corrects WHERE the
+    money went, this one corrects HOW MUCH (total_credit_received), never
+    the other's concern. Same reverse-then-repost discipline as every
+    other correction in this app, applied on BOTH sides an approved
+    amount already touched:
+      1. The audit-trail Payment row itself (reverse-then-repost, same
+         shape as routers/payments.py::correct_payment — but posted
+         directly rather than via _apply_payment, which requires a real
+         account_id; this payment type's money "hasn't landed in any
+         account yet, routed onward at settlement", same as
+         approve_unified_sale_sale's own Payment-creation).
+      2. The REAL settlement destination (account or plant balance) that
+         already received the old net_plant_payment at approval time —
+         resync_unified_sale_batch_totals only fixes the batch's own
+         stored display fields (total_credit_received/net_plant_payment),
+         it deliberately never re-routes money a second time (see its own
+         docstring), so this reverses/reposts that money movement itself,
+         exactly mirroring correct_unified_sale_settlement's own
+         reversal/repost block above.
+
+    payment_status == "approved" (not just sale_status) is required —
+    only once the settlement itself is approved has real money actually
+    moved to a real account/plant; reversing that movement before it
+    happened would corrupt a balance the sale never touched. (A batch
+    with sale_status=approved but payment_status still pending can't be
+    amount-corrected here, same pre-existing limitation
+    correct_unified_sale_settlement already has — edit the pending
+    settlement instead.)
+
+    Deliberately does NOT touch excess_amount/account_credit — this
+    payment type never sets excess_amount at creation (see
+    approve_unified_sale_sale's Payment-creation comment: the sale
+    approval's own overpayment math is a one-time combined formula,
+    never stored back onto the Payment row), so there is nothing
+    reliable to reverse or recompute there."""
+    if not payload.correction_reason.strip():
+        raise HTTPException(400, "correction_reason is required")
+    if payload.amount <= 0:
+        raise HTTPException(400, "amount must be greater than zero")
+
+    batch = db.query(models.UnifiedSaleBatch).get(unified_sale_id)
+    if not batch:
+        raise HTTPException(404, "Unified sale not found")
+    if batch.payment_status != "approved":
+        raise HTTPException(400, "Only an approved settlement's collected amount can be corrected")
+
+    original = (
+        db.query(models.Payment)
+        .filter(
+            models.Payment.unified_sale_id == batch.id,
+            models.Payment.method == "unified_sale_credit",
+            models.Payment.status == "active",
+        )
+        .first()
+    )
+    if not original:
+        raise HTTPException(404, "No active collected-amount record found for this sale")
+
+    bypass_sum = _dec(batch.home_expense_amount) + _dec(batch.owner_drawings_amount)
+    if bypass_sum > payload.amount + EPSILON:
+        raise HTTPException(
+            400,
+            f"Home expense ({batch.home_expense_amount}) + owner drawings ({batch.owner_drawings_amount}) "
+            f"= {bypass_sum} would exceed the corrected amount ({payload.amount}) — nothing would be left to settle.",
+        )
+
+    # home_expense_amount/owner_drawings_amount are untouched by this
+    # correction (not part of the payload) — only the CompanyPayment child
+    # depends on net_plant_payment and needs cancel+recreate; Expense/
+    # OwnerDrawings' own amounts don't change, so they're left alone.
+    old_plant_payment = (
+        db.query(models.CompanyPayment)
+        .filter(models.CompanyPayment.unified_sale_id == batch.id, models.CompanyPayment.status == "active")
+        .first()
+    )
+
+    try:
+        customer = db.query(models.Customer).get(original.customer_id)
+
+        # ---- Reverse exactly what the OLD amount posted ----
+        _reverse_payment(db, original)
+        old_net = _dec(batch.net_plant_payment)
+        if old_net > 0:
+            if batch.destination_type == "account":
+                old_account_row = resolve_account_or_bucket(db, batch.account_id)
+                if old_account_row:
+                    old_account_row.current_balance = _dec(old_account_row.current_balance) - old_net
+                    db.add(old_account_row)
+            else:
+                old_target_id = batch.target_plant_id or batch.company_id
+                old_target_company = db.query(models.Company).get(old_target_id) if old_target_id else None
+                if old_target_company:
+                    old_target_company.current_balance = _dec(old_target_company.current_balance) + old_net
+                    db.add(old_target_company)
+
+        # Cancel (never mutate) the old CompanyPayment — same audit-trail
+        # convention as correct_unified_sale_settlement above. Its amount
+        # mirrors net_plant_payment, which is about to change.
+        if old_plant_payment and old_plant_payment.status == "active":
+            old_plant_payment.status = "cancelled"
+            db.add(old_plant_payment)
+
+        original.status = "corrected"
+        original.corrected_by = current_user.name
+        original.corrected_at = datetime.utcnow()
+        original.correction_reason = payload.correction_reason
+        db.add(original)
+        db.flush()
+
+        # ---- Post the corrected amount ----
+        new_payment = models.Payment(
+            display_id=next_display_id(db, models.Payment, "PAY", width=6),
+            date=original.date, customer_id=original.customer_id, amount=payload.amount,
+            method="unified_sale_credit", account_id=None, source_account_id=None,
+            notes=original.notes, status="active", entered_by=current_user.name,
+            unified_sale_id=batch.id,
+        )
+        new_payment.corrected_from_id = original.id
+        db.add(new_payment)
+        customer.current_balance = _dec(customer.current_balance) - payload.amount
+        db.add(customer)
+        db.flush()
+
+        # Batch's own Collected/Outstanding — sums the now-active
+        # new_payment (old one is "corrected", excluded).
+        resync_unified_sale_batch_totals(db, batch.id)
+
+        new_net = _dec(batch.net_plant_payment)
+        if new_net > 0:
+            if batch.destination_type == "account":
+                new_account_row = resolve_account_or_bucket(db, batch.account_id)
+                if new_account_row:
+                    new_account_row.current_balance = _dec(new_account_row.current_balance) + new_net
+                    db.add(new_account_row)
+            else:
+                new_target_id = batch.target_plant_id or batch.company_id
+                new_target_company = db.query(models.Company).get(new_target_id) if new_target_id else None
+                if new_target_company:
+                    new_target_company.current_balance = _dec(new_target_company.current_balance) - new_net
+                # New CompanyPayment child — same fields as correct_unified_
+                # sale_settlement's own posting, its amount now correctly
+                # mirroring the corrected net_plant_payment.
+                db.add(models.CompanyPayment(
+                    display_id=next_display_id(db, models.CompanyPayment, "CPAY", width=6),
+                    date=batch.date, company_id=new_target_id, amount=new_net,
+                    method="direct_settlement", account_id=None,
+                    notes=f"Amount correction of Unified Sale {batch.display_id} — {payload.correction_reason}",
+                    status="active", entered_by=current_user.name, unified_sale_id=batch.id,
+                ))
+
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"Amount correction failed, nothing was changed: {e}")
+
+    db.refresh(batch)
+    sales, purchases, plant_payment, expense, owner_drawing = _load_children(db, batch.id)
+    return _batch_to_out(batch, sales, purchases, plant_payment, expense, owner_drawing)
 
 
 @router.post("/unified/{unified_sale_id}/cancel", response_model=schemas.UnifiedSaleOut)

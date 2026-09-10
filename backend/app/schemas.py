@@ -1191,6 +1191,25 @@ class PaymentOut(BaseModel):
     # so the API always showed None for a Unified-Sale-originated Payment
     # even though the DB column was populated.
     unified_sale_id: Optional[UUID] = None
+    # Not real Payment columns for a Unified-Sale-originated row (that
+    # settlement routing lives on the parent UnifiedSaleBatch, not here) —
+    # resolved in routers/payments.py._attach_destination_info and attached
+    # to the ORM row before serialization (§ Bug Fix — Approved Payments
+    # destination display). For a Payment Receipt-sourced row (destination_
+    # type set directly on the row) these already ARE real columns and pass
+    # through unchanged. None for an ordinary quick-pay Payment — its
+    # destination is simply account_id.
+    destination_type: Optional[str] = None
+    target_plant_id: Optional[UUID] = None
+    account_category: Optional[str] = None
+    # Same resolution as PaymentReceiptOut's own fields (§ Bug Fix —
+    # Correction Modal Routing pre-fill) — for a receipt-sourced row,
+    # resolved from the linked Expense/OwnerDrawings (source_payment_id);
+    # for a Unified-Sale-sourced row, straight from the parent batch.
+    # Needed so CorrectTransactionModal never silently pre-fills 0 for an
+    # amount that was actually routed to Home Expense/Owner Drawings.
+    home_expense_amount: Decimal = Decimal("0")
+    owner_drawings_amount: Decimal = Decimal("0")
 
 
 # ---------- Payment Receipt (standalone, with settlement routing) ----------
@@ -1217,6 +1236,18 @@ class PaymentReceiptCreate(BaseModel):
     entered_by: str
 
 
+class PaymentReceiptCorrect(PaymentReceiptCreate):
+    """§ Bug Fix — Correction Modal Routing. Same shape as
+    PaymentReceiptCreate — see PaymentCorrect for the convention. Unlike
+    UnifiedSaleSettlementCorrect, this DOES let `amount` change too — a
+    standalone Payment Receipt has no separate "sale side" holding the
+    customer's owed amount hostage, so correcting the amount here is exactly
+    as safe as correcting destination (both just reverse-then-repost the
+    one Payment row and its settlement)."""
+    correction_reason: str
+    corrected_by: str
+
+
 class PaymentReceiptOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
@@ -1230,12 +1261,25 @@ class PaymentReceiptOut(BaseModel):
     account_id: Optional[UUID] = None
     account_category: Optional[str] = None
     net_settlement_amount: Optional[Decimal] = None
+    # Not real Payment columns — resolved in routers/payment_receipts.py from
+    # the linked Expense/OwnerDrawings rows (source_payment_id) and attached
+    # to the ORM row before serialization (§ Part B, destination labeling).
+    # Zero unless this receipt's amount was routed there.
+    home_expense_amount: Decimal = Decimal("0")
+    owner_drawings_amount: Decimal = Decimal("0")
     reference_no: Optional[str] = None
     notes: Optional[str] = None
     excess_amount: Optional[Decimal] = None
     status: str
     entered_by: str
     created_at: datetime
+    # § Bug Fix — Correction Modal Routing, Case 1. Real Payment columns
+    # (same ones PaymentOut already exposes) — just never surfaced here
+    # before a receipt could be corrected at all.
+    corrected_by: Optional[str] = None
+    corrected_at: Optional[datetime] = None
+    correction_reason: Optional[str] = None
+    corrected_from_id: Optional[UUID] = None
 
 
 # ---------- Expense ----------
@@ -1363,8 +1407,17 @@ class LedgerRow(BaseModel):
 class CorrectionHistoryRow(BaseModel):
     """One superseded (status="corrected") original transaction — kept
     for the read-only Correction History panel, never mixed into the
-    running-balance rows above (§1)."""
-    kind: Literal["sale", "payment", "purchase", "company_payment"]
+    running-balance rows above (§1).
+
+    Also doubles as an Opening Balance correction row (§ Opening Balance) —
+    those three kinds are read straight from AuditLog (there's no reversed-
+    and-reposted pair for an in-place anchor-value edit), with the old →
+    new change folded into `description` and `corrected_display_id` always
+    None (see routers/ledger.py::_opening_balance_corrections)."""
+    kind: Literal[
+        "sale", "payment", "purchase", "company_payment",
+        "customer_opening_balance", "company_opening_balance", "shop_opening_cash",
+    ]
     date: datetime
     ref_id: UUID
     display_id: str
@@ -1374,6 +1427,15 @@ class CorrectionHistoryRow(BaseModel):
     corrected_by: str
     corrected_at: datetime
     corrected_display_id: Optional[str] = None  # the new row that replaced it, if still findable
+
+
+class OpeningBalanceUpdate(BaseModel):
+    """§ Opening Balance — one field, no reversal/repost (unlike Sale/
+    Payment/etc. corrections): the stored anchor value is edited in place,
+    the running balance is shifted by the identical delta, and the edit is
+    logged to AuditLog with a required reason."""
+    new_value: Decimal
+    reason: str
 
 
 class CustomerLedgerSummary(BaseModel):
@@ -1673,7 +1735,11 @@ class UnifiedSaleSettlement(BaseModel):
 class UnifiedSaleCreate(BaseModel):
     date: UtcDateTime
     customer_id: UUID
-    plant_id: UUID  # maps to Company.id
+    # None for a Payment-Only batch (§ Payment-Only Pending Approval) — no
+    # purchase plant, no items. Required (enforced in
+    # routers/unified_sale.py::_validate_and_load) whenever items is
+    # non-empty — an actual Load always has a purchase plant.
+    plant_id: Optional[UUID] = None  # maps to Company.id
     items: list[UnifiedSaleItem] = []
     # Optional, defaults to 0 — folded into total_selling_amount server-side
     # (see routers/unified_sale.py), never trusted as a pre-computed total.
@@ -1699,6 +1765,43 @@ class UnifiedSaleEdit(UnifiedSaleCreate):
     pass
 
 
+class UnifiedSaleSettlementCorrect(BaseModel):
+    """§ Bug Fix — Correction Modal Routing. Corrects ONLY where an
+    ALREADY-APPROVED settlement's money went (destination_type/
+    target_plant_id/account_id) and the home_expense/owner_drawings split —
+    never total_credit_received itself, which is the SALE side's concern
+    (see approve_unified_sale_sale) and is untouched by this endpoint.
+    Same field shape as UnifiedSaleSettlement, deliberately not a subclass
+    of it — payment_reference here is genuinely optional (unlike at
+    creation, an already-approved settlement may already have one)."""
+    home_expense_amount: Decimal = Decimal("0")
+    home_expense_category_id: Optional[UUID] = None
+    owner_drawings_amount: Decimal = Decimal("0")
+    destination_type: Literal["plant", "account"] = "plant"
+    target_plant_id: Optional[UUID] = None
+    account_id: Optional[str] = None
+    payment_reference: Optional[str] = None
+    correction_reason: str
+    corrected_by: str
+
+
+class UnifiedSaleAmountCorrect(BaseModel):
+    """§ Amount Correction for Unified-Sale-Linked Payments. Corrects ONLY
+    the collected amount (total_credit_received) — the sibling of
+    UnifiedSaleSettlementCorrect above, which explicitly excludes this
+    field. Deliberately a separate endpoint/schema rather than adding
+    `amount` there: that endpoint's whole contract is "routing only,
+    amount is the sale side's concern," and this one's contract is the
+    mirror image — one concern each, same as every other correctable
+    transaction in this app. See routers/unified_sale.py::
+    correct_unified_sale_amount for why this also has to reverse-then-
+    repost the real settlement destination (account/plant balance), not
+    just resync the batch's own display fields."""
+    amount: Decimal
+    correction_reason: str
+    corrected_by: str
+
+
 class UnifiedSaleBatchOut(BaseModel):
     """Lightweight list-view row — no nested child records, unlike UnifiedSaleOut."""
     model_config = ConfigDict(from_attributes=True)
@@ -1706,7 +1809,8 @@ class UnifiedSaleBatchOut(BaseModel):
     display_id: str
     date: datetime
     customer_id: UUID
-    company_id: UUID
+    # None for a Payment-Only batch — see UnifiedSaleCreate.plant_id.
+    company_id: Optional[UUID] = None
     total_selling_amount: Decimal
     total_purchase_amount: Decimal
     delivery_charges: Decimal = Decimal("0")
@@ -1721,6 +1825,11 @@ class UnifiedSaleBatchOut(BaseModel):
     gate_pass_no: Optional[str] = None
     notes: Optional[str] = None
     payment_reference: Optional[str] = None
+    # § Bug Fix — Correction Modal Routing. Null until the settlement's
+    # first correction — see models.UnifiedSaleBatch.settlement_corrected_by.
+    settlement_corrected_by: Optional[str] = None
+    settlement_corrected_at: Optional[datetime] = None
+    settlement_correction_reason: Optional[str] = None
     # GST on Sale, extended to Unified Sale — see models.UnifiedSaleBatch.
     # grand_total is what's actually posted to the customer's balance/
     # ledger; total_selling_amount above stays excl.-GST.
@@ -1754,7 +1863,8 @@ class UnifiedSaleOut(BaseModel):
     display_id: str
     date: datetime
     customer_id: UUID
-    company_id: UUID
+    # None for a Payment-Only batch — see UnifiedSaleCreate.plant_id.
+    company_id: Optional[UUID] = None
     total_selling_amount: Decimal
     total_purchase_amount: Decimal
     delivery_charges: Decimal = Decimal("0")
@@ -1769,6 +1879,11 @@ class UnifiedSaleOut(BaseModel):
     gate_pass_no: Optional[str] = None
     notes: Optional[str] = None
     payment_reference: Optional[str] = None
+    # § Bug Fix — Correction Modal Routing. Null until the settlement's
+    # first correction — see models.UnifiedSaleBatch.settlement_corrected_by.
+    settlement_corrected_by: Optional[str] = None
+    settlement_corrected_at: Optional[datetime] = None
+    settlement_correction_reason: Optional[str] = None
     # GST on Sale, extended to Unified Sale — see models.UnifiedSaleBatch.
     gst_enabled: bool = False
     gst_rate: Optional[Decimal] = None
@@ -1990,6 +2105,8 @@ class ShopStockBatchOut(BaseModel):
     quantity_received: Decimal
     quantity_remaining: Decimal
     load_rate_per_kg: Decimal
+    source_type: str = "load"
+    notes: Optional[str] = None
     status: str
     entered_by: str
     created_at: datetime
@@ -1998,6 +2115,20 @@ class ShopStockBatchOut(BaseModel):
     # every other field above is untouched.
     product_name: Optional[str] = None
     source_display_id: Optional[str] = None
+
+
+class ShopStockBatchCreate(BaseModel):
+    """Add Filled Cylinder Stock (§ Shop Management) — manually adds an
+    existing batch of filled cylinders to a shop's FIFO stock, e.g.
+    onboarding a shop that already has physical stock on-site, or a manual
+    correction. See routers/shops.py's create_manual_stock_batch: unlike
+    every other ShopStockBatch, this one has no backing Sale and never
+    touches Customer.current_balance / the Dowa receivable / any Purchase
+    or Payment — it only ever adds physical stock."""
+    date: Optional[UtcDateTime] = None
+    product_id: UUID
+    quantity: Decimal
+    notes: Optional[str] = None
 
 
 class ShopSaleCreate(BaseModel):
