@@ -24,9 +24,9 @@ from pathlib import Path
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_RIGHT, TA_CENTER
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 from app import schemas
@@ -178,6 +178,23 @@ def _styles():
         "sig_line": ParagraphStyle("SigLine", parent=styles["Normal"], fontSize=9.5, alignment=TA_CENTER),
         "sig_label": ParagraphStyle("SigLabel", parent=styles["Normal"], fontSize=8, alignment=TA_CENTER, textColor=colors.HexColor("#475569")),
         "footer": ParagraphStyle("InvoiceFooter", parent=styles["Normal"], fontSize=7.5, alignment=TA_CENTER, textColor=colors.grey),
+        # ---- Compact/ledger-style variants — Customer Statement only
+        # (§ Compact Customer Statement redesign). The styles above stay
+        # exactly as they were for the 5 per-record invoice types and the
+        # Plant Statement, which all keep the original portrait/commercial-
+        # invoice look; these exist so the statement can be genuinely
+        # denser (smaller company header, single-line summary, ~7.5pt
+        # table rows) without touching anything else's sizing.
+        "compact_company_name": ParagraphStyle("CompactCompanyName", parent=styles["Title"], fontSize=13, leading=15, alignment=0, spaceAfter=0),
+        "compact_company_tagline": ParagraphStyle("CompactCompanyTagline", parent=styles["Normal"], fontSize=7, textColor=colors.HexColor("#0F8B8D"), spaceAfter=0),
+        "compact_address_right": ParagraphStyle("CompactAddressRight", parent=styles["Normal"], fontSize=6.5, alignment=TA_RIGHT, leading=7.8, textColor=colors.HexColor("#334155")),
+        "compact_doctype": ParagraphStyle("CompactDocType", parent=styles["Heading1"], fontSize=11, alignment=0, spaceBefore=0, spaceAfter=0, textColor=colors.HexColor("#1A2B33")),
+        "compact_customer_line": ParagraphStyle("CompactCustomerLine", parent=styles["Normal"], fontSize=8.5, leading=10.5, textColor=colors.HexColor("#1A2B33")),
+        "compact_summary_label": ParagraphStyle("CompactSummaryLabel", parent=styles["Normal"], fontSize=6, textColor=colors.HexColor("#64748B")),
+        "compact_summary_value": ParagraphStyle("CompactSummaryValue", parent=styles["Normal"], fontSize=8.5, fontName="Helvetica-Bold", textColor=colors.HexColor("#1A2B33")),
+        "compact_table_cell": ParagraphStyle("CompactTableCell", parent=styles["Normal"], fontSize=7.5, leading=8.2, textColor=colors.HexColor("#1A2B33")),
+        "compact_table_header": ParagraphStyle("CompactTableHeader", parent=styles["Normal"], fontSize=7.5, leading=8.2, fontName="Helvetica-Bold", textColor=colors.white),
+        "compact_footer": ParagraphStyle("CompactFooter", parent=styles["Normal"], fontSize=6.5, alignment=TA_CENTER, textColor=colors.grey),
     }
 
 
@@ -634,67 +651,206 @@ def _summary_metrics_row(s, metrics: list[tuple[str, str, str]]) -> Table:
     return t
 
 
-def _statement_table(s, summary: "schemas.CustomerLedgerSummary"):
-    # Column order mirrors the Customer Ledger screen's own table exactly
-    # (frontend/app/customer-ledger/page.tsx: Date, ID, Description, Rate,
-    # 11.8 KG, 45.4 KG, GST, Sale, Payment, Balance) — the PDF is a printable
-    # copy of what's on screen, not a separate layout. Sale/Payment/Balance
-    # (the financial columns) keep their original widths unchanged; the
-    # 28mm the two new quantity columns need is taken from Date/ID/
-    # Description/Rate/GST instead — Description wraps (via Paragraph)
-    # rather than clipping, so it's the most compressible.
-    headers = ["Date", "ID", "Description", "Rate", "11.8 KG", "45.4 KG", "GST", "Sale", "Payment", "Balance"]
-    header_row = [Paragraph(f"<b>{h}</b>", s["value_cell"]) for h in headers]
-    data = [header_row]
+# ============================================================================
+# COMPACT LAYOUT — Customer Statement only (§ Compact Customer Statement
+# redesign, A4 landscape). None of these touch _header_block/_details_box/
+# _party_and_details/_summary_metrics_row above, which stay exactly as they
+# were for the 5 per-record invoice types and the Plant Statement (both
+# still portrait, both still using the original "commercial invoice" look).
+# ============================================================================
 
-    opening_row_style = ParagraphStyle("OpeningRow", parent=s["value_cell"], fontName="Helvetica-Bold")
-    data.append([
-        Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
-        Paragraph("Opening Balance", opening_row_style),
-        Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
-        Paragraph("-", s["value_cell"]),
-        Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
-        Paragraph(_fmt_amount(summary.opening_balance), opening_row_style),
-    ])
+def _compact_header_block(s, total_width):
+    """Same logo-left / name-left / contact-right shape as _header_block,
+    just sized down: ~13mm-tall logo instead of ~20mm, 6.5pt contact text
+    instead of 8.5pt. Company info is unabridged (§ Company Information —
+    keep this) — only the presentation shrinks, per the redesign's own
+    "compact, not removed" instruction for this block."""
+    logo = Image(io.BytesIO(_logo_png()), width=13 * mm, height=14 * mm)
+    name_block = [
+        Paragraph(BUSINESS["name"].upper(), s["compact_company_name"]),
+        Paragraph(BUSINESS["tagline"], s["compact_company_tagline"]),
+    ]
+    # Same 7 fields as _header_block (address×2, city, phone, email, GST,
+    # NTN — § Company Information, all kept, none removed), combined onto
+    # 4 lines instead of 7 (phone+email share a line, GST+NTN share a
+    # line) — the row-height bottleneck for the whole compact header, so
+    # this is where "compact, not removed" actually has to happen.
+    right_lines = [
+        BUSINESS["address_lines"][0],
+        f"{BUSINESS['address_lines'][1]}, {BUSINESS['address_lines'][2]}",
+        f"{BUSINESS['phone']}  |  {BUSINESS['email']}",
+        f"{BUSINESS['gst_regn_no']}  |  {BUSINESS['ntn']}",
+    ]
+    right = [Paragraph(line, s["compact_address_right"]) for line in right_lines]
 
-    # summary.rows is latest-first for on-screen display (Global Sorting
-    # Standard); a running-balance statement reads top-to-bottom
-    # oldest-first, so this puts it back in the order it was actually built in.
-    for r in reversed(summary.rows):
-        data.append([
-            Paragraph(r.date.strftime("%Y-%m-%d"), s["value_cell"]),
-            Paragraph(r.display_id, s["value_cell"]),
-            Paragraph(r.description, s["value_cell"]),
-            Paragraph(_statement_rate_cell(r), s["value_cell"]),
-            Paragraph(_statement_qty_cell(r.qty_118), s["value_cell"]),
-            Paragraph(_statement_qty_cell(r.qty_454), s["value_cell"]),
-            Paragraph(_statement_gst_cell(r), s["value_cell"]),
-            Paragraph(_fmt_amount(r.sale_amount) if r.sale_amount else "-", s["value_cell"]),
-            Paragraph(_fmt_amount(r.payment_amount) if r.payment_amount else "-", s["value_cell"]),
-            Paragraph(_fmt_amount(r.running_balance), ParagraphStyle("BalCell", parent=s["value_cell"], fontName="Helvetica-Bold")),
-        ])
-
-    # Sums to 182mm — the exact usable width on A4 (210mm - 14mm left/right
-    # margins, see render_customer_statement_pdf's SimpleDocTemplate), same
-    # as before this change; Sale/Payment/Balance keep their original
-    # 20/20/26mm untouched.
-    t = Table(
-        data,
-        colWidths=[18 * mm, 20 * mm, 22 * mm, 16 * mm, 14 * mm, 14 * mm, 12 * mm, 20 * mm, 20 * mm, 26 * mm],
-        repeatRows=1,
-    )
+    name_col = 62 * mm
+    logo_col = 16 * mm
+    right_col = total_width - name_col - logo_col
+    t = Table([[logo, name_block, right]], colWidths=[logo_col, name_col, right_col])
     t.setStyle(TableStyle([
-        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("LEFTPADDING", (1, 0), (1, -1), 3),
+    ]))
+    return [
+        t, Spacer(1, 1 * mm),
+        HRFlowable(width="100%", thickness=1, color=colors.HexColor("#0F8B8D")),
+        Spacer(1, 1 * mm),
+    ]
+
+
+def _compact_customer_block(s, customer, month: str, total_width):
+    """Title + "Statement For" + period, all on two compact lines instead
+    of a centered heading followed by a whole details-box row (§ Statement
+    Title, § Customer Section). No Customer ID (§ Remove Internal System
+    Information) — party_bits is only mobile/address/city, the same
+    customer-facing fields _party_and_details already used, just inlined
+    instead of boxed."""
+    party_bits = []
+    if customer.mobile:
+        party_bits.append(customer.mobile)
+    addr_bits = [b for b in [customer.address, customer.city_area] if b]
+    if addr_bits:
+        party_bits.append(", ".join(addr_bits))
+    party_suffix = f" — {' · '.join(party_bits)}" if party_bits else ""
+
+    return [
+        Paragraph("CUSTOMER STATEMENT", s["compact_doctype"]),
+        Paragraph(
+            f"<b>Statement For:</b> {customer.name}{party_suffix} "
+            f"&nbsp;&nbsp;|&nbsp;&nbsp; <b>Period:</b> {_statement_period_label(month)}",
+            s["compact_customer_line"],
+        ),
+        Spacer(1, 1 * mm),
+    ]
+
+
+def _compact_plant_block(s, company, month: str, total_width):
+    """Plant Statement's equivalent of _compact_customer_block above — same
+    two-line shape, just Company has no address/city_area field to show
+    (unlike Customer), so party_bits is mobile-only."""
+    party_bits = [company.mobile] if company.mobile else []
+    party_suffix = f" — {' · '.join(party_bits)}" if party_bits else ""
+
+    return [
+        Paragraph("PLANT STATEMENT", s["compact_doctype"]),
+        Paragraph(
+            f"<b>Statement For:</b> {company.name}{party_suffix} "
+            f"&nbsp;&nbsp;|&nbsp;&nbsp; <b>Period:</b> {_statement_period_label(month)}",
+            s["compact_customer_line"],
+        ),
+        Spacer(1, 1 * mm),
+    ]
+
+
+def _compact_summary_row(s, metrics: list[tuple[str, str, str]], total_width) -> Table:
+    """Single-row compact grid version of _summary_metrics_row — label
+    above value in each cell, same visual language, but ~1/3 the row
+    height (2pt padding instead of 6, no card border/background) so the
+    whole financial summary (§ Summary) costs one short row instead of
+    two boxed ones."""
+    n = len(metrics)
+    col_width = total_width / n
+    cells = [
+        [Paragraph(label.upper(), s["compact_summary_label"]),
+         Paragraph(f'<font color="{color}">{value}</font>', s["compact_summary_value"])]
+        for label, value, color in metrics
+    ]
+    t = Table([cells], colWidths=[col_width] * n)
+    t.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#C5C1B4")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#C5C1B4")),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FAFAF8")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    return t
+
+
+# § Customer-facing field selection — deliberately narrower than the
+# Customer Ledger screen (frontend/app/customer-ledger/page.tsx), which
+# still shows ID/Description on screen for staff. Those two are internal/
+# reporting-oriented (a display_id like "USALE-000019" and a description
+# like "Unified Sale — sale & settlement" are both system/audit language,
+# not something a customer needs to reconcile what they were charged), so
+# this PDF drops them entirely rather than just shrinking them — the
+# customer only needs WHEN + the actual financial/quantity facts. Their
+# freed width goes to the remaining 8 columns, still summing to 277mm
+# (the usable width on A4 LANDSCAPE with 10mm margins, 297mm - 20mm — see
+# render_customer_statement_pdf's SimpleDocTemplate), with Balance getting
+# the largest share since it's the one column that must stay unmistakably
+# readable (§ Balance — "clearly visible").
+_STATEMENT_COL_WIDTHS = [24 * mm, 34 * mm, 24 * mm, 24 * mm, 32 * mm, 38 * mm, 38 * mm, 63 * mm]
+_STATEMENT_HEADERS = ["Date", "Rate", "11.8 KG", "45.4 KG", "GST", "Sale", "Payment", "Balance"]
+
+# Target row count on the tightest page (page 1, which carries the company
+# header/customer line/summary row above the table — see the budget math
+# in render_customer_statement_pdf's docstring). Every other page gets the
+# same per-row height, just with more headroom below the last row — see
+# § 35 Entries Per Page / § Pagination: reportlab's automatic table-split
+# would let a roomier continuation page hold more than this, which is why
+# rows are chunked into fixed-size Tables (one per page) below instead of
+# built as one giant auto-flowing Table.
+STATEMENT_ROWS_PER_PAGE = 35
+
+
+def _statement_row_cells(s, r: "schemas.LedgerRow") -> list:
+    return [
+        Paragraph(r.date.strftime("%Y-%m-%d"), s["compact_table_cell"]),
+        Paragraph(_statement_rate_cell(r), s["compact_table_cell"]),
+        Paragraph(_statement_qty_cell(r.qty_118), s["compact_table_cell"]),
+        Paragraph(_statement_qty_cell(r.qty_454), s["compact_table_cell"]),
+        Paragraph(_statement_gst_cell(r), s["compact_table_cell"]),
+        Paragraph(_fmt_amount(r.sale_amount) if r.sale_amount else "-", s["compact_table_cell"]),
+        Paragraph(_fmt_amount(r.payment_amount) if r.payment_amount else "-", s["compact_table_cell"]),
+        Paragraph(_fmt_amount(r.running_balance), ParagraphStyle("CompactBalCell", parent=s["compact_table_cell"], fontName="Helvetica-Bold")),
+    ]
+
+
+def _statement_opening_row_cells(s, opening_balance) -> list:
+    # No Description column to carry the "Opening Balance" label anymore
+    # (§ Remove ID/Description) — the Date cell takes it instead, same
+    # left-aligned position a date would otherwise occupy.
+    dash = Paragraph("-", s["compact_table_cell"])
+    bold = ParagraphStyle("CompactOpeningRow", parent=s["compact_table_cell"], fontName="Helvetica-Bold")
+    return [
+        Paragraph("Opening Balance", bold),
+        dash, dash, dash, dash, dash, dash,
+        Paragraph(_fmt_amount(opening_balance), bold),
+    ]
+
+
+def _statement_table_chunk(s, header_cells: list, body_rows: list[list], col_widths: list) -> Table:
+    """One page's worth of a compact statement's transaction table —
+    shared by Customer and Plant Statement (col_widths is the one thing
+    that differs between them). header_cells repeated row 0, then up to
+    STATEMENT_ROWS_PER_PAGE (+1 on the very first chunk, for the Opening
+    Balance row) body rows. Never spans more than one page by
+    construction (see render_customer_statement_pdf/render_company_
+    statement_pdf's chunking loops), so repeatRows=1 here is a safety
+    net, not the primary pagination mechanism — § Pagination's "repeat
+    header on every page" is really satisfied by every chunk already
+    including its own header row, and "never cut a row between pages" by
+    chunks never being tall enough to need splitting in the first place."""
+    data = [header_cells] + body_rows
+    t = Table(data, colWidths=col_widths, repeatRows=1)
+    t.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("LEADING", (0, 0), (-1, -1), 8.2),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CBD5E1")),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F8B8D")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#F8FAFC")),
-        ("ALIGN", (3, 0), (-1, -1), "RIGHT"),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ("LEFTPADDING", (0, 0), (-1, -1), 3),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2.5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2.5),
     ]))
     return t
 
@@ -703,66 +859,98 @@ def render_customer_statement_pdf(summary: "schemas.CustomerLedgerSummary", gene
     """Full-statement PDF for one customer/month — reuses the exact
     CustomerLedgerSummary the Customer Ledger screen renders on screen
     (app.routers.ledger.customer_monthly_ledger), so this can never disagree
-    with what's on screen (same convention as the Daily Report PDF)."""
+    with what's on screen (same convention as the Daily Report PDF).
+
+    § Compact Customer Statement redesign — A4 LANDSCAPE, ~35 transaction
+    rows/page, dense ledger look rather than a commercial-invoice one.
+    Nothing about WHAT is calculated changes (still the same summary
+    object, same LedgerRow fields, same _statement_rate_cell/_statement_
+    gst_cell/_statement_qty_cell logic as before) — only the PRESENTATION
+    and which fields are shown (no Customer ID) change.
+
+    Page-1 vertical budget (10mm margins, so 190mm usable height), the
+    tightest of any page since it alone carries the header/customer-line/
+    summary above the table:
+      compact header block   ~18mm  (13mm logo/name row + rule + spacers)
+      title + customer line   ~9mm  (2 short Paragraphs)
+      summary row              ~8mm  (1 row, 2pt padding)
+      spacer before table      ~2mm
+      totals + footer (after)  ~12mm (only actually lands on the LAST
+                                       page, but budgeted on every page
+                                       so a short statement — see below —
+                                       never has it collide with row 35)
+      ---------------------------------
+      overhead                ~49mm  →  190 - 49 = 141mm for the table
+
+    STATEMENT_ROWS_PER_PAGE (35) + 1 header + 1 Opening Balance row = 37
+    table rows must fit in ~141mm → ~3.8mm/row, which is what the 7.5pt
+    font / 8.6pt leading / 1pt top+bottom padding in _statement_table_chunk
+    is tuned for (empirically confirmed by rendering real 35/36/50/70-row
+    statements — see the PR/commit description for the actual measurements).
+
+    Pagination (§ Pagination): rather than one giant Table and relying on
+    reportlab's automatic cross-page split (which would let emptier
+    continuation pages — no header/summary above them — hold noticeably
+    more than 35 rows, since they'd have ~180mm instead of ~141mm to fill),
+    the data is chunked into fixed STATEMENT_ROWS_PER_PAGE-row groups up
+    front and each chunk becomes its OWN Table, separated by an explicit
+    PageBreak(). This is what makes every page — not just page 1 — land at
+    the same ~35 rows: a full page's worth of *table* height budget, used
+    for a full page's worth of chunk, regardless of how much of that
+    budget is actually available on the page it lands on."""
     customer = summary.customer
 
+    usable_width = landscape(A4)[0] - 20 * mm  # 297mm - 10mm each side = 277mm
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        topMargin=14 * mm, bottomMargin=14 * mm, leftMargin=14 * mm, rightMargin=14 * mm,
+        buf, pagesize=landscape(A4),
+        topMargin=6 * mm, bottomMargin=6 * mm, leftMargin=10 * mm, rightMargin=10 * mm,
     )
     s = _styles()
     story = []
-    story.extend(_header_block(s))
-    story.append(Paragraph("Customer Statement", s["doctype"]))
+    story.extend(_compact_header_block(s, usable_width))
+    story.extend(_compact_customer_block(s, customer, summary.month, usable_width))
 
-    party_lines = []
-    if customer.mobile:
-        party_lines.append(customer.mobile)
-    addr_bits = [b for b in [customer.address, customer.city_area] if b]
-    if addr_bits:
-        party_lines.append(", ".join(addr_bits))
-
-    # Opening/Total Sales/Total Payments/Closing Balance move to the Summary
-    # Cards section below instead of duplicating them here.
-    details_rows = [
-        ("Statement Period", _statement_period_label(summary.month)),
-        ("Customer ID", customer.display_id),
-    ]
-    story.append(_party_and_details(s, "Statement For", [customer.name] + party_lines, details_rows))
-    story.append(Spacer(1, 5 * mm))
-
-    # Summary Cards — every value here comes straight off `summary` (the
-    # same CustomerLedgerSummary the Customer Ledger screen renders; see
-    # app.routers.ledger.customer_statement_pdf, which calls
-    # customer_monthly_ledger directly rather than re-querying), scoped to
-    # this one customer/month exactly like the screen's own summary cards
-    # (frontend/app/customer-ledger/page.tsx). No recalculation happens here.
-    story.append(Paragraph("Summary", s["section"]))
-    story.append(_summary_metrics_row(s, [
+    # Summary — Opening/Sales/Payments/Closing plus the cylinder totals
+    # that were previously a second card row, now merged into the one
+    # compact row (§ Summary — "also keep other important...totals...
+    # make this section compact"). Same values, same source (`summary`),
+    # just laid out as 9 cells instead of 4 + 5 stacked.
+    story.append(_compact_summary_row(s, [
         ("Opening Balance", _fmt_amount(summary.opening_balance), "#0B2138"),
         ("Total Sales", _fmt_amount(summary.total_sales), "#0B2138"),
         ("Total Payments", _fmt_amount(summary.total_payments), "#1E8A5F"),
-        ("Closing Cash Balance", _fmt_amount(summary.closing_balance), "#0B2138"),
-    ]))
-    story.append(Spacer(1, 2 * mm))
-    story.append(_summary_metrics_row(s, [
+        ("Closing Balance", _fmt_amount(summary.closing_balance), "#0B2138"),
         ("11.8 KG Sold", _fmt_qty(summary.total_118), "#D98E04"),
         ("45.4 KG Sold", _fmt_qty(summary.total_454), "#9333EA"),
-        ("Total KG Sold", _fmt_qty(summary.total_kg), "#0B2138"),
+        ("Total KG", _fmt_qty(summary.total_kg), "#0B2138"),
         ("Total Ton", _fmt_qty(summary.total_ton, decimals=2), "#0B2138"),
-        ("Empty Cyl. (11.8k / 45.4k)", f"{_fmt_qty(customer.empty_cylinders_118)} / {_fmt_qty(customer.empty_cylinders_454)}", "#0B2138"),
-    ]))
-    story.append(Spacer(1, 5 * mm))
+        ("Empty Cyl (11.8/45.4)", f"{_fmt_qty(customer.empty_cylinders_118)}/{_fmt_qty(customer.empty_cylinders_454)}", "#0B2138"),
+    ], usable_width))
+    story.append(Spacer(1, 1 * mm))
 
-    story.append(_statement_table(s, summary))
-    story.append(Spacer(1, 4 * mm))
+    # summary.rows is latest-first for on-screen display (Global Sorting
+    # Standard); a running-balance statement reads top-to-bottom
+    # oldest-first, so this puts it back in the order it was actually built in.
+    data_rows = list(reversed(summary.rows))
+    header_cells = [Paragraph(f"<b>{h}</b>", s["compact_table_header"]) for h in _STATEMENT_HEADERS]
+    chunks = [data_rows[i:i + STATEMENT_ROWS_PER_PAGE] for i in range(0, len(data_rows), STATEMENT_ROWS_PER_PAGE)] or [[]]
+
+    for i, chunk in enumerate(chunks):
+        body_rows = [_statement_row_cells(s, r) for r in chunk]
+        if i == 0:
+            body_rows = [_statement_opening_row_cells(s, summary.opening_balance)] + body_rows
+        if i > 0:
+            story.append(PageBreak())
+        story.append(_statement_table_chunk(s, header_cells, body_rows, _STATEMENT_COL_WIDTHS))
+
+    story.append(Spacer(1, 1 * mm))
     story.append(_totals_block(s, [("Closing Balance", summary.closing_balance)]))
 
-    story.append(Spacer(1, 6 * mm))
+    story.append(Spacer(1, 1 * mm))
     story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#CBD5E1")))
-    story.append(Spacer(1, 2 * mm))
-    story.append(Paragraph(f"System-generated document — printed by {generated_by} on {generated_at}.", s["footer"]))
+    story.append(Spacer(1, 0.5 * mm))
+    story.append(Paragraph(f"System-generated document — printed by {generated_by} on {generated_at}.", s["compact_footer"]))
     doc.build(story)
     return buf.getvalue()
 
@@ -775,124 +963,112 @@ def _company_statement_qty_cell(value) -> str:
     return _fmt_qty(value)
 
 
-def _company_statement_table(s, summary: "schemas.CompanyLedgerSummary"):
-    # Column order mirrors the Plant Ledger screen's own table exactly
-    # (frontend/app/purchases/page.tsx: Date, Time, ID, Description,
-    # Vehicle, 11.8 KG, 45.4 KG, Purchase, Payment, Balance) — same
-    # "PDF is a printable copy of what's on screen" convention as
-    # _statement_table (Customer Statement) above. Description/Vehicle use
-    # Paragraph cells, same as every other column here, so long text wraps
-    # within the cell instead of clipping or widening the table.
-    headers = ["Date", "Time", "ID", "Description", "Vehicle", "11.8 KG", "45.4 KG", "Purchase", "Payment", "Balance"]
-    header_row = [Paragraph(f"<b>{h}</b>", s["value_cell"]) for h in headers]
-    data = [header_row]
+# § Plant Statement mirrors the Customer Statement's column removal
+# exactly ("same implementation goes for plant ledger") — ID and
+# Description dropped for the identical reason (display_id like
+# "PUR-000019" / description like "Purchase — ..." are internal/audit
+# language, not something the plant needs to reconcile a delivery
+# against). Time and Vehicle are kept (unlike Customer Statement, which
+# has neither) since a plant delivery is meaningfully identified by
+# when + which vehicle, not by an internal reference. Purchase replaces
+# Sale as the debit column (CompanyLedgerRow.purchase_amount vs.
+# LedgerRow.sale_amount) and there is no Rate/GST for plant purchases.
+# Widths sum to 277mm, the same A4-landscape usable width as the
+# Customer Statement's _STATEMENT_COL_WIDTHS (297mm - 10mm each side).
+_PLANT_STATEMENT_COL_WIDTHS = [24 * mm, 16 * mm, 34 * mm, 22 * mm, 22 * mm, 44 * mm, 44 * mm, 71 * mm]
+_PLANT_STATEMENT_HEADERS = ["Date", "Time", "Vehicle", "11.8 KG", "45.4 KG", "Purchase", "Payment", "Balance"]
 
-    opening_row_style = ParagraphStyle("OpeningRow", parent=s["value_cell"], fontName="Helvetica-Bold")
-    data.append([
-        Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
-        Paragraph("Opening Balance", opening_row_style),
-        Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
-        Paragraph("-", s["value_cell"]), Paragraph("-", s["value_cell"]),
-        Paragraph(_fmt_amount(summary.opening_balance), opening_row_style),
-    ])
 
-    # summary.rows is latest-first for on-screen display (Global Sorting
-    # Standard); a running-balance statement reads top-to-bottom
-    # oldest-first, same reasoning as _statement_table above.
-    for r in reversed(summary.rows):
-        data.append([
-            Paragraph(r.date.strftime("%Y-%m-%d"), s["value_cell"]),
-            Paragraph(r.date.strftime("%H:%M"), s["value_cell"]),
-            Paragraph(r.display_id, s["value_cell"]),
-            Paragraph(r.description, s["value_cell"]),
-            Paragraph(r.vehicle_no or "-", s["value_cell"]),
-            Paragraph(_company_statement_qty_cell(r.qty_118), s["value_cell"]),
-            Paragraph(_company_statement_qty_cell(r.qty_454), s["value_cell"]),
-            Paragraph(_fmt_amount(r.purchase_amount) if r.purchase_amount else "-", s["value_cell"]),
-            Paragraph(_fmt_amount(r.payment_amount) if r.payment_amount else "-", s["value_cell"]),
-            Paragraph(_fmt_amount(r.running_balance), ParagraphStyle("BalCell", parent=s["value_cell"], fontName="Helvetica-Bold")),
-        ])
+def _plant_statement_row_cells(s, r: "schemas.CompanyLedgerRow") -> list:
+    return [
+        Paragraph(r.date.strftime("%Y-%m-%d"), s["compact_table_cell"]),
+        Paragraph(r.date.strftime("%H:%M"), s["compact_table_cell"]),
+        Paragraph(r.vehicle_no or "-", s["compact_table_cell"]),
+        Paragraph(_company_statement_qty_cell(r.qty_118), s["compact_table_cell"]),
+        Paragraph(_company_statement_qty_cell(r.qty_454), s["compact_table_cell"]),
+        Paragraph(_fmt_amount(r.purchase_amount) if r.purchase_amount else "-", s["compact_table_cell"]),
+        Paragraph(_fmt_amount(r.payment_amount) if r.payment_amount else "-", s["compact_table_cell"]),
+        Paragraph(_fmt_amount(r.running_balance), ParagraphStyle("CompactPlantBalCell", parent=s["compact_table_cell"], fontName="Helvetica-Bold")),
+    ]
 
-    # Sums to 182mm, the usable width on A4 (210mm - 14mm left/right
-    # margins, see render_company_statement_pdf's SimpleDocTemplate) — same
-    # total _statement_table (Customer Statement) fits within, just split
-    # across this table's own 10 columns (Date/Time replace Rate/GST here).
-    t = Table(
-        data,
-        colWidths=[16 * mm, 13 * mm, 18 * mm, 26 * mm, 15 * mm, 12 * mm, 12 * mm, 20 * mm, 20 * mm, 30 * mm],
-        repeatRows=1,
-    )
-    t.setStyle(TableStyle([
-        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F8B8D")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#F8FAFC")),
-        ("ALIGN", (5, 0), (-1, -1), "RIGHT"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ("LEFTPADDING", (0, 0), (-1, -1), 3),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-    ]))
-    return t
+
+def _plant_statement_opening_row_cells(s, opening_balance) -> list:
+    # No Description column to carry the "Opening Balance" label (§ Remove
+    # ID/Description) — same fix as _statement_opening_row_cells: the
+    # label moves into the Date cell instead.
+    dash = Paragraph("-", s["compact_table_cell"])
+    bold = ParagraphStyle("CompactPlantOpeningRow", parent=s["compact_table_cell"], fontName="Helvetica-Bold")
+    return [
+        Paragraph("Opening Balance", bold),
+        dash, dash, dash, dash, dash, dash,
+        Paragraph(_fmt_amount(opening_balance), bold),
+    ]
 
 
 def render_company_statement_pdf(summary: "schemas.CompanyLedgerSummary", generated_by: str, generated_at: str) -> bytes:
     """Full-statement PDF for one plant/month — the Plant Ledger's
     equivalent of render_customer_statement_pdf above, same "reuses the
     exact summary the screen renders" guarantee (see
-    app.routers.ledger.company_monthly_ledger)."""
+    app.routers.ledger.company_monthly_ledger), and now the same compact
+    A4-LANDSCAPE / ~35-rows-per-page / no-ID-no-Description design
+    ("same implementation goes for plant ledger") — see that function's
+    docstring for the full page-1 vertical-budget math and the reasoning
+    for manual page-chunking over reportlab's automatic Table split; both
+    apply here unchanged since the shared building blocks
+    (_compact_header_block, _compact_summary_row, _statement_table_chunk,
+    STATEMENT_ROWS_PER_PAGE) are identical, only the column set and
+    per-row field mapping differ (see _PLANT_STATEMENT_COL_WIDTHS/
+    _PLANT_STATEMENT_HEADERS/_plant_statement_row_cells above)."""
     company = summary.company
 
+    usable_width = landscape(A4)[0] - 20 * mm  # 297mm - 10mm each side = 277mm
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        topMargin=14 * mm, bottomMargin=14 * mm, leftMargin=14 * mm, rightMargin=14 * mm,
+        buf, pagesize=landscape(A4),
+        topMargin=6 * mm, bottomMargin=6 * mm, leftMargin=10 * mm, rightMargin=10 * mm,
     )
     s = _styles()
     story = []
-    story.extend(_header_block(s))
-    story.append(Paragraph("Plant Statement", s["doctype"]))
+    story.extend(_compact_header_block(s, usable_width))
+    story.extend(_compact_plant_block(s, company, summary.month, usable_width))
 
-    party_lines = []
-    if company.mobile:
-        party_lines.append(company.mobile)
-
-    details_rows = [
-        ("Statement Period", _statement_period_label(summary.month)),
-    ]
-    story.append(_party_and_details(s, "Statement For", [company.name] + party_lines, details_rows))
-    story.append(Spacer(1, 5 * mm))
-
-    # Summary Cards — same layout/convention as the Customer Statement's
-    # own two summary rows above; every value comes straight off `summary`
-    # (the same CompanyLedgerSummary the Plant Ledger screen renders — see
-    # app.routers.ledger.company_statement_pdf, which calls
-    # company_monthly_ledger directly rather than re-querying).
-    story.append(Paragraph("Summary", s["section"]))
-    story.append(_summary_metrics_row(s, [
+    # Summary — Opening/Purchases/Payments/Closing plus the cylinder
+    # totals, merged into one compact row exactly like the Customer
+    # Statement's own summary row (previously two stacked
+    # _summary_metrics_row calls, 4 metrics each).
+    story.append(_compact_summary_row(s, [
         ("Opening Balance", _fmt_amount(summary.opening_balance), "#0B2138"),
         ("Total Purchases", _fmt_amount(summary.total_purchases), "#0B2138"),
         ("Total Paid", _fmt_amount(summary.total_payments), "#1E8A5F"),
         ("Closing Balance", _fmt_amount(summary.closing_balance), "#0B2138"),
-    ]))
-    story.append(Spacer(1, 2 * mm))
-    story.append(_summary_metrics_row(s, [
         ("11.8 KG Purchased", _fmt_qty(summary.total_118), "#D98E04"),
         ("45.4 KG Purchased", _fmt_qty(summary.total_454), "#9333EA"),
         ("Total KG", _fmt_qty(summary.total_kg), "#0B2138"),
         ("Total Ton", _fmt_qty(summary.total_ton, decimals=2), "#0B2138"),
-    ]))
-    story.append(Spacer(1, 5 * mm))
+    ], usable_width))
+    story.append(Spacer(1, 1 * mm))
 
-    story.append(_company_statement_table(s, summary))
-    story.append(Spacer(1, 4 * mm))
+    # summary.rows is latest-first for on-screen display (Global Sorting
+    # Standard); a running-balance statement reads top-to-bottom
+    # oldest-first, same reasoning as render_customer_statement_pdf above.
+    data_rows = list(reversed(summary.rows))
+    header_cells = [Paragraph(f"<b>{h}</b>", s["compact_table_header"]) for h in _PLANT_STATEMENT_HEADERS]
+    chunks = [data_rows[i:i + STATEMENT_ROWS_PER_PAGE] for i in range(0, len(data_rows), STATEMENT_ROWS_PER_PAGE)] or [[]]
+
+    for i, chunk in enumerate(chunks):
+        body_rows = [_plant_statement_row_cells(s, r) for r in chunk]
+        if i == 0:
+            body_rows = [_plant_statement_opening_row_cells(s, summary.opening_balance)] + body_rows
+        if i > 0:
+            story.append(PageBreak())
+        story.append(_statement_table_chunk(s, header_cells, body_rows, _PLANT_STATEMENT_COL_WIDTHS))
+
+    story.append(Spacer(1, 1 * mm))
     story.append(_totals_block(s, [("Closing Balance", summary.closing_balance)]))
 
-    story.append(Spacer(1, 6 * mm))
+    story.append(Spacer(1, 1 * mm))
     story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#CBD5E1")))
-    story.append(Spacer(1, 2 * mm))
-    story.append(Paragraph(f"System-generated document — printed by {generated_by} on {generated_at}.", s["footer"]))
+    story.append(Spacer(1, 0.5 * mm))
+    story.append(Paragraph(f"System-generated document — printed by {generated_by} on {generated_at}.", s["compact_footer"]))
     doc.build(story)
     return buf.getvalue()

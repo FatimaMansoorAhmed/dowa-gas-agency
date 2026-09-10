@@ -1,0 +1,610 @@
+diff --git a/backend/app/migrations.py b/backend/app/migrations.py
+index fc2f6c1..3284422 100644
+--- a/backend/app/migrations.py
++++ b/backend/app/migrations.py
+@@ -184,6 +184,25 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
+     # Empty Cylinders page's "Sell Cylinder" button passes
+     # origin='sell_cylinder' explicitly (see models.CylinderReturn.origin).
+     ("cylinder_returns", "origin", "VARCHAR(20) NOT NULL DEFAULT 'return_cylinder'"),
++    # Settlement Correction (§ Bug Fix — Correction Modal Routing) — every
++    # existing batch predates settlement correction and was, by
++    # construction, never corrected, so these are simply NULL for all of
++    # them (see models.UnifiedSaleBatch.settlement_corrected_by).
++    ("unified_sale_batches", "settlement_corrected_by", "VARCHAR(255)"),
++    ("unified_sale_batches", "settlement_corrected_at", "TIMESTAMP"),
++    ("unified_sale_batches", "settlement_correction_reason", "VARCHAR(255)"),
++    # Add Filled Cylinder Stock (§ Shop Management) — every existing batch
++    # predates this distinction and was, by construction, created by a Load
++    # (Sale), so it gets 'load' from the column default. notes is nullable
++    # and only ever set on a 'manual_add' batch.
++    ("shop_stock_batches", "source_type", "VARCHAR(20) NOT NULL DEFAULT 'load'"),
++    ("shop_stock_batches", "notes", "VARCHAR(255)"),
++    ("shop_stock_batches", "modified_at", "TIMESTAMP"),
++    ("shop_stock_batches", "modified_by", "VARCHAR(255)"),
++    # Opening Balance Correction (§ Opening Balance) — every pre-existing
++    # audit_logs row (routers/sales.py's create/cancel/correct logging)
++    # predates this and has no reason to backfill, so it stays NULL.
++    ("audit_logs", "reason", "VARCHAR(255)"),
+ ]
+ 
+ 
+@@ -505,6 +524,16 @@ def run_startup_migrations(engine: Engine) -> None:
+                     {"bal": new_balance, "aid": account_id},
+                 )
+ 
++        # Payment-Only Pending Approval (§ Payment-Only) — unified_sale_batches
++        # .company_id was NOT NULL before a Payment-Only batch (no purchase
++        # plant, no items) started reusing this table. Postgres only, same
++        # reasoning as payments.account_id above; a fresh DB created by
++        # create_all() already has the column nullable.
++        if "unified_sale_batches" in existing_tables and engine.dialect.name == "postgresql":
++            usb_columns = {c["name"]: c for c in inspector.get_columns("unified_sale_batches")}
++            if usb_columns.get("company_id", {}).get("nullable") is False:
++                conn.execute(text("ALTER TABLE unified_sale_batches ALTER COLUMN company_id DROP NOT NULL"))
++
+         # One-time backfill: every existing sales row predates GST and was,
+         # by construction, GST-free — grand_total (added nullable above)
+         # equals total_amount for every one of them. Guarded by
+diff --git a/backend/app/models.py b/backend/app/models.py
+index 1b8c011..1cf6edf 100644
+--- a/backend/app/models.py
++++ b/backend/app/models.py
+@@ -513,7 +513,11 @@ class UnifiedSaleBatch(Base):
+     display_id = Column(String, unique=True, nullable=False)  # e.g. USALE-000123
+     date = Column(DateTime, nullable=False)
+     customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
+-    company_id = Column(GUID(), ForeignKey("companies.id"), nullable=False)
++    # Nullable — a Payment-Only batch (§ Payment-Only Pending Approval) has
++    # no purchase plant at all: no items, nothing loaded, only a payment to
++    # route. NULL is exactly how routers/unified_sale.py tells a Payment-
++    # Only batch apart from an ordinary Full Sale (which always has one).
++    company_id = Column(GUID(), ForeignKey("companies.id"), nullable=True)
+ 
+     total_selling_amount = Column(Numeric(14, 2), nullable=False, default=0)
+     total_purchase_amount = Column(Numeric(14, 2), nullable=False, default=0)
+@@ -581,6 +585,20 @@ class UnifiedSaleBatch(Base):
+     # number) — filled in whenever it becomes available, typically right
+     # before payment approval.
+     payment_reference = Column(String, nullable=True)
++    # Settlement Correction (§ Bug Fix — Correction Modal Routing) — set by
++    # PATCH /sales/unified/{id}/correct-settlement whenever an ALREADY-
++    # APPROVED settlement's destination/split is corrected. The batch's own
++    # destination_type/target_plant_id/account_id/home_expense_amount/
++    # owner_drawings_amount/net_plant_payment columns above are mutated in
++    # place to the corrected values (there's only ever one batch — unlike
++    # Sale/Payment/Purchase/CompanyPayment, correcting this never creates a
++    # sibling row) — these three just record that a correction happened.
++    # Null until the first correction; only ever holds the MOST RECENT
++    # correction's info (the CompanyPayment/Expense/OwnerDrawings children
++    # below carry the full history — old ones cancelled, never mutated).
++    settlement_corrected_by = Column(String, nullable=True)
++    settlement_corrected_at = Column(DateTime, nullable=True)
++    settlement_correction_reason = Column(String, nullable=True)
+ 
+     # GST on Sale, extended to Unified Sale (optional, locked at entry) —
+     # same convention as models.Sale.gst_enabled: gst_amount/grand_total
+@@ -616,6 +634,10 @@ class AuditLog(Base):
+     new_value = Column(String, nullable=True)
+     performed_by = Column(String, nullable=False)
+     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
++    # Opening Balance corrections (Customer/Company/Shop Cash) require a
++    # reason, surfaced in the Correction History panel — earlier AuditLog
++    # rows (from routers/sales.py) predate this and have none.
++    reason = Column(String, nullable=True)
+ 
+ 
+ class Purchase(Base):
+@@ -919,6 +941,12 @@ class ShopStockBatch(Base):
+     see routers/sales.py's _apply_sale/_reverse_sale. There is no separate
+     "enter a shop load" endpoint; a Load is always just a Sale.
+ 
++    The one exception is source_type == "manual_add" (§ Add Filled Cylinder
++    Stock, routers/shops.py's create_manual_stock_batch) — a batch entered
++    directly against the shop with no backing Sale at all, for onboarding
++    physical stock the shop already had before this system tracked it.
++    source_sale_id is NULL only for these; every "load" row always has one.
++
+     quantity_remaining is a LIVE, FIFO-mutated counter used only to decide
+     which batch a ShopSale (or Emergency Transfer — see routers/sales.py's
+     _consume_shop_stock_for_emergency_transfer, which draws from these same
+@@ -946,9 +974,22 @@ class ShopStockBatch(Base):
+     quantity_received = Column(Numeric(10, 4), nullable=False)
+     quantity_remaining = Column(Numeric(10, 4), nullable=False)
+     load_rate_per_kg = Column(Numeric(10, 2), nullable=False)  # historical only — NEVER used to price a ShopSale
++    # "load" (the original/only case — created automatically by a Sale, see
++    # above) vs "manual_add" (§ Add Filled Cylinder Stock — entered directly
++    # against this shop, e.g. onboarding existing physical stock, with no
++    # backing Sale/Purchase/ledger effect at all). Every pre-existing row
++    # gets "load" from the column default, which is exactly what it is.
++    source_type = Column(String(20), nullable=False, default="load")
++    notes = Column(String, nullable=True)  # only ever set on a "manual_add" batch
+     status = Column(String, nullable=False, default="active")
+     entered_by = Column(String, nullable=False)
+     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
++    # Set only when a "manual_add" batch is cancelled (routers/shops.py's
++    # cancel_manual_stock_batch) — same convention as ShopCustomerPayment/
++    # ShopExpenseTransaction above. A "load" batch is never cancelled this
++    # way (see that function), so these stay NULL for every one of those.
++    modified_at = Column(DateTime, nullable=True)
++    modified_by = Column(String, nullable=True)
+ 
+     customer = relationship("Customer")
+     product = relationship("Product")
+diff --git a/backend/app/routers/ledger.py b/backend/app/routers/ledger.py
+index ca08867..3cdc814 100644
+--- a/backend/app/routers/ledger.py
++++ b/backend/app/routers/ledger.py
+@@ -40,6 +40,40 @@ def _batch_cylinder_totals(db: Session, model, batch_id, products: dict) -> tupl
+     return q118, q454, kg
+ 
+ 
++def _opening_balance_corrections(
++    db: Session, entity_type: str, entity_id, kind: str, display_label: str,
++    month_start: datetime, next_month: datetime,
++) -> list[schemas.CorrectionHistoryRow]:
++    """Opening Balance corrections (§ Opening Balance) — read straight from
++    the generic AuditLog table rather than a dedicated correction column
++    like Sale/Payment/Purchase/CompanyPayment use: there's no reversed-and-
++    reposted pair of rows here, just a direct in-place edit of the one
++    anchor value, so old -> new is folded into `description` instead of a
++    separate field, and corrected_display_id is always None."""
++    rows = (
++        db.query(models.AuditLog)
++        .filter(
++            models.AuditLog.entity_type == entity_type,
++            models.AuditLog.entity_id == entity_id,
++            models.AuditLog.field == "opening_balance",
++            models.AuditLog.timestamp >= month_start,
++            models.AuditLog.timestamp < next_month,
++        )
++        .all()
++    )
++    out: list[schemas.CorrectionHistoryRow] = []
++    for r in rows:
++        out.append(schemas.CorrectionHistoryRow(
++            kind=kind, date=r.timestamp, ref_id=r.id, display_id=display_label,
++            description=f"Opening Balance: {r.old_value} → {r.new_value}",
++            original_amount=Decimal(r.old_value or "0"),
++            correction_reason=r.reason or "", corrected_by=r.performed_by,
++            corrected_at=r.timestamp,
++        ))
++    out.sort(key=lambda r: r.corrected_at, reverse=True)
++    return out
++
++
+ def _customer_corrections(db: Session, customer_id, month_start: datetime, next_month: datetime) -> list[schemas.CorrectionHistoryRow]:
+     """Builds the read-only Correction History panel (§1) — every Sale/
+     Payment for this customer that was superseded by a correction this
+@@ -74,6 +108,10 @@ def _customer_corrections(db: Session, customer_id, month_start: datetime, next_
+             correction_reason=p.correction_reason or "", corrected_by=p.corrected_by or "",
+             corrected_at=p.corrected_at, corrected_display_id=replacement.display_id if replacement else None,
+         ))
++    customer_display_id = db.query(models.Customer.display_id).filter(models.Customer.id == customer_id).scalar()
++    out.extend(_opening_balance_corrections(
++        db, "customer", customer_id, "customer_opening_balance", customer_display_id or "", month_start, next_month,
++    ))
+     out.sort(key=lambda r: r.corrected_at, reverse=True)
+     return out
+ 
+@@ -109,6 +147,10 @@ def _company_corrections(db: Session, company_id, month_start: datetime, next_mo
+             correction_reason=p.correction_reason or "", corrected_by=p.corrected_by or "",
+             corrected_at=p.corrected_at, corrected_display_id=replacement.display_id if replacement else None,
+         ))
++    company_name = db.query(models.Company.name).filter(models.Company.id == company_id).scalar()
++    out.extend(_opening_balance_corrections(
++        db, "company", company_id, "company_opening_balance", company_name or "", month_start, next_month,
++    ))
+     out.sort(key=lambda r: r.corrected_at, reverse=True)
+     return out
+ 
+@@ -312,12 +354,25 @@ def customer_monthly_ledger(
+             p: models.Payment = e["obj"]
+             running -= p.amount
+             total_payments += p.amount
++            # Payment Receipt rows (destination_type set — created via
++            # POST /payment-receipts, e.g. the Unified Sale form's Payment
++            # Only mode) are NOT correctable through this generic pencil:
++            # PATCH /payments/{id}/correct's _apply_payment/_reverse_payment
++            # only know how to reverse a plain Payment's own account_id
++            # balance effect — they have no idea about the Expense/
++            # OwnerDrawings/CompanyPayment settlement children
++            # apply_settlement_routing created alongside it, and outright
++            # 404 on a plant-routed receipt (account_id is legitimately
++            # None there). Void + re-enter via /payment-receipts/{id}/cancel
++            # (which does know how to reverse those) is the only safe path
++            # until a dedicated correct endpoint exists for receipts.
++            is_payment_receipt = p.destination_type is not None
+             rows.append(schemas.LedgerRow(
+                 date=p.date, kind="payment", ref_id=p.id, display_id=p.display_id,
+-                description=f"Payment · {p.method}",
++                description=f"Payment Receipt · {p.method}" if is_payment_receipt else f"Payment · {p.method}",
+                 sale_amount=0, payment_amount=p.amount, running_balance=running,
+                 qty_118=Decimal("0"), qty_454=Decimal("0"),
+-                entered_by=p.entered_by, correctable=True,
++                entered_by=p.entered_by, correctable=not is_payment_receipt,
+             ))
+         elif e["kind"] == "unified_sale":
+             # One row for the whole Unified Sale batch — never split by line item.
+diff --git a/backend/app/routers/shops.py b/backend/app/routers/shops.py
+index 48019e3..e71d15c 100644
+--- a/backend/app/routers/shops.py
++++ b/backend/app/routers/shops.py
+@@ -9,10 +9,10 @@ from app.database import get_db
+ from app import models, schemas
+ from app.deps import require_active_user, require_csrf
+ from app.reporting.invoice_pdf import render_shop_sale_invoice_pdf
+-from app.utils import next_display_id, get_or_create_shop_account
++from app.utils import next_display_id, get_or_create_shop_account, log_audit
+ from app.timezone import KARACHI_TZ, karachi_day_bounds, karachi_today_str
+ from app.routers.board_rates import resolve_board_rate
+-from app.routers.ledger import _customer_corrections
++from app.routers.ledger import _customer_corrections, _opening_balance_corrections
+ 
+ router = APIRouter(prefix="/shops", tags=["shops"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
+ 
+@@ -616,17 +616,60 @@ def get_shop_detail(
+         ))
+     shop_sale_corrections.sort(key=lambda r: r.corrected_at, reverse=True)
+ 
++    # Opening Cash corrections (§ Opening Balance) — the shop's Opening
++    # Balance tile reads shop_account.opening_balance (NOT
++    # customers.opening_balance/shop_opening_cash, the latter confirmed
++    # dead), so its corrections come from a separate AuditLog lookup keyed
++    # on the account id, merged with the customer-side corrections and
++    # re-sorted together.
++    corrections = _customer_corrections(db, shop_id, month_start, next_month) + _opening_balance_corrections(
++        db, "shop_cash_account", shop_account.id, "shop_opening_cash", shop.display_id, month_start, next_month,
++    )
++    corrections.sort(key=lambda r: r.corrected_at, reverse=True)
++
+     return schemas.ShopDetailOut(
+         customer=shop,
+         stock=stock,
+         cash=cash,
+         account=shop_account,
+         transactions=transactions,
+-        corrections=_customer_corrections(db, shop_id, month_start, next_month),
++        corrections=corrections,
+         shop_sale_corrections=shop_sale_corrections,
+     )
+ 
+ 
++# CORRECT OPENING CASH (§ Opening Balance) — a Shop's "Opening Balance"
++# tile is neither Customer's nor Company's: it's derived (_compute_cash_
++# summary above) from shop_account.opening_balance forward, NOT from
++# customers.opening_balance/shop_opening_cash (the latter confirmed dead —
++# grep across the repo shows it's never written, only declared). Same
++# edit-in-place + delta-shift-current_balance + required-reason pattern as
++# Customer/Company, just targeting the shop's own PaymentAccount row.
++@router.patch("/{shop_id}/opening-cash", response_model=schemas.PaymentAccountOut)
++def correct_shop_opening_cash(
++    shop_id: UUID,
++    payload: schemas.OpeningBalanceUpdate,
++    db: Session = Depends(get_db),
++    current_user: models.User = Depends(require_active_user),
++):
++    shop = _get_shop(db, shop_id)
++    reason = (payload.reason or "").strip()
++    if not reason:
++        raise HTTPException(400, "A reason is required to correct the Opening Balance")
++
++    account = get_or_create_shop_account(db, shop)
++    old_value = account.opening_balance
++    delta = payload.new_value - old_value
++    account.opening_balance = payload.new_value
++    account.current_balance = account.current_balance + delta
++    db.add(account)
++    log_audit(db, "shop_cash_account", account.id, "update", current_user.name,
++              field="opening_balance", old=old_value, new=payload.new_value, reason=reason)
++    db.commit()
++    db.refresh(account)
++    return account
++
++
+ @router.get("/{shop_id}/stock", response_model=schemas.ShopStockSummary)
+ def get_shop_stock(shop_id: UUID, date: str = Query(None, description="YYYY-MM-DD, defaults to today"), db: Session = Depends(get_db)):
+     _get_shop(db, shop_id)
+@@ -685,6 +728,78 @@ def list_shop_batches(
+     return out
+ 
+ 
++@router.post("/{shop_id}/stock-batches", response_model=schemas.ShopStockBatchOut, status_code=201)
++def create_manual_stock_batch(
++    shop_id: UUID, payload: schemas.ShopStockBatchCreate, db: Session = Depends(get_db),
++    current_user: models.User = Depends(require_active_user),
++):
++    """Add Filled Cylinder Stock — see schemas.ShopStockBatchCreate. The
++    only ShopStockBatch creation path with no backing Sale (source_sale_id
++    stays NULL, source_type="manual_add"): it adds physical stock only,
++    exactly like Add Empty Cylinder (routers/cylinder_returns.py,
++    mode="manual_add") does for the empty-cylinder side. load_rate_per_kg
++    is resolved from the Board Rate in effect on the entry date purely for
++    historical record-keeping — see ShopStockBatch.load_rate_per_kg's
++    docstring: it is NEVER used to price a ShopSale."""
++    shop = _get_shop(db, shop_id)
++    product = db.query(models.Product).get(payload.product_id)
++    if not product:
++        raise HTTPException(404, "Product not found")
++    if payload.quantity <= 0:
++        raise HTTPException(400, "Quantity must be positive")
++
++    date = payload.date or datetime.utcnow()
++    board_rate = resolve_board_rate(db, date)
++
++    batch = models.ShopStockBatch(
++        customer_id=shop.id,
++        product_id=payload.product_id,
++        source_sale_id=None,
++        source_type="manual_add",
++        transaction_date=date,
++        quantity_received=payload.quantity,
++        quantity_remaining=payload.quantity,
++        load_rate_per_kg=board_rate.rate_per_kg,
++        notes=payload.notes,
++        status="active",
++        entered_by=current_user.name,
++    )
++    db.add(batch)
++    db.commit()
++    db.refresh(batch)
++    return batch
++
++
++@router.patch("/stock-batches/{batch_id}/cancel", response_model=schemas.ShopStockBatchOut)
++def cancel_manual_stock_batch(batch_id: UUID, by: str = Query(...), db: Session = Depends(get_db)):
++    """Undo a manual stock-batch add (create_manual_stock_batch above).
++    Never touches a Load-derived batch (source_type == "load") — reversing
++    one of those is Sale-cancellation's job (_reverse_sale in
++    routers/sales.py), which also unwinds the Customer.current_balance/
++    Purchase-side effects a plain status flip here would miss entirely.
++    Blocked once any of this batch has actually been sold (quantity_
++    remaining < quantity_received) — pulling stock out from under an
++    already-consumed ShopSale would silently break that sale's own FIFO
++    consumption record."""
++    batch = db.query(models.ShopStockBatch).get(batch_id)
++    if not batch:
++        raise HTTPException(404, "Stock batch not found")
++    if batch.source_type != "manual_add":
++        raise HTTPException(400, "Only a manually-added stock batch can be cancelled this way")
++    if batch.status != "active":
++        raise HTTPException(400, "Stock batch is already cancelled")
++    if batch.quantity_remaining < batch.quantity_received:
++        raise HTTPException(400, "Cannot cancel — some of this batch has already been sold")
++
++    batch.status = "cancelled"
++    batch.modified_at = datetime.utcnow()
++    batch.modified_by = by
++    db.add(batch)
++    db.commit()
++    db.refresh(batch)
++    return batch
++
++
+ # ---------- Shop Sales ----------
+ 
+ @router.get("/sales/{sale_id}", response_model=schemas.ShopSaleOut)
+diff --git a/backend/app/schemas.py b/backend/app/schemas.py
+index df6cb54..ea54157 100644
+--- a/backend/app/schemas.py
++++ b/backend/app/schemas.py
+@@ -1191,6 +1191,25 @@ class PaymentOut(BaseModel):
+     # so the API always showed None for a Unified-Sale-originated Payment
+     # even though the DB column was populated.
+     unified_sale_id: Optional[UUID] = None
++    # Not real Payment columns for a Unified-Sale-originated row (that
++    # settlement routing lives on the parent UnifiedSaleBatch, not here) —
++    # resolved in routers/payments.py._attach_destination_info and attached
++    # to the ORM row before serialization (§ Bug Fix — Approved Payments
++    # destination display). For a Payment Receipt-sourced row (destination_
++    # type set directly on the row) these already ARE real columns and pass
++    # through unchanged. None for an ordinary quick-pay Payment — its
++    # destination is simply account_id.
++    destination_type: Optional[str] = None
++    target_plant_id: Optional[UUID] = None
++    account_category: Optional[str] = None
++    # Same resolution as PaymentReceiptOut's own fields (§ Bug Fix —
++    # Correction Modal Routing pre-fill) — for a receipt-sourced row,
++    # resolved from the linked Expense/OwnerDrawings (source_payment_id);
++    # for a Unified-Sale-sourced row, straight from the parent batch.
++    # Needed so CorrectTransactionModal never silently pre-fills 0 for an
++    # amount that was actually routed to Home Expense/Owner Drawings.
++    home_expense_amount: Decimal = Decimal("0")
++    owner_drawings_amount: Decimal = Decimal("0")
+ 
+ 
+ # ---------- Payment Receipt (standalone, with settlement routing) ----------
+@@ -1217,6 +1236,18 @@ class PaymentReceiptCreate(BaseModel):
+     entered_by: str
+ 
+ 
++class PaymentReceiptCorrect(PaymentReceiptCreate):
++    """§ Bug Fix — Correction Modal Routing. Same shape as
++    PaymentReceiptCreate — see PaymentCorrect for the convention. Unlike
++    UnifiedSaleSettlementCorrect, this DOES let `amount` change too — a
++    standalone Payment Receipt has no separate "sale side" holding the
++    customer's owed amount hostage, so correcting the amount here is exactly
++    as safe as correcting destination (both just reverse-then-repost the
++    one Payment row and its settlement)."""
++    correction_reason: str
++    corrected_by: str
++
++
+ class PaymentReceiptOut(BaseModel):
+     model_config = ConfigDict(from_attributes=True)
+     id: UUID
+@@ -1230,12 +1261,25 @@ class PaymentReceiptOut(BaseModel):
+     account_id: Optional[UUID] = None
+     account_category: Optional[str] = None
+     net_settlement_amount: Optional[Decimal] = None
++    # Not real Payment columns — resolved in routers/payment_receipts.py from
++    # the linked Expense/OwnerDrawings rows (source_payment_id) and attached
++    # to the ORM row before serialization (§ Part B, destination labeling).
++    # Zero unless this receipt's amount was routed there.
++    home_expense_amount: Decimal = Decimal("0")
++    owner_drawings_amount: Decimal = Decimal("0")
+     reference_no: Optional[str] = None
+     notes: Optional[str] = None
+     excess_amount: Optional[Decimal] = None
+     status: str
+     entered_by: str
+     created_at: datetime
++    # § Bug Fix — Correction Modal Routing, Case 1. Real Payment columns
++    # (same ones PaymentOut already exposes) — just never surfaced here
++    # before a receipt could be corrected at all.
++    corrected_by: Optional[str] = None
++    corrected_at: Optional[datetime] = None
++    correction_reason: Optional[str] = None
++    corrected_from_id: Optional[UUID] = None
+ 
+ 
+ # ---------- Expense ----------
+@@ -1363,8 +1407,17 @@ class LedgerRow(BaseModel):
+ class CorrectionHistoryRow(BaseModel):
+     """One superseded (status="corrected") original transaction — kept
+     for the read-only Correction History panel, never mixed into the
+-    running-balance rows above (§1)."""
+-    kind: Literal["sale", "payment", "purchase", "company_payment"]
++    running-balance rows above (§1).
++
++    Also doubles as an Opening Balance correction row (§ Opening Balance) —
++    those three kinds are read straight from AuditLog (there's no reversed-
++    and-reposted pair for an in-place anchor-value edit), with the old →
++    new change folded into `description` and `corrected_display_id` always
++    None (see routers/ledger.py::_opening_balance_corrections)."""
++    kind: Literal[
++        "sale", "payment", "purchase", "company_payment",
++        "customer_opening_balance", "company_opening_balance", "shop_opening_cash",
++    ]
+     date: datetime
+     ref_id: UUID
+     display_id: str
+@@ -1376,6 +1429,15 @@ class CorrectionHistoryRow(BaseModel):
+     corrected_display_id: Optional[str] = None  # the new row that replaced it, if still findable
+ 
+ 
++class OpeningBalanceUpdate(BaseModel):
++    """§ Opening Balance — one field, no reversal/repost (unlike Sale/
++    Payment/etc. corrections): the stored anchor value is edited in place,
++    the running balance is shifted by the identical delta, and the edit is
++    logged to AuditLog with a required reason."""
++    new_value: Decimal
++    reason: str
++
++
+ class CustomerLedgerSummary(BaseModel):
+     customer: CustomerOut
+     month: str
+@@ -1673,7 +1735,11 @@ class UnifiedSaleSettlement(BaseModel):
+ class UnifiedSaleCreate(BaseModel):
+     date: UtcDateTime
+     customer_id: UUID
+-    plant_id: UUID  # maps to Company.id
++    # None for a Payment-Only batch (§ Payment-Only Pending Approval) — no
++    # purchase plant, no items. Required (enforced in
++    # routers/unified_sale.py::_validate_and_load) whenever items is
++    # non-empty — an actual Load always has a purchase plant.
++    plant_id: Optional[UUID] = None  # maps to Company.id
+     items: list[UnifiedSaleItem] = []
+     # Optional, defaults to 0 — folded into total_selling_amount server-side
+     # (see routers/unified_sale.py), never trusted as a pre-computed total.
+@@ -1699,6 +1765,26 @@ class UnifiedSaleEdit(UnifiedSaleCreate):
+     pass
+ 
+ 
++class UnifiedSaleSettlementCorrect(BaseModel):
++    """§ Bug Fix — Correction Modal Routing. Corrects ONLY where an
++    ALREADY-APPROVED settlement's money went (destination_type/
++    target_plant_id/account_id) and the home_expense/owner_drawings split —
++    never total_credit_received itself, which is the SALE side's concern
++    (see approve_unified_sale_sale) and is untouched by this endpoint.
++    Same field shape as UnifiedSaleSettlement, deliberately not a subclass
++    of it — payment_reference here is genuinely optional (unlike at
++    creation, an already-approved settlement may already have one)."""
++    home_expense_amount: Decimal = Decimal("0")
++    home_expense_category_id: Optional[UUID] = None
++    owner_drawings_amount: Decimal = Decimal("0")
++    destination_type: Literal["plant", "account"] = "plant"
++    target_plant_id: Optional[UUID] = None
++    account_id: Optional[str] = None
++    payment_reference: Optional[str] = None
++    correction_reason: str
++    corrected_by: str
++
++
+ class UnifiedSaleBatchOut(BaseModel):
+     """Lightweight list-view row — no nested child records, unlike UnifiedSaleOut."""
+     model_config = ConfigDict(from_attributes=True)
+@@ -1706,7 +1792,8 @@ class UnifiedSaleBatchOut(BaseModel):
+     display_id: str
+     date: datetime
+     customer_id: UUID
+-    company_id: UUID
++    # None for a Payment-Only batch — see UnifiedSaleCreate.plant_id.
++    company_id: Optional[UUID] = None
+     total_selling_amount: Decimal
+     total_purchase_amount: Decimal
+     delivery_charges: Decimal = Decimal("0")
+@@ -1721,6 +1808,11 @@ class UnifiedSaleBatchOut(BaseModel):
+     gate_pass_no: Optional[str] = None
+     notes: Optional[str] = None
+     payment_reference: Optional[str] = None
++    # § Bug Fix — Correction Modal Routing. Null until the settlement's
++    # first correction — see models.UnifiedSaleBatch.settlement_corrected_by.
++    settlement_corrected_by: Optional[str] = None
++    settlement_corrected_at: Optional[datetime] = None
++    settlement_correction_reason: Optional[str] = None
+     # GST on Sale, extended to Unified Sale — see models.UnifiedSaleBatch.
+     # grand_total is what's actually posted to the customer's balance/
+     # ledger; total_selling_amount above stays excl.-GST.
+@@ -1754,7 +1846,8 @@ class UnifiedSaleOut(BaseModel):
+     display_id: str
+     date: datetime
+     customer_id: UUID
+-    company_id: UUID
++    # None for a Payment-Only batch — see UnifiedSaleCreate.plant_id.
++    company_id: Optional[UUID] = None
+     total_selling_amount: Decimal
+     total_purchase_amount: Decimal
+     delivery_charges: Decimal = Decimal("0")
+@@ -1769,6 +1862,11 @@ class UnifiedSaleOut(BaseModel):
+     gate_pass_no: Optional[str] = None
+     notes: Optional[str] = None
+     payment_reference: Optional[str] = None
++    # § Bug Fix — Correction Modal Routing. Null until the settlement's
++    # first correction — see models.UnifiedSaleBatch.settlement_corrected_by.
++    settlement_corrected_by: Optional[str] = None
++    settlement_corrected_at: Optional[datetime] = None
++    settlement_correction_reason: Optional[str] = None
+     # GST on Sale, extended to Unified Sale — see models.UnifiedSaleBatch.
+     gst_enabled: bool = False
+     gst_rate: Optional[Decimal] = None
+@@ -1990,6 +2088,8 @@ class ShopStockBatchOut(BaseModel):
+     quantity_received: Decimal
+     quantity_remaining: Decimal
+     load_rate_per_kg: Decimal
++    source_type: str = "load"
++    notes: Optional[str] = None
+     status: str
+     entered_by: str
+     created_at: datetime
+@@ -2000,6 +2100,20 @@ class ShopStockBatchOut(BaseModel):
+     source_display_id: Optional[str] = None
+ 
+ 
++class ShopStockBatchCreate(BaseModel):
++    """Add Filled Cylinder Stock (§ Shop Management) — manually adds an
++    existing batch of filled cylinders to a shop's FIFO stock, e.g.
++    onboarding a shop that already has physical stock on-site, or a manual
++    correction. See routers/shops.py's create_manual_stock_batch: unlike
++    every other ShopStockBatch, this one has no backing Sale and never
++    touches Customer.current_balance / the Dowa receivable / any Purchase
++    or Payment — it only ever adds physical stock."""
++    date: Optional[UtcDateTime] = None
++    product_id: UUID
++    quantity: Decimal
++    notes: Optional[str] = None
++
++
+ class ShopSaleCreate(BaseModel):
+     date: UtcDateTime
+     product_id: UUID
