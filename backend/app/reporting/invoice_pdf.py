@@ -1072,3 +1072,427 @@ def render_company_statement_pdf(summary: "schemas.CompanyLedgerSummary", genera
     story.append(Paragraph(f"System-generated document — printed by {generated_by} on {generated_at}.", s["compact_footer"]))
     doc.build(story)
     return buf.getvalue()
+
+
+# ============================================================================
+# SHOP STATEMENT — full activity log (Load/Shop Sale/Payment/Emergency
+# Transfer), NOT a single-purpose payable ledger like Customer/Plant
+# Statement above. A Shop's Transaction History mixes TWO unrelated
+# financial concerns, both shown here but never combined into one number
+# (§ Meaning of Balance):
+#   1. What the shop owes Dowa — Load debits it, Payment credits it
+#      (exactly the same Sale/Payment rows a Customer Statement already
+#      shows, since a Shop IS a Customer row). The Balance column reflects
+#      ONLY this, as a running total sourced from customer_monthly_ledger.
+#   2. The shop's OWN retail business — a Shop Sale has its own Amount/
+#      Paid/Due against the retail customer it was sold to (ShopSale.
+#      total_amount/amount_received/amount_outstanding), and Emergency
+#      Transfer is a pure stock movement. Neither ever touches the Dowa
+#      payable: a Shop Sale row's Balance cell shows its OWN due (plain
+#      text, not the running payable), and Emergency Transfer's is "-".
+# Same compact A4-landscape layout/pagination as the two statements above;
+# only the column set (adds Customer) and per-row mapping differ.
+# ============================================================================
+
+_SHOP_TYPE_LABELS = {
+    "load": "Load",
+    "shop_sale": "Sale",
+    "payment": "Payment",
+    "emergency_transfer_out": "Emergency Transfer",
+}
+
+
+def _fmt_qty_clean(value) -> str:
+    """Plain quantity formatting with no forced decimal padding — "2" not
+    "2.0000", but a genuinely fractional quantity (e.g. a KG-based Shop
+    Sale's cylinder-equivalent) still shows its real decimals. Trims
+    trailing zeros via string manipulation rather than Decimal.normalize()
+    (which would render a round number like 100 as "1E+2")."""
+    if value is None or Decimal(value) == 0:
+        return "-"
+    text = f"{Decimal(value):,.4f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _shop_statement_cylinder_type_cell(value) -> str:
+    """Cylinder Type column — value is ShopTransactionRow.cylinder_weight
+    (a physical weight like 11.80/45.40), never parsed from the free-text
+    description (§ Shop Statement — no Description parsing). Dash for a
+    row with no product at all (Payment)."""
+    if value is None or Decimal(value) == 0:
+        return "-"
+    return f"{_fmt_qty_clean(value)} KG"
+
+
+def _shop_statement_rate_cell(r: "schemas.ShopTransactionRow") -> str:
+    """Rate is always per-KG on this statement — a Load's is
+    ShopTransactionRow.load_rate_per_kg, a Shop Sale's is board_rate_per_kg
+    (the Board Rate actually in effect on the sale date, per ShopSale.
+    board_rate_per_kg_used). § Rate bug fix: this previously read
+    sale_rate_per_cylinder instead of board_rate_per_kg for a Shop Sale —
+    that field is the PER-CYLINDER price (board_rate_per_kg × saleable_kg,
+    e.g. 230 × 45 = 10,350 for a 45.4kg cylinder), not a rate/kg at all, so
+    a 2-cylinder sale showed "10,350.00" in the Rate column instead of the
+    actual 230.00/kg rate. Amount (ShopTransactionRow.amount = total_amount)
+    was never affected by this — only this column's own mapping was wrong."""
+    if r.kind == "load" and r.load_rate_per_kg:
+        return _fmt_amount(r.load_rate_per_kg)
+    if r.kind == "shop_sale" and r.board_rate_per_kg:
+        return _fmt_amount(r.board_rate_per_kg)
+    return "-"
+
+
+# § Remove Internal Information — no ID/Description column, same principle
+# already established for Customer/Plant Statement above (a display_id
+# like "SHSALE-000042" and a sentence like "Shop Sale — 45.4 KG Cylinder ×
+# 2.0000 · CREDIT (partial: 10000.00 paid, 10700.00 due) (fatima)" are
+# internal/audit language; Type + Customer + Cylinder Type + Quantity +
+# Rate + Paid below carry the same facts as structured, customer-facing
+# fields instead). Customer added per its own design pass (§ Customer
+# Information) — still sums to 277mm.
+_SHOP_STATEMENT_COL_WIDTHS = [18 * mm, 18 * mm, 32 * mm, 22 * mm, 16 * mm, 20 * mm, 36 * mm, 36 * mm, 79 * mm]
+_SHOP_STATEMENT_HEADERS = ["Date", "Type", "Customer", "Cylinder Type", "Quantity", "Rate", "Amount", "Paid", "Balance"]
+
+
+def _shop_statement_row_cells(s, r: "schemas.ShopTransactionRow", balance) -> list:
+    """§ Payment / Paid amount, § Meaning of Balance — a Shop Sale carries
+    its OWN Amount/Paid/Due (ShopSale.total_amount/amount_received/
+    amount_outstanding — the retail customer's own balance on THAT sale),
+    completely independent of `balance` (the shop's running payable to
+    Dowa, sourced from customer_monthly_ledger). These are deliberately
+    computed from two unrelated sources and never combined — a Shop Sale
+    row's Balance cell shows its own amount_outstanding, NOT `balance`;
+    a Load/Payment row's Balance cell shows `balance` and never anything
+    ShopSale-related. Per-kind branching below (not a generic
+    truthy-value-or-dash fallback) so a genuine Rs 0 paid/due on a real
+    sale still shows "0.00"/"0.00" rather than being mistaken for "not
+    applicable" — only Load/Payment/Emergency Transfer's actually-N/A
+    cells fall back to "-"."""
+    customer_cell = r.customer_name or "-"
+    cylinder_cell = _shop_statement_cylinder_type_cell(r.cylinder_weight)
+    quantity_cell = _fmt_qty_clean(r.quantity)
+    rate_cell = _shop_statement_rate_cell(r)
+    bold = ParagraphStyle("CompactShopBalCell", parent=s["compact_table_cell"], fontName="Helvetica-Bold")
+
+    if r.kind == "shop_sale":
+        amount_cell = _fmt_amount(r.amount) if r.amount is not None else "-"
+        paid_cell = _fmt_amount(r.amount_received) if r.amount_received is not None else "-"
+        balance_cell = _fmt_amount(r.amount_outstanding) if r.amount_outstanding is not None else "-"
+        balance_style = s["compact_table_cell"]  # plain — this is the SALE's own due, not the Dowa payable
+    elif r.kind == "payment":
+        customer_cell = "-"
+        cylinder_cell = quantity_cell = rate_cell = amount_cell = "-"
+        paid_cell = _fmt_amount(r.amount) if r.amount is not None else "-"
+        balance_cell = _fmt_amount(balance)
+        balance_style = bold  # the real running Dowa-payable balance
+    elif r.kind == "load":
+        customer_cell = "-"
+        paid_cell = "-"
+        amount_cell = _fmt_amount(r.amount) if r.amount is not None else "-"
+        balance_cell = _fmt_amount(balance)
+        balance_style = bold  # the real running Dowa-payable balance
+    else:  # emergency_transfer_out — pure stock movement, no money/balance
+        customer_cell = "-"
+        amount_cell = paid_cell = balance_cell = "-"
+        balance_style = s["compact_table_cell"]
+
+    return [
+        Paragraph(r.date.strftime("%Y-%m-%d"), s["compact_table_cell"]),
+        Paragraph(_SHOP_TYPE_LABELS.get(r.kind, r.kind), s["compact_table_cell"]),
+        Paragraph(customer_cell, s["compact_table_cell"]),
+        Paragraph(cylinder_cell, s["compact_table_cell"]),
+        Paragraph(quantity_cell, s["compact_table_cell"]),
+        Paragraph(rate_cell, s["compact_table_cell"]),
+        Paragraph(amount_cell, s["compact_table_cell"]),
+        Paragraph(paid_cell, s["compact_table_cell"]),
+        Paragraph(balance_cell, balance_style),
+    ]
+
+
+def _shop_statement_opening_row_cells(s, opening_balance) -> list:
+    # The 7 dashes are placeholders only — render_shop_statement_pdf SPANs
+    # columns 0-7 over this row so only the "Opening Balance" label (cell
+    # 0) actually renders, never sitting under the Date column as though
+    # it were one (§ Opening Balance row presentation). Kept here so the
+    # row still has 9 cells, matching every other row's shape.
+    dash = Paragraph("-", s["compact_table_cell"])
+    bold = ParagraphStyle("CompactShopOpeningRow", parent=s["compact_table_cell"], fontName="Helvetica-Bold")
+    return [
+        Paragraph("Opening Balance", bold),
+        dash, dash, dash, dash, dash, dash, dash,
+        Paragraph(_fmt_amount(opening_balance), bold),
+    ]
+
+
+def _compact_shop_block(s, shop, month: str, total_width):
+    """Shop Statement's equivalent of _compact_customer_block/_compact_
+    plant_block above — same two-line shape. A shop IS a Customer row, so
+    it has the same mobile/address/city_area fields Customer does."""
+    party_bits = [shop.mobile] if shop.mobile else []
+    addr_bits = [b for b in [shop.address, shop.city_area] if b]
+    if addr_bits:
+        party_bits.append(", ".join(addr_bits))
+    party_suffix = f" — {' · '.join(party_bits)}" if party_bits else ""
+
+    return [
+        Paragraph("SHOP STATEMENT", s["compact_doctype"]),
+        Paragraph(
+            f"<b>Statement For:</b> {shop.name}{party_suffix} "
+            f"&nbsp;&nbsp;|&nbsp;&nbsp; <b>Period:</b> {_statement_period_label(month)}",
+            s["compact_customer_line"],
+        ),
+        Spacer(1, 1 * mm),
+    ]
+
+
+def render_shop_statement_pdf(
+    shop, month: str, transactions: list["schemas.ShopTransactionRow"],
+    ledger_summary: "schemas.CustomerLedgerSummary", generated_by: str, generated_at: str,
+) -> bytes:
+    """Full-activity-log statement PDF for one shop/month — same compact
+    A4-landscape design as render_customer_statement_pdf/render_company_
+    statement_pdf (see those docstrings for the page-1 vertical-budget
+    math and manual page-chunking rationale, both unchanged here). `shop`
+    is a live Customer row (a Shop IS a Customer — see routers/shops.py's
+    shop_statement_pdf). `transactions` is get_shop_detail's own
+    ShopTransactionRow list for this shop/month (Load/Shop Sale/Payment/
+    Emergency Transfer all included — § Full Activity Log, never filter
+    any kind out). `ledger_summary` is customer_monthly_ledger's output
+    for this same shop_id/month — the SAME payable math the Customer
+    Statement already uses (a Load is just an ordinary Sale row against
+    the shop, a Payment just an ordinary Payment row), read here, never
+    recomputed, and merged onto the Load/Payment rows below by matching
+    ref_id to ledger_summary.rows' own ref_id. Shop Sale/Emergency
+    Transfer rows never look anything up here — see
+    _shop_statement_row_cells's Balance handling."""
+    usable_width = landscape(A4)[0] - 20 * mm  # 297mm - 10mm each side = 277mm
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=landscape(A4),
+        topMargin=6 * mm, bottomMargin=6 * mm, leftMargin=10 * mm, rightMargin=10 * mm,
+    )
+    s = _styles()
+    story = []
+    story.extend(_compact_header_block(s, usable_width))
+    story.extend(_compact_shop_block(s, shop, month, usable_width))
+
+    # get_shop_detail sorts transactions latest-first for on-screen display
+    # (Global Sorting Standard) — a running-balance statement reads
+    # top-to-bottom oldest-first, same reversal render_customer_statement_
+    # pdf/render_company_statement_pdf already do for their own summary.rows.
+    data_rows = list(reversed(transactions))
+    total_shop_sales = sum((t.amount or Decimal("0") for t in transactions if t.kind == "shop_sale"), Decimal("0"))
+    # § Summary — "Total Paid" above stays scoped to the Dowa payable
+    # (ledger_summary.total_payments = standalone Payment rows only, same
+    # figure the Customer Statement uses); a retail customer's amount_
+    # received collected inline on a Shop Sale is a different concept (§
+    # Meaning of Balance) and must never be folded into that figure. Given
+    # its own clearly-separate metric here instead, so nothing collected
+    # at the point of sale is silently missing from the statement overall.
+    total_shop_sale_collections = sum(
+        (t.amount_received or Decimal("0") for t in transactions if t.kind == "shop_sale"), Decimal("0")
+    )
+
+    story.append(_compact_summary_row(s, [
+        ("Opening Balance", _fmt_amount(ledger_summary.opening_balance), "#0B2138"),
+        ("Total Loads", _fmt_amount(ledger_summary.total_sales), "#0B2138"),
+        ("Total Paid", _fmt_amount(ledger_summary.total_payments), "#1E8A5F"),
+        ("Closing Balance", _fmt_amount(ledger_summary.closing_balance), "#0B2138"),
+        ("Total Shop Sales", _fmt_amount(total_shop_sales), "#9333EA"),
+        ("Collected on Shop Sales", _fmt_amount(total_shop_sale_collections), "#1E8A5F"),
+    ], usable_width))
+    story.append(Spacer(1, 1 * mm))
+
+    # Balance merge — Load/Payment read customer_monthly_ledger's own
+    # already-computed running_balance (matched by ref_id: a Load IS that
+    # Sale row's id, a Payment IS that Payment row's id); Shop Sale/
+    # Emergency Transfer never touch `running` at all, so the very next
+    # Load/Payment row picks up exactly where the payable left off — never
+    # inflated or deflated by anything in between (§ Balance — must not
+    # imply an effect).
+    ledger_balance_by_ref = {row.ref_id: row.running_balance for row in ledger_summary.rows}
+    running = ledger_summary.opening_balance
+    rows_with_balance = []
+    for t in data_rows:
+        if t.kind in ("load", "payment") and t.ref_id in ledger_balance_by_ref:
+            running = ledger_balance_by_ref[t.ref_id]
+        rows_with_balance.append((t, running))
+
+    header_cells = [Paragraph(f"<b>{h}</b>", s["compact_table_header"]) for h in _SHOP_STATEMENT_HEADERS]
+    chunks = [rows_with_balance[i:i + STATEMENT_ROWS_PER_PAGE] for i in range(0, len(rows_with_balance), STATEMENT_ROWS_PER_PAGE)] or [[]]
+
+    for i, chunk in enumerate(chunks):
+        body_rows = [_shop_statement_row_cells(s, t, bal) for t, bal in chunk]
+        if i == 0:
+            body_rows = [_shop_statement_opening_row_cells(s, ledger_summary.opening_balance)] + body_rows
+        if i > 0:
+            story.append(PageBreak())
+        table = _statement_table_chunk(s, header_cells, body_rows, _SHOP_STATEMENT_COL_WIDTHS)
+        if i == 0:
+            # Opening Balance row (§ Opening Balance row presentation) —
+            # merges Date..Paid (columns 0-7, table row 1 since row 0 is
+            # the header) into one left-aligned "Opening Balance" label so
+            # it never reads as though sitting in the Date column; Balance
+            # (column 8) keeps its own real value. Applied to this Table
+            # instance only, after _statement_table_chunk builds it — never
+            # touches that shared function or Customer/Plant Statement.
+            table.setStyle(TableStyle([
+                ("SPAN", (0, 1), (7, 1)),
+                ("ALIGN", (0, 1), (0, 1), "LEFT"),
+            ]))
+        story.append(table)
+
+    story.append(Spacer(1, 1 * mm))
+    story.append(_totals_block(s, [("Closing Balance", ledger_summary.closing_balance)]))
+
+    story.append(Spacer(1, 1 * mm))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#CBD5E1")))
+    story.append(Spacer(1, 0.5 * mm))
+    story.append(Paragraph(f"System-generated document — printed by {generated_by} on {generated_at}.", s["compact_footer"]))
+    doc.build(story)
+    return buf.getvalue()
+
+
+# ============================================================================
+# SUPPLY CUSTOMER STATEMENT — a shop's OWN retail customer's ledger with
+# that shop (never the shop's payable to Dowa — a completely different,
+# unrelated balance covered by render_shop_statement_pdf above). Simpler
+# than that one: only two event kinds (sale/payment) and ONE coherent
+# running balance for the whole document, so — unlike Shop Statement —
+# there is no dual-concept Balance column to keep apart; every row's
+# Balance is the same real running_balance customer_monthly_ledger-style
+# math already produces (see routers/shops.get_supply_customer_ledger).
+# All-time, not month-scoped (ShopSupplyCustomer has a single opening_
+# balance, matching that endpoint's own docstring) — same compact
+# A4-landscape layout/pagination as the statements above.
+# ============================================================================
+
+_SUPPLY_CUSTOMER_TYPE_LABELS = {"sale": "Sale", "payment": "Payment"}
+
+_SUPPLY_CUSTOMER_STATEMENT_COL_WIDTHS = [20 * mm, 20 * mm, 26 * mm, 18 * mm, 24 * mm, 40 * mm, 40 * mm, 89 * mm]
+_SUPPLY_CUSTOMER_STATEMENT_HEADERS = ["Date", "Type", "Cylinder Type", "Quantity", "Rate", "Amount", "Paid", "Balance"]
+
+
+def _supply_customer_statement_quantity_cell(r: "schemas.ShopSupplyCustomerLedgerRow") -> str:
+    """Same clean-number convention as Shop Statement's Quantity column,
+    with a "kg" suffix only for a unit="kg" row (a cylinder-unit row's
+    Cylinder Type column already conveys the physical size; a kg-unit
+    row's own quantity is a KG figure, not a cylinder count, so it needs
+    the unit spelled out to avoid reading as one)."""
+    if r.quantity is None:
+        return "-"
+    text = _fmt_qty_clean(r.quantity)
+    if text == "-":
+        return "-"
+    return f"{text} kg" if r.unit == "kg" else text
+
+
+def _supply_customer_statement_row_cells(s, r: "schemas.ShopSupplyCustomerLedgerRow") -> list:
+    bold = ParagraphStyle("CompactSupplyCustBalCell", parent=s["compact_table_cell"], fontName="Helvetica-Bold")
+    if r.kind == "sale":
+        cylinder_cell = _shop_statement_cylinder_type_cell(r.cylinder_weight)
+        quantity_cell = _supply_customer_statement_quantity_cell(r)
+        # board_rate_per_kg, not `rate` — `rate` is deliberately unit-
+        # relative for the on-screen ledger (per-cylinder for a cylinder-
+        # unit row); this PDF's Rate column needs the real rate/kg
+        # regardless of unit, same convention as the Shop Statement's own
+        # Rate fix (§ Rate is currently wrong).
+        rate_cell = _fmt_amount(r.board_rate_per_kg) if r.board_rate_per_kg else "-"
+        amount_cell = _fmt_amount(r.gross_amount) if r.gross_amount is not None else "-"
+        paid_cell = _fmt_amount(r.payment_amount) if r.payment_amount is not None else "-"
+    else:  # payment — no product/quantity/rate/gross-amount concept at all
+        cylinder_cell = quantity_cell = rate_cell = amount_cell = "-"
+        paid_cell = _fmt_amount(r.payment_amount) if r.payment_amount is not None else "-"
+    return [
+        Paragraph(r.date.strftime("%Y-%m-%d"), s["compact_table_cell"]),
+        Paragraph(_SUPPLY_CUSTOMER_TYPE_LABELS.get(r.kind, r.kind), s["compact_table_cell"]),
+        Paragraph(cylinder_cell, s["compact_table_cell"]),
+        Paragraph(quantity_cell, s["compact_table_cell"]),
+        Paragraph(rate_cell, s["compact_table_cell"]),
+        Paragraph(amount_cell, s["compact_table_cell"]),
+        Paragraph(paid_cell, s["compact_table_cell"]),
+        Paragraph(_fmt_amount(r.running_balance), bold),
+    ]
+
+
+def _supply_customer_statement_opening_row_cells(s, opening_balance) -> list:
+    dash = Paragraph("-", s["compact_table_cell"])
+    bold = ParagraphStyle("CompactSupplyCustOpeningRow", parent=s["compact_table_cell"], fontName="Helvetica-Bold")
+    return [
+        Paragraph("Opening Balance", bold),
+        dash, dash, dash, dash, dash, dash,
+        Paragraph(_fmt_amount(opening_balance), bold),
+    ]
+
+
+def render_supply_customer_statement_pdf(
+    customer, ledger: "schemas.ShopSupplyCustomerLedgerOut", generated_by: str, generated_at: str,
+) -> bytes:
+    """All-time statement PDF for one shop's own supply customer — the
+    shop-scoped mirror of render_customer_statement_pdf, same compact
+    A4-landscape design (see that function's docstring for the page-1
+    vertical-budget math and manual page-chunking rationale, unchanged
+    here). `customer` is a live ShopSupplyCustomer row; `ledger` is
+    get_supply_customer_ledger's own output for it, read here, never
+    recomputed — ledger.rows is already oldest-first (unlike ShopDetailOut.
+    transactions/CustomerLedgerSummary.rows, which are latest-first for
+    on-screen display and need reversing), so no reversal is needed."""
+    usable_width = landscape(A4)[0] - 20 * mm  # 297mm - 10mm each side = 277mm
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=landscape(A4),
+        topMargin=6 * mm, bottomMargin=6 * mm, leftMargin=10 * mm, rightMargin=10 * mm,
+    )
+    s = _styles()
+    story = []
+    story.extend(_compact_header_block(s, usable_width))
+
+    party_bits = [customer.mobile] if customer.mobile else []
+    addr_bits = [b for b in [customer.address] if b]
+    if addr_bits:
+        party_bits.append(", ".join(addr_bits))
+    party_suffix = f" — {' · '.join(party_bits)}" if party_bits else ""
+    as_of_date = generated_at.split(" ")[0]
+    story.append(Paragraph("SUPPLY CUSTOMER STATEMENT", s["compact_doctype"]))
+    story.append(Paragraph(
+        f"<b>Statement For:</b> {customer.name}{party_suffix} "
+        f"&nbsp;&nbsp;|&nbsp;&nbsp; <b>As of:</b> {as_of_date}",
+        s["compact_customer_line"],
+    ))
+    story.append(Spacer(1, 1 * mm))
+
+    story.append(_compact_summary_row(s, [
+        ("Opening Balance", _fmt_amount(ledger.opening_balance), "#0B2138"),
+        ("Total Sales (Due)", _fmt_amount(ledger.total_sales), "#0B2138"),
+        ("Collected at Sale", _fmt_amount(ledger.total_collected_at_sale), "#1E8A5F"),
+        ("Total Payments", _fmt_amount(ledger.total_payments), "#1E8A5F"),
+        ("Closing Balance", _fmt_amount(ledger.closing_balance), "#0B2138"),
+    ], usable_width))
+    story.append(Spacer(1, 1 * mm))
+
+    header_cells = [Paragraph(f"<b>{h}</b>", s["compact_table_header"]) for h in _SUPPLY_CUSTOMER_STATEMENT_HEADERS]
+    chunks = [ledger.rows[i:i + STATEMENT_ROWS_PER_PAGE] for i in range(0, len(ledger.rows), STATEMENT_ROWS_PER_PAGE)] or [[]]
+
+    for i, chunk in enumerate(chunks):
+        body_rows = [_supply_customer_statement_row_cells(s, r) for r in chunk]
+        if i == 0:
+            body_rows = [_supply_customer_statement_opening_row_cells(s, ledger.opening_balance)] + body_rows
+        if i > 0:
+            story.append(PageBreak())
+        table = _statement_table_chunk(s, header_cells, body_rows, _SUPPLY_CUSTOMER_STATEMENT_COL_WIDTHS)
+        if i == 0:
+            table.setStyle(TableStyle([
+                ("SPAN", (0, 1), (6, 1)),
+                ("ALIGN", (0, 1), (0, 1), "LEFT"),
+            ]))
+        story.append(table)
+
+    story.append(Spacer(1, 1 * mm))
+    story.append(_totals_block(s, [("Closing Balance", ledger.closing_balance)]))
+
+    story.append(Spacer(1, 1 * mm))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#CBD5E1")))
+    story.append(Spacer(1, 0.5 * mm))
+    story.append(Paragraph(f"System-generated document — printed by {generated_by} on {generated_at}.", s["compact_footer"]))
+    doc.build(story)
+    return buf.getvalue()

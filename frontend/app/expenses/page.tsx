@@ -461,10 +461,12 @@ function ExpensesBody() {
 
     filteredExpenses.forEach(
       (expense) => {
+        const categoryId =
+          expense.category_id ?? "uncategorized";
         map.set(
-          expense.category_id,
+          categoryId,
           (map.get(
-            expense.category_id
+            categoryId
           ) || 0) +
             parseFloat(
               expense.amount
@@ -1306,10 +1308,14 @@ function ExpensesBody() {
                                     {t("expenses.shopBadge")}
                                   </span>
 
-                                  {
-                                    expense.shop_name
-                                  }
+                                  {expense.shop_name}
                                 </span>
+
+                                {expense.source_shop_sale_id && (
+                                  <span className="inline-flex w-fit items-center rounded bg-blue-50 px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wide text-blue-700">
+                                    {t("expenses.shopSaleBadge")}
+                                  </span>
+                                )}
 
                                 {(
                                   expense.customer_name ||
@@ -1326,9 +1332,7 @@ function ExpensesBody() {
                               </div>
                             ) : expense.customer_name ? (
                               <span className="text-[12px] font-medium text-slate-800">
-                                {
-                                  expense.customer_name
-                                }
+                                {expense.customer_name}
                               </span>
                             ) : (
                               <span className="text-[12px] text-slate-500">

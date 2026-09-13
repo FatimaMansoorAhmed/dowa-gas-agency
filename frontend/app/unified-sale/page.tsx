@@ -97,12 +97,15 @@ function UnifiedSaleBody() {
   const [showNewPlant, setShowNewPlant] = useState(false);
   const [showSaleForm, setShowSaleForm] = useState(false);
   // Payment-Only mode (§ Part A) — a customer who's only paying, no sale
-  // happening. A Mode Switch on this same form, not a separate modal: Full
-  // Sale still posts through POST /sales/unified (pending -> approve, needs
-  // a purchase plant + items) exactly as before; Payment Only instead posts
-  // straight through POST /payment-receipts — the same instant, single-step
-  // flow the Payments Register page's PaymentReceiptModal already uses —
-  // since a bare payment has no purchase plant and nothing to approve.
+  // happening. A Mode Switch on this same form, not a separate modal or
+  // endpoint: BOTH modes post through the same POST /sales/unified
+  // (pending -> approve) — Payment Only just sends items: [] and no
+  // plant_id (UnifiedSaleBatch.company_id is nullable specifically for
+  // this), riding the exact same batch model and approval workflow as a
+  // Full Sale rather than the standalone /payment-receipts flow (see
+  // handleSubmit's formMode === "payment_only" branch, which is the actual
+  // source of truth for this — PaymentReceiptModal's own instant,
+  // single-step flow is untouched and unrelated).
   // Only meaningful for a NEW entry: editingId is always a Unified Sale
   // batch (Payment Receipts post instantly and are never "pending"), so
   // editing always forces Full Sale mode — see resetForm/handleEditTransaction.
@@ -565,6 +568,29 @@ function UnifiedSaleBody() {
     }
   };
 
+  // Cancel an individual Approved Sale line (§ Delete/Reverse an Approved
+  // Sale/Payment) — full reversal via the existing cancel machinery, never
+  // a hard delete: reverses the customer balance/cylinder transaction (see
+  // routers/sales.py::_reverse_sale), and for a Unified-Sale-linked line
+  // also cascades to the paired Purchase/plant balance and resyncs the
+  // batch's own cached totals (routers/sales.py::cancel_sale), so a
+  // multi-line batch's Customer/Company Ledger rows never go stale after
+  // one line is reversed. Backend blocks with a clear error if the plant
+  // has already been paid against that Purchase.
+  const handleCancelApprovedSale = async (id: string) => {
+    if (!user || actionBusyId) return;
+    if (!window.confirm(t("unifiedSale.confirmCancelSale"))) return;
+    setActionBusyId(id);
+    try {
+      await api.sales.cancel(id, user.name);
+      await load();
+    } catch (e) {
+      alert(apiErrorMessage(e, t("unifiedSale.failedCancelSale")));
+    } finally {
+      setActionBusyId(null);
+    }
+  };
+
   const handleSubmit = async () => {
     if (!canSubmit || !user) return;
     setSaving(true);
@@ -733,7 +759,7 @@ function UnifiedSaleBody() {
       const batch = recent.find((r) => r.id === batchId);
       rows.push({
         key: batchId, kind: "batch", batchId, children,
-        date: batch?.sale_approved_at || children[0].date,
+        date: batch?.date || children[0].date,
         batch,
       });
     }
@@ -872,9 +898,11 @@ function UnifiedSaleBody() {
               )}
 
               {/* Mode Switch — editing is always a Full Sale (a Unified Sale
-                  batch); Payment Only posts instantly via /payment-receipts
-                  and has no pending state to edit back into, so the toggle
-                  only makes sense for a brand-new entry. */}
+                  batch); Payment Only posts through the same POST
+                  /sales/unified endpoint (items: [], no plant_id — see
+                  handleSubmit) and has no separate pending state to edit
+                  back into, so the toggle only makes sense for a brand-new
+                  entry. */}
               {!editingId && (
                 <div className="grid grid-cols-2 gap-2 p-1 bg-paper rounded-lg border border-hairline">
                   <button
@@ -1737,9 +1765,25 @@ function UnifiedSaleBody() {
                                       <Td right mono>{pkr(s.total_amount)}</Td>
                                       <Td mono>{s.entered_by}</Td>
                                       <Td center>
-                                        <button type="button" onClick={() => setCorrectTarget({ kind: "sale", transaction: s })} className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title={t("unifiedSale.correctThisSale")}>
-                                          <Pencil size={13} />
-                                        </button>
+                                        <div className="flex items-center justify-center gap-1">
+                                          <button type="button" onClick={() => setCorrectTarget({ kind: "sale", transaction: s })} className="p-1.5 rounded-md hover:bg-paper text-steel hover:text-teal" title={t("unifiedSale.correctThisSale")}>
+                                            <Pencil size={13} />
+                                          </button>
+                                          {/* Unified-Sale-linked only, same scoping as the Approved
+                                              Payments table's own cancel button below — full reversal
+                                              via cancel_sale (§ Delete/Reverse an Approved Sale). */}
+                                          {!!s.unified_sale_id && (
+                                            <button
+                                              type="button"
+                                              disabled={actionBusyId === s.id}
+                                              onClick={() => handleCancelApprovedSale(s.id)}
+                                              className="p-1.5 rounded-md text-slate-400 hover:text-brand-red hover:bg-red-50 disabled:opacity-50"
+                                              title={t("unifiedSale.cancelThisSale")}
+                                            >
+                                              <Ban size={13} />
+                                            </button>
+                                          )}
+                                        </div>
                                       </Td>
                                     </tr>
                                   );

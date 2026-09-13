@@ -9,7 +9,7 @@ from app.database import get_db
 from app import models, schemas
 from app.deps import require_active_user, require_csrf
 from app.reporting.invoice_pdf import render_sale_invoice_pdf
-from app.routers.purchases import _correct_purchase_internal
+from app.routers.purchases import _correct_purchase_internal, _reverse_purchase
 from app.timezone import KARACHI_TZ
 from app.utils import next_display_id, adjust_cylinder_balance, resync_unified_sale_batch_totals
 
@@ -281,12 +281,40 @@ def create_sale(
 @router.patch("/{sale_id}/cancel", response_model=schemas.SaleOut)
 def cancel_sale(sale_id: UUID, by: str = Query(...), db: Session = Depends(get_db)):
     """Voids a sale without deleting it (§16) and reverses its effect on the
-    customer's balance so the ledger stays correct."""
+    customer's balance so the ledger stays correct.
+
+    Unified-Sale-linked Purchase cascade (§ Delete/Reverse an Approved
+    Sale) — same guard + cascade correct_sale already applies, ported here
+    so cancel achieves the SAME full reversal a correction does. Without
+    this, cancelling a Unified-Sale Sale line left its paired Purchase —
+    and the plant's Company.current_balance — silently stale, and the
+    batch's own cached totals (total_selling_amount/grand_total/etc., read
+    directly by the Customer/Company Ledger's "unified_sale" row) drifted
+    from what's actually still posted (§ resync_unified_sale_batch_totals's
+    own docstring, the USALE-000003 stale-total bug)."""
     sale = db.query(models.Sale).get(sale_id)
     if not sale:
         raise HTTPException(404, "Sale not found")
     if sale.status != "active":
         raise HTTPException(400, "Sale is already cancelled")
+
+    linked_purchase = _find_active_linked_purchase(db, sale.unified_sale_id, sale.product_id)
+    if linked_purchase:
+        existing_payment = (
+            db.query(models.CompanyPayment)
+            .filter(
+                models.CompanyPayment.purchase_id == linked_purchase.id,
+                models.CompanyPayment.status == "active",
+            )
+            .first()
+        )
+        if existing_payment:
+            raise HTTPException(
+                400,
+                f"Cannot cancel this Sale — its linked Purchase {linked_purchase.display_id} already has "
+                f"Company Payment {existing_payment.display_id} recorded against it. Cancel or correct that "
+                f"Company Payment first, then retry this cancellation.",
+            )
 
     _reverse_sale(db, sale, by)
 
@@ -296,6 +324,16 @@ def cancel_sale(sale_id: UUID, by: str = Query(...), db: Session = Depends(get_d
     db.add(sale)
 
     _log(db, "sale", sale.id, "cancel", by, old="active", new="cancelled")
+
+    if linked_purchase:
+        _reverse_purchase(db, linked_purchase)
+        linked_purchase.status = "cancelled"
+        linked_purchase.modified_at = datetime.utcnow()
+        linked_purchase.modified_by = by
+        db.add(linked_purchase)
+
+    db.flush()
+    resync_unified_sale_batch_totals(db, sale.unified_sale_id)
 
     db.commit()
     db.refresh(sale)

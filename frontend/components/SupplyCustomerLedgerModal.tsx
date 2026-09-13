@@ -1,8 +1,8 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { X, Search, Banknote } from "lucide-react";
+import { X, Search, Banknote, Printer, Share2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { Th, Td, Eyebrow, BalanceTag } from "./ui";
+import { Th, Td, Eyebrow, BalanceTag, Button } from "./ui";
 import { api } from "@/lib/api";
 import { pkr, fmtTime } from "@/lib/format";
 import type { ShopSupplyCustomer, ShopSupplyCustomerLedgerOut } from "@/lib/types";
@@ -31,10 +31,13 @@ export default function SupplyCustomerLedgerModal({
   const [selectedId, setSelectedId] = useState(initialCustomerId || customers[0]?.id || "");
   const [ledger, setLedger] = useState<ShopSupplyCustomerLedgerOut | null>(null);
   const [loading, setLoading] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [shareStatus, setShareStatus] = useState<{ type: "info" | "error"; msg: string } | null>(null);
 
   useEffect(() => {
     if (!selectedId) { setLedger(null); return; }
     setLoading(true);
+    setShareStatus(null);
     api.shops.customers.ledger(selectedId)
       .then(setLedger)
       .finally(() => setLoading(false));
@@ -48,12 +51,74 @@ export default function SupplyCustomerLedgerModal({
 
   const selected = customers.find((c) => c.id === selectedId) || null;
 
+  // Send via WhatsApp (client-side only) — same mechanism every other
+  // statement in the app already uses (frontend/app/customer-ledger/
+  // page.tsx's shareStatement): fetch the same backend-rendered PDF the
+  // "Download Statement" link opens, then hand it to the device's native
+  // share sheet (mobile) or download+wa.me draft (desktop).
+  const shareStatement = async () => {
+    if (!selected) return;
+    setShareStatus(null);
+    setSharing(true);
+    try {
+      const res = await fetch(api.shops.customers.statementUrl(selected.id), { credentials: "include" });
+      if (!res.ok) throw new Error(t("customerLedger.shareWhatsappError"));
+      const blob = await res.blob();
+      const filename = `Statement-${selected.name}.pdf`;
+      const file = new File([blob], filename, { type: "application/pdf" });
+      const shareText = t("modals.shareWhatsappSupplyCustomerText", { name: selected.name });
+
+      let canShareFile = false;
+      try {
+        canShareFile =
+          typeof navigator.canShare === "function" &&
+          typeof navigator.share === "function" &&
+          navigator.canShare({ files: [file] });
+      } catch {
+        canShareFile = false;
+      }
+
+      if (canShareFile) {
+        try {
+          await navigator.share({ files: [file], title: filename, text: shareText });
+        } catch (err) {
+          if (err instanceof Error && err.name !== "AbortError") throw err;
+        }
+        return;
+      }
+
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(blobUrl);
+
+      window.open(`https://wa.me/?text=${encodeURIComponent(shareText)}`, "_blank", "noopener,noreferrer");
+      setShareStatus({ type: "info", msg: t("customerLedger.shareWhatsappFallbackInstruction") });
+    } catch (err) {
+      setShareStatus({ type: "error", msg: err instanceof Error ? err.message : t("customerLedger.shareWhatsappError") });
+    } finally {
+      setSharing(false);
+    }
+  };
+
   return (
     <div
       className="fixed inset-0 z-50 bg-[rgba(11,33,56,0.5)] p-3 sm:p-5 flex items-center justify-center"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="w-full max-w-5xl max-h-[90vh] overflow-hidden bg-white rounded-xl shadow-2xl flex flex-col">
+      {/* § Supply Customer Ledger modal size — was max-w-5xl (1024px), too
+          compact once the statement buttons + full 7-column table (Date/
+          ID/Description/Rate/Amount/Payment/Balance) both live in the
+          header/body; matches TransactionHistoryModal's own size exactly
+          (frontend/app/shops/[id]/page.tsx) for consistency between the
+          two "browse a ledger" modals. w-full + the overlay's own p-3
+          sm:p-5 gutter (unchanged) still keep this fully responsive down
+          to small screens — only the upper bound grew. */}
+      <div className="w-full max-w-[1500px] max-h-[92vh] overflow-hidden bg-white rounded-xl shadow-2xl flex flex-col">
         <div className="flex items-center justify-between px-5 py-4 border-b border-hairline shrink-0">
           <div>
             <Eyebrow>{t("modals.supplyCustomerLedger")}</Eyebrow>
@@ -115,16 +180,42 @@ export default function SupplyCustomerLedgerModal({
                       {[selected.mobile, selected.address].filter(Boolean).join(" · ") || t("modals.noContactDetails")}
                     </div>
                   </div>
-                  {parseFloat(selected.current_balance) > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => onReceivePayment(selected)}
-                      className="inline-flex items-center gap-1.5 rounded-md bg-emerald-50 hover:bg-emerald-100 px-3 py-2 text-xs font-semibold text-emerald-700"
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={api.shops.customers.statementUrl(selected.id)}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={t("shopDetail.downloadStatementTitle")}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-hairline px-3 py-2 text-xs font-semibold text-ink hover:bg-paper"
                     >
-                      <Banknote size={13} /> {t("customerLedger.receivePayment")}
-                    </button>
-                  )}
+                      <Printer size={13} /> {t("shopDetail.downloadStatement")}
+                    </a>
+                    <Button variant="outline" onClick={shareStatement} disabled={sharing}>
+                      <Share2 size={13} /> {sharing ? t("customerLedger.sharingWhatsapp") : t("customerLedger.shareWhatsapp")}
+                    </Button>
+                    {parseFloat(selected.current_balance) > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => onReceivePayment(selected)}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-emerald-50 hover:bg-emerald-100 px-3 py-2 text-xs font-semibold text-emerald-700"
+                      >
+                        <Banknote size={13} /> {t("customerLedger.receivePayment")}
+                      </button>
+                    )}
+                  </div>
                 </div>
+
+                {shareStatus && (
+                  <div
+                    className={`mt-3 font-body text-[12.5px] px-3 py-2 rounded-md border ${
+                      shareStatus.type === "info"
+                        ? "bg-[#EAF6F6] text-tealdeep border-[#BFE3E3]"
+                        : "bg-red-50 text-red-600 border-red-200"
+                    }`}
+                  >
+                    {shareStatus.msg}
+                  </div>
+                )}
 
                 {loading && <div className="mt-6 text-center text-steel font-body text-sm">{t("modals.loadingLedger")}</div>}
 

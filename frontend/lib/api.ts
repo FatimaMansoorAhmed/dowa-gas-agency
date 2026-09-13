@@ -113,6 +113,7 @@ import type {
   OwnerCapital, OwnerCapitalDestination, DailyReportData, GeneratedReport, SendWhatsAppResult,
   BoardRate, ShopListRow, ShopDetailOut, ShopSale, ShopStockBatch, ShopStockBatchCreate,
   ShopSupplyCustomer, ShopSupplyCustomerLedgerOut, ShopCustomerPayment, ShopExpenseTransaction, ShopBusinessLedgerOut,
+  ShopCashTransfer, ShopCashTransferCreate,
   AccountTransferRecord, User, UserAccessAuditRow,
 } from "./types";
 
@@ -124,6 +125,10 @@ export const api = {
       request<Company>("/companies", { method: "POST", body: JSON.stringify(payload) }),
     correctOpeningBalance: (id: string, payload: { new_value: number; reason: string }) =>
       request<Company>(`/companies/${id}/opening-balance`, { method: "PATCH", body: JSON.stringify(payload) }),
+    hideFromRateDashboard: (id: string) =>
+      request<Company>(`/companies/${id}/hide-from-rate-dashboard`, { method: "PATCH" }),
+    showOnRateDashboard: (id: string) =>
+      request<Company>(`/companies/${id}/show-on-rate-dashboard`, { method: "PATCH" }),
   },
   parties: {
     list: (companyId?: string) => request<Party[]>(`/parties${companyId ? `?company_id=${companyId}` : ""}`),
@@ -647,7 +652,7 @@ export const api = {
       const q = new URLSearchParams(params as Record<string, string>).toString();
       return request<ShopDetailOut>(`/shops/${id}${q ? `?${q}` : ""}`);
     },
-    stock: (id: string, date?: string) =>
+    stock: (id: string, date?: string) => 
       request<ShopDetailOut["stock"]>(`/shops/${id}/stock${date ? `?date=${date}` : ""}`),
     batches: (id: string, month?: string) =>
       request<ShopStockBatch[]>(`/shops/${id}/batches${month ? `?month=${month}` : ""}`),
@@ -680,6 +685,15 @@ export const api = {
       correction_reason: string; corrected_by: string;
     }) => request<ShopSale>(`/shops/sales/${saleId}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
     saleInvoiceUrl: (saleId: string) => `${BASE}/shops/sales/${saleId}/invoice`,
+    // Full-activity-log Shop Statement PDF (§ Shop Statement) — mirrors
+    // api.ledger.customerStatementUrl/companyStatementUrl exactly (a
+    // read-only, on-demand backend-rendered PDF, month-scoped).
+    statementUrl: (shopId: string, month: string) => `${BASE}/shops/${shopId}/statement?month=${month}`,
+    deletePasswordStatus: () => request<{ is_set: boolean }>("/shops/delete-password/status"),
+    setDeletePassword: (payload: { new_password: string; current_password?: string }) =>
+      request<{ status: string }>("/shops/delete-password/set", { method: "POST", body: JSON.stringify(payload) }),
+    deleteShop: (shopId: string, password: string) =>
+      request<{ status: string }>(`/shops/${shopId}`, { method: "DELETE", body: JSON.stringify({ password }) }),
 
     // ---- Engine 3: Shop Business Finance ----
     customers: {
@@ -689,11 +703,22 @@ export const api = {
       }) => request<ShopSupplyCustomer>(`/shops/${shopId}/customers`, { method: "POST", body: JSON.stringify(payload) }),
       get: (supplyCustomerId: string) => request<ShopSupplyCustomer>(`/shops/customers/${supplyCustomerId}`),
       ledger: (supplyCustomerId: string) => request<ShopSupplyCustomerLedgerOut>(`/shops/customers/${supplyCustomerId}/ledger`),
+      // All-time Supply Customer Statement PDF (§ Supply Customer Statement)
+      // — mirrors statementUrl above (a read-only, on-demand backend-
+      // rendered PDF), no month param since this ledger isn't month-scoped.
+      statementUrl: (supplyCustomerId: string) => `${BASE}/shops/customers/${supplyCustomerId}/statement`,
     },
     customerPayments: {
       create: (shopId: string, supplyCustomerId: string, payload: {
         date: string; supply_customer_id: string; amount: number; method?: string;
         account_id?: string; shop_sale_id?: string; notes?: string; entered_by: string;
+        // Settlement Routing (§ Payment Only mode) — same 3-way split as
+        // ShopSale/ShopCashTransfer. Presence of destination_type selects
+        // this path over the legacy account_id path above.
+        home_expense_amount?: number; home_expense_description?: string;
+        owner_drawings_amount?: number;
+        destination_type?: DestinationType; target_plant_id?: string;
+        settlement_account_id?: string;
       }) => request<ShopCustomerPayment>(`/shops/${shopId}/customers/${supplyCustomerId}/payments`, { method: "POST", body: JSON.stringify(payload) }),
       cancel: (paymentId: string, by: string) =>
         request<ShopCustomerPayment>(`/shops/customer-payments/${paymentId}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
@@ -716,6 +741,12 @@ export const api = {
     businessLedger: (shopId: string, params?: { date?: string; month?: string }) => {
       const q = new URLSearchParams(params as Record<string, string>).toString();
       return request<ShopBusinessLedgerOut>(`/shops/${shopId}/business-ledger${q ? `?${q}` : ""}`);
+    },
+    cashTransfers: {
+      create: (shopId: string, payload: ShopCashTransferCreate) =>
+        request<ShopCashTransfer>(`/shops/${shopId}/cash-transfers`, { method: "POST", body: JSON.stringify(payload) }),
+      cancel: (transferId: string, by: string) =>
+        request<ShopCashTransfer>(`/shops/cash-transfers/${transferId}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
     },
   },
   users: {

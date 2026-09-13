@@ -9,9 +9,12 @@ startup, after create_all(), and only ever adds a column — it never drops,
 renames, or alters existing data.
 """
 
+import logging
 import uuid as _uuid
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
+
+logger = logging.getLogger(__name__)
 
 # (table, column, DDL type). "GUID" is a placeholder resolved per-dialect
 # below — it must match what models.GUID actually stores (native UUID on
@@ -35,7 +38,9 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     ("company_payments", "source_payment_id", "GUID"),
     ("company_payments", "source_owner_capital_id", "GUID"),
     ("expenses", "source_payment_id", "GUID"),
+    ("expenses", "source_shop_sale_id", "GUID"),
     ("owner_drawings", "source_payment_id", "GUID"),
+    ("owner_drawings", "source_shop_sale_id", "GUID"),
     ("customers", "cylinder_balance_118", "NUMERIC(10, 0) NOT NULL DEFAULT 0"),
     ("customers", "cylinder_balance_454", "NUMERIC(10, 0) NOT NULL DEFAULT 0"),
     ("customers", "empty_cylinders", "NUMERIC(10, 0) NOT NULL DEFAULT 0"),
@@ -136,6 +141,21 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     # exactly the all-or-nothing behavior it was created under.
     ("shop_sales", "amount_received", "NUMERIC(14, 2)"),
     ("shop_sales", "destination_account_id", "GUID"),
+    # Settlement Routing (§ Settlement Routing — Shop Sale form) — where the
+    # collected amount was routed at creation time. destination_account_id
+    # above is the LEGACY fallback (a single PaymentAccount); these three
+    # carry the new 3-way split (Plant Settlement / Account Deposit /
+    # Home Expense + Owner Drawings bypass). Null for every pre-existing
+    # row, which predates routing entirely.
+    ("shop_sales", "settlement_destination_type", "VARCHAR(50)"),
+    ("shop_sales", "settlement_target_plant_id", "GUID"),
+    ("shop_sales", "settlement_account_id", "GUID"),
+    # Free-text description the user typed for the Home Expense deduction
+    # (§ Settlement Routing — Shop Sale form). Null for every pre-existing
+    # row.
+    ("shop_sales", "settlement_home_expense_description", "VARCHAR(255)"),
+    ("shop_sales", "settlement_home_expense_amount", "NUMERIC(14, 2)"),
+    ("shop_sales", "settlement_owner_drawings_amount", "NUMERIC(14, 2)"),
     # shop_customer_payments.account_id/shop_sale_id: null for every
     # existing collection — pre-migration collections never posted to any
     # account and were never linked to a specific originating sale.
@@ -203,6 +223,53 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     # audit_logs row (routers/sales.py's create/cancel/correct logging)
     # predates this and has no reason to backfill, so it stays NULL.
     ("audit_logs", "reason", "VARCHAR(255)"),
+    # CompanyPayment <-> Shop Sale linkage fix (§ Shop Sale Settlement
+    # Routing bug fix) — every existing row predates this column and is
+    # NULL here; the ones actually created by a Shop Sale's "plant"
+    # settlement are backfilled by the one-time repair further below,
+    # which also reverses any that are incorrectly still "active" after
+    # their originating Shop Sale was already cancelled.
+    ("company_payments", "source_shop_sale_id", "GUID"),
+    # Shop Cash Transfer (§ Shop Cash Transfer) — pushes money OUT of a
+    # shop's real Shop Cash balance via the same 3-way settlement split as
+    # Shop Sale. shop_cash_transfers itself is a brand-new table (created
+    # by create_all(), not here); these three columns are the back-links on
+    # the pre-existing bypass/settlement tables its routing can create, all
+    # null for every pre-existing row since the feature is new.
+    ("expenses", "source_shop_cash_transfer_id", "GUID"),
+    ("owner_drawings", "source_shop_cash_transfer_id", "GUID"),
+    ("company_payments", "source_shop_cash_transfer_id", "GUID"),
+    # Payment Only mode (Record Shop Sale) — the same 3-way settlement
+    # split, now on ShopCustomerPayment (a supply customer paying the shop
+    # with nothing collected in-person). All null for every pre-existing
+    # row: the legacy plain single-account path (account_id) is untouched
+    # and still fully functional — these columns are additive, not a
+    # replacement.
+    ("shop_customer_payments", "settlement_destination_type", "VARCHAR(50)"),
+    ("shop_customer_payments", "settlement_target_plant_id", "GUID"),
+    ("shop_customer_payments", "settlement_account_id", "GUID"),
+    ("shop_customer_payments", "settlement_home_expense_description", "VARCHAR(255)"),
+    ("shop_customer_payments", "settlement_home_expense_amount", "NUMERIC(14, 2)"),
+    ("shop_customer_payments", "settlement_owner_drawings_amount", "NUMERIC(14, 2)"),
+    ("expenses", "source_shop_customer_payment_id", "GUID"),
+    ("owner_drawings", "source_shop_customer_payment_id", "GUID"),
+    ("company_payments", "source_shop_customer_payment_id", "GUID"),
+    # Delete Shop (§ Delete Shop) — permanent snapshot set only when a shop
+    # is deleted, replacing its now-gone shop_id/source_shop_*_id back-links
+    # with a plain text label (e.g. "Shop Sale SHSALE-000042 (Some Shop)")
+    # so the "came from a shop" context survives forever. Null for every
+    # pre-existing row and for every row whose shop-side origin is still
+    # live — see routers/shops.py's delete_shop.
+    ("expenses", "shop_origin_label", "VARCHAR(255)"),
+    ("owner_drawings", "shop_origin_label", "VARCHAR(255)"),
+    ("company_payments", "shop_origin_label", "VARCHAR(255)"),
+    # Rate Dashboard — Remove Company (§ Rate Dashboard part b) — scoped
+    # purely to whether this company's card appears on the Rate Dashboard;
+    # the Company row itself (and its RateEntry history) is untouched and
+    # keeps working everywhere else (Purchases, Sales, Plant Ledger,
+    # Executive Dashboard). False for every existing company — none were
+    # hidden before this feature existed.
+    ("companies", "hidden_from_rate_dashboard", "BOOLEAN NOT NULL DEFAULT false"),
 ]
 
 
@@ -220,6 +287,95 @@ def run_startup_migrations(engine: Engine) -> None:
                 continue
             resolved_type = guid_type if ddl_type == "GUID" else ddl_type
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {resolved_type}"))
+
+        # Repair Shop Sale settlement bypass rows that were historically
+        # written with a ShopSale UUID in the Payment-FK source_payment_id
+        # column. Only rows with no matching Payment and a matching ShopSale
+        # are eligible; valid Payment lineage is never touched.
+        if {"expenses", "owner_drawings", "payments", "shop_sales"} <= existing_tables:
+            expense_repaired = conn.execute(text("""
+                UPDATE expenses
+                SET source_shop_sale_id = source_payment_id,
+                    source_payment_id = NULL
+                WHERE source_payment_id IS NOT NULL
+                  AND (source_shop_sale_id IS NULL OR source_shop_sale_id = source_payment_id)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM payments payment
+                      WHERE payment.id = expenses.source_payment_id
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM shop_sales shop_sale
+                      WHERE shop_sale.id = expenses.source_payment_id
+                  )
+            """)).rowcount or 0
+            drawing_repaired = conn.execute(text("""
+                UPDATE owner_drawings
+                SET source_shop_sale_id = source_payment_id,
+                    source_payment_id = NULL
+                WHERE source_payment_id IS NOT NULL
+                  AND (source_shop_sale_id IS NULL OR source_shop_sale_id = source_payment_id)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM payments payment
+                      WHERE payment.id = owner_drawings.source_payment_id
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM shop_sales shop_sale
+                      WHERE shop_sale.id = owner_drawings.source_payment_id
+                  )
+            """)).rowcount or 0
+            repaired_total = expense_repaired + drawing_repaired
+            if repaired_total:
+                logger.info(
+                    "Shop Sale settlement lineage repair: expenses=%s owner_drawings=%s total=%s",
+                    expense_repaired, drawing_repaired, repaired_total,
+                )
+
+        # Repair CompanyPayments created by a Shop Sale's "plant" settlement
+        # before source_shop_sale_id existed to link them back (see
+        # utils.apply_settlement_routing / _reverse_shop_sale_settlement bug
+        # fix). Unlike the Expense/OwnerDrawings repair above, these rows'
+        # source_payment_id was always correctly NULL — there's no misplaced
+        # FK value to recover, so the only surviving signal is the notes
+        # text apply_settlement_routing always writes for this path:
+        # "3-way settlement via Shop Sale <display_id> — customer paid plant
+        # directly". Postgres only (split_part) — fine, since this bug only
+        # matters for real production data, never a fresh/local SQLite DB.
+        if {"company_payments", "shop_sales", "companies"} <= existing_tables and engine.dialect.name == "postgresql":
+            linked = conn.execute(text("""
+                UPDATE company_payments cp
+                SET source_shop_sale_id = ss.id
+                FROM shop_sales ss
+                WHERE cp.source_shop_sale_id IS NULL
+                  AND cp.method = 'direct_settlement'
+                  AND cp.notes LIKE '3-way settlement via Shop Sale %'
+                  AND ss.display_id = split_part(split_part(cp.notes, 'Shop Sale ', 2), ' —', 1)
+                RETURNING cp.id
+            """)).fetchall()
+
+            # Any now-linked row still "active" despite its ShopSale having
+            # ALREADY been cancelled/corrected is the exact bug symptom this
+            # repair exists for (a user cancelled the sale; reversal
+            # silently no-op'd) — actually reverse it now, not just relink.
+            stuck = conn.execute(text("""
+                SELECT cp.id, cp.company_id, cp.amount, cp.excess_amount
+                FROM company_payments cp
+                JOIN shop_sales ss ON ss.id = cp.source_shop_sale_id
+                WHERE cp.status = 'active' AND ss.status != 'active'
+            """)).fetchall()
+            for cp_id, company_id, amount, excess_amount in stuck:
+                conn.execute(text("""
+                    UPDATE companies
+                    SET current_balance = current_balance + :amount,
+                        account_credit = account_credit - :excess
+                    WHERE id = :cid
+                """), {"amount": amount, "excess": excess_amount or 0, "cid": company_id})
+                conn.execute(text("UPDATE company_payments SET status = 'cancelled' WHERE id = :id"), {"id": cp_id})
+
+            if linked or stuck:
+                logger.info(
+                    "CompanyPayment <-> Shop Sale lineage repair: linked=%s reversed_stuck_active=%s",
+                    len(linked), len(stuck),
+                )
 
         # payments.account_id was NOT NULL before Payment Receipts existed —
         # a "plant"-routed receipt legitimately has no account (mirrors
@@ -271,6 +427,20 @@ def run_startup_migrations(engine: Engine) -> None:
             expense_line_columns = {c["name"]: c for c in inspector.get_columns("shop_expense_lines")}
             if expense_line_columns.get("category_id", {}).get("nullable") is False:
                 conn.execute(text("ALTER TABLE shop_expense_lines ALTER COLUMN category_id DROP NOT NULL"))
+
+        # expenses.category_id was NOT NULL before a Settlement-Routing Home
+        # Expense stopped being forced through a Category — a shop's on-the-spot
+        # field expense (§ Settlement Routing — Shop Sale form) is a free-text
+        # description the user typed ("fuel", "tea", ...) with no
+        # ExpenseCategory behind it, so models.Expense made this
+        # nullable=True (only an ordinary account-funded expense, entered
+        # through the Expenses page's own form, requires a category). Postgres
+        # only, same reasoning as payments.account_id / cylinder_transactions
+        # .product_id / shop_expense_lines.category_id above.
+        if "expenses" in existing_tables and engine.dialect.name == "postgresql":
+            expense_columns = {c["name"]: c for c in inspector.get_columns("expenses")}
+            if expense_columns.get("category_id", {}).get("nullable") is False:
+                conn.execute(text("ALTER TABLE expenses ALTER COLUMN category_id DROP NOT NULL"))
 
         # rate_entries.party_id was NOT NULL before Party became optional —
         # some real plants have no party at all (§ Party optional). Postgres

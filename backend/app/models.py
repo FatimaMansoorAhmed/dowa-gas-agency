@@ -55,6 +55,13 @@ class Company(Base):
     last_overpayment_date = Column(DateTime, nullable=True)
     account_credit = Column(Numeric(14, 2), nullable=False, default=0)
 
+    # Rate Dashboard — Remove Company (§ Rate Dashboard part b): hides this
+    # company's card from the Rate Dashboard only. Does NOT deactivate the
+    # company itself — it still works in Purchases, Sales, Plant Ledger,
+    # Executive Dashboard, etc. Reversible via the "show on dashboard"
+    # endpoint. Distinct from RateEntry rows, which stay immutable either way.
+    hidden_from_rate_dashboard = Column(Boolean, nullable=False, default=False)
+
     parties = relationship("Party", back_populates="company", cascade="all, delete-orphan")
 
 
@@ -395,7 +402,11 @@ class Expense(Base):
     id = Column(GUID(), primary_key=True, default=gen_uuid)
     display_id = Column(String, unique=True, nullable=False)  # e.g. EXP-000123
     date = Column(DateTime, nullable=False)
-    category_id = Column(GUID(), ForeignKey("expense_categories.id"), nullable=False)
+    # Nullable — a Settlement-Routing Home Expense (§ Settlement Routing) is a
+    # free-text description the user typed ("fuel", "tea", ...) with no
+    # ExpenseCategory behind it. Only an ordinary account-funded expense
+    # (the Expenses page's own form) requires a category_id.
+    category_id = Column(GUID(), ForeignKey("expense_categories.id"), nullable=True)
     amount = Column(Numeric(14, 2), nullable=False)
     # Nullable: a normal business expense is paid FROM an account (debited
     # here). An expense funded directly out of field-collected customer
@@ -412,6 +423,13 @@ class Expense(Base):
     # Receipt's home-expense deduction — lets cancelling that receipt find
     # and reverse this row. Mirrors unified_sale_id's linkage pattern.
     source_payment_id = Column(GUID(), ForeignKey("payments.id"), nullable=True)
+    source_shop_sale_id = Column(GUID(), ForeignKey("shop_sales.id"), nullable=True)
+    # Set when this Expense was auto-created by a Shop Cash Transfer's Home
+    # Expense deduction — mirrors source_shop_sale_id's linkage pattern.
+    source_shop_cash_transfer_id = Column(GUID(), ForeignKey("shop_cash_transfers.id"), nullable=True)
+    # Set when this Expense was auto-created by a supply customer payment's
+    # (§ Payment Only mode) Home Expense deduction — same linkage pattern.
+    source_shop_customer_payment_id = Column(GUID(), ForeignKey("shop_customer_payments.id"), nullable=True)
     # Dashboard P&L / Shop Expense integration — dual-write only, going
     # forward (no historical backfill). shop_id is the coarse display/
     # filter tag (which shop); source_shop_expense_transaction_id is the
@@ -421,6 +439,17 @@ class Expense(Base):
     # above. Both null for every plant-level Expense.
     shop_id = Column(GUID(), ForeignKey("customers.id"), nullable=True)
     source_shop_expense_transaction_id = Column(GUID(), ForeignKey("shop_expense_transactions.id"), nullable=True)
+    # Permanent snapshot set ONLY by Delete Shop (routers/shops.py's
+    # delete_shop), the moment before it hard-deletes the shop_id/
+    # source_shop_*_id above's targets. This row itself is never deleted or
+    # reversed — the money it represents genuinely moved (Home Expense/
+    # Owner Drawings/shop expense) — but its shop-side FK back-links would
+    # otherwise dangle once the shop and its Sale/Transfer/Payment/
+    # ExpenseTransaction are gone, so this text label (e.g. "Shop Sale
+    # SHSALE-000042 (Some Shop)") is what preserves the "came from a shop"
+    # context forever. Null for every row whose shop-side origin is still
+    # live — read shop_id/source_shop_*_id/the live join for those.
+    shop_origin_label = Column(String, nullable=True)
 
     status = Column(String, nullable=False, default="active")
     entered_by = Column(String, nullable=False)
@@ -429,6 +458,9 @@ class Expense(Base):
     category = relationship("ExpenseCategory")
     account = relationship("PaymentAccount")
     shop = relationship("Customer")
+    source_shop_sale = relationship("ShopSale", foreign_keys=[source_shop_sale_id])
+    source_shop_cash_transfer = relationship("ShopCashTransfer", foreign_keys=[source_shop_cash_transfer_id])
+    source_shop_customer_payment = relationship("ShopCustomerPayment", foreign_keys=[source_shop_customer_payment_id])
 
 
 class OwnerDrawings(Base):
@@ -450,10 +482,20 @@ class OwnerDrawings(Base):
     # Set when this OwnerDrawings row was auto-created by a standalone
     # Payment Receipt's owner-drawings deduction — mirrors unified_sale_id.
     source_payment_id = Column(GUID(), ForeignKey("payments.id"), nullable=True)
+    source_shop_sale_id = Column(GUID(), ForeignKey("shop_sales.id"), nullable=True)
+    # Set when this OwnerDrawings row was auto-created by a Shop Cash
+    # Transfer's Owner Drawings deduction — mirrors source_shop_sale_id.
+    source_shop_cash_transfer_id = Column(GUID(), ForeignKey("shop_cash_transfers.id"), nullable=True)
+    # Set when this OwnerDrawings row was auto-created by a supply customer
+    # payment's (§ Payment Only mode) Owner Drawings deduction.
+    source_shop_customer_payment_id = Column(GUID(), ForeignKey("shop_customer_payments.id"), nullable=True)
     # Dashboard P&L / Shop Expense integration — same convention as
     # Expense.shop_id/source_shop_expense_transaction_id above.
     shop_id = Column(GUID(), ForeignKey("customers.id"), nullable=True)
     source_shop_expense_transaction_id = Column(GUID(), ForeignKey("shop_expense_transactions.id"), nullable=True)
+    # Permanent snapshot set ONLY by Delete Shop — see Expense.shop_origin_
+    # label's docstring for the full explanation; identical convention here.
+    shop_origin_label = Column(String, nullable=True)
 
     status = Column(String, nullable=False, default="active")
     entered_by = Column(String, nullable=False)
@@ -461,6 +503,9 @@ class OwnerDrawings(Base):
 
     account = relationship("PaymentAccount")
     shop = relationship("Customer")
+    source_shop_sale = relationship("ShopSale", foreign_keys=[source_shop_sale_id])
+    source_shop_cash_transfer = relationship("ShopCashTransfer", foreign_keys=[source_shop_cash_transfer_id])
+    source_shop_customer_payment = relationship("ShopCustomerPayment", foreign_keys=[source_shop_customer_payment_id])
 
 
 class OwnerCapital(Base):
@@ -719,6 +764,20 @@ class CompanyPayment(Base):
     # mirrors source_payment_id's linkage pattern, lets cancelling that
     # Owner Capital entry find and reverse this row.
     source_owner_capital_id = Column(GUID(), ForeignKey("owner_capital.id"), nullable=True)
+    # Set when this CompanyPayment was auto-created by a Shop Sale's "plant"
+    # settlement routing (§ Shop Sale Settlement Routing) — lets cancelling
+    # that sale find and reverse this row. Mirrors the source_shop_sale_id
+    # already on Expense/OwnerDrawings for the same feature.
+    source_shop_sale_id = Column(GUID(), ForeignKey("shop_sales.id"), nullable=True)
+    # Set when this CompanyPayment was auto-created by a Shop Cash
+    # Transfer's "plant" settlement routing — mirrors source_shop_sale_id.
+    source_shop_cash_transfer_id = Column(GUID(), ForeignKey("shop_cash_transfers.id"), nullable=True)
+    # Set when this CompanyPayment was auto-created by a supply customer
+    # payment's (§ Payment Only mode) "plant" settlement routing.
+    source_shop_customer_payment_id = Column(GUID(), ForeignKey("shop_customer_payments.id"), nullable=True)
+    # Permanent snapshot set ONLY by Delete Shop — see Expense.shop_origin_
+    # label's docstring for the full explanation; identical convention here.
+    shop_origin_label = Column(String, nullable=True)
 
     status = Column(String, nullable=False, default="active")
     entered_by = Column(String, nullable=False)
@@ -735,6 +794,9 @@ class CompanyPayment(Base):
     company = relationship("Company")
     purchase = relationship("Purchase")
     account = relationship("PaymentAccount")
+    source_shop_sale = relationship("ShopSale", foreign_keys=[source_shop_sale_id])
+    source_shop_cash_transfer = relationship("ShopCashTransfer", foreign_keys=[source_shop_cash_transfer_id])
+    source_shop_customer_payment = relationship("ShopCustomerPayment", foreign_keys=[source_shop_customer_payment_id])
 
 
 class CylinderTransaction(Base):
@@ -1073,10 +1135,75 @@ class ShopSale(Base):
     correction_reason = Column(String, nullable=True)
     corrected_from_id = Column(GUID(), nullable=True)
 
+    settlement_destination_type = Column(String(50), nullable=True)
+    settlement_target_plant_id = Column(GUID(), ForeignKey("companies.id"), nullable=True)
+    settlement_account_id = Column(GUID(), ForeignKey("payment_accounts.id"), nullable=True)
+    # Free-text description the user typed for the Home Expense deduction
+    # (§ Settlement Routing — Shop Sale form). Only set on a settlement-
+    # routed sale with a non-zero home_expense_amount; null otherwise.
+    settlement_home_expense_description = Column(String, nullable=True)
+    settlement_home_expense_amount = Column(Numeric(14, 2), nullable=True)
+    settlement_owner_drawings_amount = Column(Numeric(14, 2), nullable=True)
+
+    # ... other columns ...
+
+    # 2. Define relationships AFTER columns, with explicit foreign_keys
     customer = relationship("Customer")
     product = relationship("Product")
     supply_customer = relationship("ShopSupplyCustomer")
-    destination_account = relationship("PaymentAccount")
+
+    destination_account = relationship(
+        "PaymentAccount",
+        foreign_keys=[destination_account_id]
+    )
+    settlement_account = relationship(
+        "PaymentAccount",
+        foreign_keys=[settlement_account_id]
+    )
+    settlement_plant = relationship(
+        "Company",
+        foreign_keys=[settlement_target_plant_id]
+    )
+
+
+class ShopCashTransfer(Base):
+    """Pushes money OUT of a shop's real Shop Cash PaymentAccount balance
+    (§ Shop Cash Transfer) — not a fresh sale generating new money, an
+    existing stored balance being drawn down. Always routed via the same
+    3-way split as Shop Sale settlement (Home Expense / Owner Drawings /
+    Plant-or-Account) — unlike ShopSale, there is no legacy single-account
+    fallback, so settlement_destination_type is required, never null."""
+    __tablename__ = "shop_cash_transfers"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    display_id = Column(String, unique=True, nullable=False)  # e.g. CASHOUT-000123
+    date = Column(DateTime, nullable=False)
+    shop_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
+
+    # Total pulled from Shop Cash — validated at creation against
+    # shop_account.current_balance (see routers/shops._apply_shop_cash_transfer);
+    # frozen here regardless of any later balance change.
+    gross_amount = Column(Numeric(14, 2), nullable=False)
+
+    settlement_destination_type = Column(String(50), nullable=False)  # "plant" | "account"
+    settlement_target_plant_id = Column(GUID(), ForeignKey("companies.id"), nullable=True)
+    settlement_account_id = Column(GUID(), ForeignKey("payment_accounts.id"), nullable=True)
+    # Free-text description the user typed for the Home Expense deduction —
+    # same convention as ShopSale.settlement_home_expense_description.
+    settlement_home_expense_description = Column(String, nullable=True)
+    settlement_home_expense_amount = Column(Numeric(14, 2), nullable=False, default=0)
+    settlement_owner_drawings_amount = Column(Numeric(14, 2), nullable=False, default=0)
+
+    notes = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="active")  # active | cancelled
+    entered_by = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    modified_at = Column(DateTime, nullable=True)
+    modified_by = Column(String, nullable=True)
+
+    shop = relationship("Customer")
+    settlement_account = relationship("PaymentAccount", foreign_keys=[settlement_account_id])
+    settlement_plant = relationship("Company", foreign_keys=[settlement_target_plant_id])
 
 
 class ShopSaleBatchConsumption(Base):
@@ -1171,6 +1298,9 @@ class ShopCustomerPayment(Base):
     method = Column(String, nullable=False, default="cash")
     # Which real PaymentAccount received this collection — defaults to the
     # shop's own Shop Cash account, same account choices as elsewhere.
+    # Only used on the LEGACY plain path (RecordSupplyCustomerPaymentModal);
+    # null whenever settlement routing below is used instead, same
+    # dual-path convention as ShopSale.destination_account_id.
     account_id = Column(GUID(), ForeignKey("payment_accounts.id"), nullable=True)
     notes = Column(String, nullable=True)
 
@@ -1181,6 +1311,18 @@ class ShopCustomerPayment(Base):
     # actually represents the advance; this is just the audit-trail record.
     excess_amount = Column(Numeric(14, 2), nullable=True)
 
+    # Settlement Routing (§ Payment Only mode, Record Shop Sale) — same
+    # 3-way split (Home Expense / Owner Drawings / Plant-or-Account) as
+    # ShopSale/ShopCashTransfer. Optional: null means the legacy plain
+    # single-account path above was used instead (see
+    # routers/shops._apply_customer_payment's use_settlement_routing flag).
+    settlement_destination_type = Column(String(50), nullable=True)
+    settlement_target_plant_id = Column(GUID(), ForeignKey("companies.id"), nullable=True)
+    settlement_account_id = Column(GUID(), ForeignKey("payment_accounts.id"), nullable=True)
+    settlement_home_expense_description = Column(String, nullable=True)
+    settlement_home_expense_amount = Column(Numeric(14, 2), nullable=True)
+    settlement_owner_drawings_amount = Column(Numeric(14, 2), nullable=True)
+
     status = Column(String, nullable=False, default="active")  # active | cancelled
     entered_by = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -1189,8 +1331,10 @@ class ShopCustomerPayment(Base):
 
     shop = relationship("Customer")
     supply_customer = relationship("ShopSupplyCustomer")
+    settlement_account = relationship("PaymentAccount", foreign_keys=[settlement_account_id])
+    settlement_plant = relationship("Company", foreign_keys=[settlement_target_plant_id])
     shop_sale = relationship("ShopSale")
-    account = relationship("PaymentAccount")
+    account = relationship("PaymentAccount", foreign_keys=[account_id])
 
 
 class ShopExpenseTransaction(Base):
@@ -1331,3 +1475,10 @@ class UserAccessAudit(Base):
     reason = Column(String, nullable=True)
     ip_address = Column(String, nullable=True)  # populated on login/login_failed rows — drives per-IP rate limiting
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    key = Column(String, primary_key=True, index=True)
+    value = Column(String, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

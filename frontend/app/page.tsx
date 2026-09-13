@@ -5,7 +5,7 @@ import { Flag, Clock } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption } from "@/components/ui";
-import { pkr, fmtTime, todayLocalInput } from "@/lib/format";
+import { pkr, fmtTime, todayLocalInput, isSameKarachiDay } from "@/lib/format";
 import { api } from "@/lib/api";
 import DashboardPnLChart from "@/components/DashboardPnLChart";
 import type { Company, Party, RateEntry, Customer, Sale, Purchase, Expense, OwnerDrawing, ShopSale, CustomerFlag } from "@/lib/types";
@@ -286,19 +286,27 @@ function DashboardBody() {
             {latestRates.slice(0, 6).map((r) => {
               const company = companies.find((c) => c.id === r.company_id);
               const party = parties.find((p) => p.id === r.party_id);
+              const isToday = isSameKarachiDay(r.timestamp);
               return (
                 <div key={r.id} className="flex justify-between items-center px-3 py-2.5 bg-paper rounded-lg border border-hairline">
                   <div>
                     <div className="font-body text-[13px] font-semibold text-ink">
                       {company?.name} <span className="text-steel font-normal">· {party?.name}</span>
                     </div>
-                    <div className="font-mono text-[10.5px] text-steel flex items-center gap-1 mt-0.5">
-                      <Clock size={11} /> {fmtTime(r.timestamp)}
+                    <div className={`font-mono text-[10.5px] flex items-center gap-1 mt-0.5 ${isToday ? "text-steel" : "text-amber-600"}`}>
+                      <Clock size={11} />
+                      {isToday ? fmtTime(r.timestamp) : t("dashboard.lastEntered", { time: fmtTime(r.timestamp) })}
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="font-mono text-sm font-semibold text-ink">{r.rate_118} <span className="text-[10px] text-steel">/11.8kg</span></div>
-                    <div className="font-mono text-[11px] text-steel">{r.rate_454} /45.4kg</div>
+                    {isToday ? (
+                      <>
+                        <div className="font-mono text-sm font-semibold text-ink">{r.rate_118} <span className="text-[10px] text-steel">/11.8kg</span></div>
+                        <div className="font-mono text-[11px] text-steel">{r.rate_454} /45.4kg</div>
+                      </>
+                    ) : (
+                      <div className="font-mono text-[12px] italic text-amber-600">{t("dashboard.notEnteredToday")}</div>
+                    )}
                   </div>
                 </div>
               );

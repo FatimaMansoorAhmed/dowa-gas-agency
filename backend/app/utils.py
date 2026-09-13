@@ -254,10 +254,12 @@ def adjust_cylinder_balance(db: Session, customer_id, product_id, delta):
     return row
 
 
-def resolve_settlement_destination(db: Session, destination_type, target_plant_id, account_id, net_settlement_amount=None):
+def resolve_settlement_destination(db: Session, destination_type, target_plant_id, account_id, net_settlement_amount=None, shop=None):
     """Validates and normalizes settlement routing — shared by
-    routers/payment_receipts.py and routers/cylinder_returns.py (§ Cylinder
-    Return, cash mode). Returns (destination_type, target_plant_id,
+    routers/payment_receipts.py, routers/cylinder_returns.py (§ Cylinder
+    Return, cash mode), and the 3 shop-side settlement features in
+    routers/shops.py (Shop Sale, Shop Cash Transfer, Shop Customer Payment —
+    § Shop Cash destination). Returns (destination_type, target_plant_id,
     account_row, account_category). Raises fastapi.HTTPException on bad
     input, same as the callers did inline before this was extracted.
 
@@ -265,7 +267,17 @@ def resolve_settlement_destination(db: Session, destination_type, target_plant_i
     Drawings consumed the entire amount), skips the Plant/Account
     requirement entirely — apply_settlement_routing never touches either
     when net_settlement_amount isn't > 0, so requiring a pick here would
-    force choosing a destination nothing actually gets routed to."""
+    force choosing a destination nothing actually gets routed to.
+
+    `shop`, when given, allows account_id == "shop_cash" — routes to that
+    shop's OWN PaymentAccount (get_or_create_shop_account) instead of one of
+    the 3 fixed global buckets. Only the 3 shop-side callers above ever pass
+    `shop`/send "shop_cash"; Payment Receipt and Cylinder Return never do,
+    so this branch is simply unreachable for them under normal use — the
+    guard below exists only to fail loudly rather than silently no-op
+    (get_or_create_bucket_account would otherwise return None for an
+    unrecognized key, per resolve_account_or_bucket) if "shop_cash" somehow
+    reached here without a shop."""
     from uuid import UUID
     from fastapi import HTTPException
     from app import models  # local import avoids a circular import with models.py
@@ -282,6 +294,12 @@ def resolve_settlement_destination(db: Session, destination_type, target_plant_i
 
     if not account_id:
         raise HTTPException(400, "account_id is required when destination_type is 'account'")
+
+    if account_id == "shop_cash":
+        if shop is None:
+            raise HTTPException(400, "account_id 'shop_cash' is only valid for shop-side settlement")
+        return destination_type, None, get_or_create_shop_account(db, shop), "shop_cash"
+
     try:
         account_uuid = UUID(str(account_id))
     except (ValueError, TypeError, AttributeError):
@@ -300,6 +318,10 @@ def apply_settlement_routing(
     db: Session, date, home_expense_amount, home_expense_category_id,
     owner_drawings_amount, destination_type, target_plant_id, account_row,
     net_settlement_amount, entered_by: str, source_payment_id, source_label: str,
+    home_expense_description: Optional[str] = None,
+    source_shop_sale_id=None,
+    source_shop_cash_transfer_id=None,
+    source_shop_customer_payment_id=None,
 ) -> None:
     """The money-movement side of a Payment Receipt settlement (§ Settlement
     Routing) — home_expense_amount/owner_drawings_amount bypass every Dowa
@@ -317,16 +339,36 @@ def apply_settlement_routing(
     Payment row `source_payment_id` points at — this function only ever
     creates the bypass/settlement CHILD rows, never a Payment itself, since
     what "the payment" means differs by caller (real cash vs. a cylinder's
-    deemed cash value)."""
+    deemed cash value).
+
+    home_expense_description is optional and only used by the Shop Sale
+    form's Deductions section, where a Home Expense is a free-text
+    description the user typed ("fuel", "tea", ...) with no ExpenseCategory
+    behind it — that path passes home_expense_category_id=None and the
+    description here, which lands on Expense.description. Every other caller
+    (Payment Receipt, Cylinder Return, Unified Sale) still uses the
+    category-based path and leaves this None.
+
+    source_shop_sale_id is used by Shop Sale routing so its bypass rows keep
+    a valid lineage FK instead of placing a ShopSale UUID in the Payment-FK
+    source_payment_id column. source_shop_cash_transfer_id is the same
+    convention for Shop Cash Transfer routing, and source_shop_customer_
+    payment_id for a supply customer payment's Payment Only routing."""
     from app import models  # local import avoids a circular import with models.py
+
+    non_payment_source = source_shop_sale_id or source_shop_cash_transfer_id or source_shop_customer_payment_id
 
     if home_expense_amount and home_expense_amount > 0:
         db.add(models.Expense(
             display_id=next_display_id(db, models.Expense, "EXP", width=6),
             date=date, category_id=home_expense_category_id,
             amount=home_expense_amount, account_id=None, method="cash",
-            description=f"Auto-created from {source_label}",
-            status="active", entered_by=entered_by, source_payment_id=source_payment_id,
+            description=home_expense_description or f"Auto-created from {source_label}",
+            status="active", entered_by=entered_by,
+            source_payment_id=None if non_payment_source else source_payment_id,
+            source_shop_sale_id=source_shop_sale_id,
+            source_shop_cash_transfer_id=source_shop_cash_transfer_id,
+            source_shop_customer_payment_id=source_shop_customer_payment_id,
         ))
 
     if owner_drawings_amount and owner_drawings_amount > 0:
@@ -334,7 +376,11 @@ def apply_settlement_routing(
             display_id=next_display_id(db, models.OwnerDrawings, "DRAW", width=6),
             date=date, amount=owner_drawings_amount, account_id=None,
             notes=f"Auto-created from {source_label}",
-            status="active", entered_by=entered_by, source_payment_id=source_payment_id,
+            status="active", entered_by=entered_by,
+            source_payment_id=None if non_payment_source else source_payment_id,
+            source_shop_sale_id=source_shop_sale_id,
+            source_shop_cash_transfer_id=source_shop_cash_transfer_id,
+            source_shop_customer_payment_id=source_shop_customer_payment_id,
         ))
 
     if net_settlement_amount and net_settlement_amount > 0:
@@ -349,6 +395,9 @@ def apply_settlement_routing(
                 notes=f"3-way settlement via {source_label} — customer paid plant directly",
                 excess_amount=c_excess_amount, status="active",
                 entered_by=entered_by, source_payment_id=source_payment_id,
+                source_shop_sale_id=source_shop_sale_id,
+                source_shop_cash_transfer_id=source_shop_cash_transfer_id,
+                source_shop_customer_payment_id=source_shop_customer_payment_id,
             ))
             company.current_balance = company.current_balance - net_settlement_amount
             company.last_overpayment_amount = c_excess_amount

@@ -841,6 +841,7 @@ class CompanyOut(BaseModel):
     last_overpayment_amount: Optional[Decimal] = None
     last_overpayment_date: Optional[datetime] = None
     account_credit: Decimal
+    hidden_from_rate_dashboard: bool = False
 
 
 # ---------- Party ----------
@@ -1285,7 +1286,7 @@ class PaymentReceiptOut(BaseModel):
 # ---------- Expense ----------
 class ExpenseCreate(BaseModel):
     date: UtcDateTime
-    category_id: UUID
+    category_id: Optional[UUID] = None  # null = Settlement-Routing Home Expense: a free-text description with no ExpenseCategory behind it
     amount: Decimal
     account_id: Optional[UUID] = None  # null = funded directly from field-collected cash, no account debited
     method: str = "cash"
@@ -1300,7 +1301,7 @@ class ExpenseOut(BaseModel):
     id: UUID
     display_id: str
     date: datetime
-    category_id: UUID
+    category_id: Optional[UUID] = None
     amount: Decimal
     account_id: Optional[UUID]
     method: str
@@ -1308,6 +1309,9 @@ class ExpenseOut(BaseModel):
     vendor: Optional[str]
     reference_no: Optional[str]
     unified_sale_id: Optional[UUID] = None
+    source_shop_sale_id: Optional[UUID] = None
+    source_shop_cash_transfer_id: Optional[UUID] = None
+    source_shop_customer_payment_id: Optional[UUID] = None
     # customer_id/customer_name: WHICH customer this money is tied to,
     # resolved from either of two unrelated paths that never both apply to
     # the same row —
@@ -1337,6 +1341,13 @@ class ExpenseOut(BaseModel):
     # expense entered directly on this page.
     shop_id: Optional[UUID] = None
     shop_name: Optional[str] = None
+    # Delete Shop (§ Delete Shop) — permanent snapshot (e.g. "Shop Sale
+    # SHSALE-000042 (Some Shop)") written once shop_id/source_shop_*_id
+    # above are all cleared to NULL by a shop deletion; null for every row
+    # whose shop-side origin is still live. shop_name already falls back to
+    # this (see routers/expenses.py) for display compatibility — exposed
+    # here too for any caller that wants the raw label specifically.
+    shop_origin_label: Optional[str] = None
     status: str
     entered_by: str
     created_at: datetime
@@ -1671,10 +1682,16 @@ class OwnerDrawingsOut(BaseModel):
     account_id: Optional[UUID]
     notes: Optional[str]
     unified_sale_id: Optional[UUID] = None
+    source_shop_sale_id: Optional[UUID] = None
+    source_shop_cash_transfer_id: Optional[UUID] = None
+    source_shop_customer_payment_id: Optional[UUID] = None
     # Dashboard P&L / Shop Expense integration (§ Dashboard) — same
     # convention as ExpenseOut.shop_id/shop_name above.
     shop_id: Optional[UUID] = None
     shop_name: Optional[str] = None
+    # Delete Shop (§ Delete Shop) — see ExpenseOut.shop_origin_label above;
+    # identical convention here.
+    shop_origin_label: Optional[str] = None
     # § Shop Expense/Withdrawal Attribution — same convention as
     # ExpenseOut.customer_id/customer_name/shop_supply_customer_id/
     # shop_sale_display_id above (a shop owner withdrawal never has the
@@ -2126,7 +2143,7 @@ class ShopStockBatchCreate(BaseModel):
     touches Customer.current_balance / the Dowa receivable / any Purchase
     or Payment — it only ever adds physical stock."""
     date: Optional[UtcDateTime] = None
-    product_id: UUID
+    product_id: UUID    
     quantity: Decimal
     notes: Optional[str] = None
 
@@ -2134,23 +2151,28 @@ class ShopStockBatchCreate(BaseModel):
 class ShopSaleCreate(BaseModel):
     date: UtcDateTime
     product_id: UUID
-    quantity: Decimal  # in whichever `unit` is chosen — cylinders, or KG
+    quantity: Decimal
     unit: Literal["cylinder", "kg"] = "cylinder"
-    # Supply Customers (§25) — a named shop customer; "credit" requires one.
     supply_customer_id: Optional[UUID] = None
     payment_type: Literal["cash", "credit"] = "cash"
-    # Inline Settlement (§2) — how much was actually collected now. Omitted
-    # (None) means "fully paid" for a cash sale, "fully credit" (0) for a
-    # credit sale — today's original behavior, unchanged unless specified.
-    # A credit sale may set this anywhere from 0 up to the (server-computed)
-    # total_amount for a partial payment; the server rejects anything else.
     amount_received: Optional[Decimal] = None
-    # Which account received amount_received — defaults to this shop's own
-    # Shop Cash account when amount_received > 0 and this is left unset.
-    destination_account_id: Optional[UUID] = None
+    destination_account_id: Optional[UUID] = None  # legacy fallback
     notes: Optional[str] = None
     entered_by: str
 
+    # Settlement routing fields — the Shop Sale form's Deductions section.
+    # Home Expense here is a FREE-TEXT description the user typed ("fuel",
+    # "tea", ...), NOT a Category dropdown: a shop's on-the-spot field
+    # expense genuinely has no ExpenseCategory behind it. Mirrors the
+    # Expense.description field the backend writes it into (see
+    # utils.apply_settlement_routing). Owner Drawings is amount-only, as
+    # always.
+    home_expense_amount: Decimal = Decimal("0")
+    home_expense_description: Optional[str] = None
+    owner_drawings_amount: Decimal = Decimal("0")
+    destination_type: Optional[Literal["plant", "account"]] = None
+    target_plant_id: Optional[UUID] = None
+    account_id: Optional[str] = None
 
 class ShopSaleCorrect(ShopSaleCreate):
     """Same shape as ShopSaleCreate — see SaleCorrect (Ledger Corrections)
@@ -2186,8 +2208,61 @@ class ShopSaleOut(BaseModel):
     corrected_at: Optional[datetime] = None
     correction_reason: Optional[str] = None
     corrected_from_id: Optional[UUID] = None
+    settlement_destination_type: Optional[str] = None
+    settlement_target_plant_id: Optional[UUID] = None
+    settlement_account_id: Optional[UUID] = None
+    settlement_home_expense_description: Optional[str] = None
+    settlement_home_expense_amount: Optional[Decimal] = None
+    settlement_owner_drawings_amount: Optional[Decimal] = None
 
 
+class ShopCashTransferCreate(BaseModel):
+    """Shop Cash Transfer (§ Shop Cash Transfer) — pushes money OUT of a
+    shop's real Shop Cash balance via the same 3-way split Shop Sale
+    settlement uses. Always routed (never a legacy single-account
+    fallback), so destination_type/target_plant_id/account_id follow the
+    exact same required-ness rules resolve_settlement_destination already
+    enforces for Payment Receipt/Cylinder Return/Shop Sale."""
+    date: UtcDateTime
+    gross_amount: Decimal
+    home_expense_amount: Decimal = Decimal("0")
+    home_expense_description: Optional[str] = None
+    owner_drawings_amount: Decimal = Decimal("0")
+    destination_type: Literal["plant", "account"]
+    target_plant_id: Optional[UUID] = None
+    account_id: Optional[str] = None
+    notes: Optional[str] = None
+    entered_by: str
+
+
+class ShopCashTransferOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    display_id: str
+    date: datetime
+    shop_id: UUID
+    gross_amount: Decimal
+    settlement_destination_type: str
+    settlement_target_plant_id: Optional[UUID] = None
+    settlement_account_id: Optional[UUID] = None
+    settlement_home_expense_description: Optional[str] = None
+    settlement_home_expense_amount: Decimal
+    settlement_owner_drawings_amount: Decimal
+    notes: Optional[str] = None
+    status: str
+    entered_by: str
+    created_at: datetime
+    modified_at: Optional[datetime] = None
+    modified_by: Optional[str] = None
+
+# ---------- Delete shop     ------
+class ShopDeletePasswordSet(BaseModel):
+    new_password: str
+    current_password: Optional[str] = None
+
+
+class ShopDeleteRequest(BaseModel):
+    password: str
 # ---------- Shop Business Finance (Engine 3, §19-§26) ----------
 
 class ShopSupplyCustomerCreate(BaseModel):
@@ -2218,13 +2293,29 @@ class ShopCustomerPaymentCreate(BaseModel):
     amount: Decimal
     method: str = "cash"
     # Which account receives this collection — defaults to the shop's own
-    # Shop Cash account, same account choices as elsewhere.
+    # Shop Cash account, same account choices as elsewhere. LEGACY path
+    # only (RecordSupplyCustomerPaymentModal's plain flow) — ignored
+    # whenever destination_type below is given, which selects settlement
+    # routing instead (§ Payment Only mode, Record Shop Sale).
     account_id: Optional[UUID] = None
     # Optional traceability to the credit ShopSale being settled (§ Money
     # Routing — never required, never auto-allocated).
     shop_sale_id: Optional[UUID] = None
     notes: Optional[str] = None
     entered_by: str
+
+    # Settlement Routing (§ Payment Only mode) — same 3-way split (Home
+    # Expense / Owner Drawings / Plant-or-Account) as ShopSale/
+    # ShopCashTransfer. A separate settlement_account_id (str, bucket-key-
+    # capable via resolve_settlement_destination) rather than reusing
+    # account_id above — that field is UUID-only and means something
+    # different (the legacy path's single real PaymentAccount).
+    home_expense_amount: Decimal = Decimal("0")
+    home_expense_description: Optional[str] = None
+    owner_drawings_amount: Decimal = Decimal("0")
+    destination_type: Optional[Literal["plant", "account"]] = None
+    target_plant_id: Optional[UUID] = None
+    settlement_account_id: Optional[str] = None
 
 
 class ShopCustomerPaymentOut(BaseModel):
@@ -2240,6 +2331,12 @@ class ShopCustomerPaymentOut(BaseModel):
     method: str
     notes: Optional[str] = None
     excess_amount: Optional[Decimal] = None
+    settlement_destination_type: Optional[str] = None
+    settlement_target_plant_id: Optional[UUID] = None
+    settlement_account_id: Optional[UUID] = None
+    settlement_home_expense_description: Optional[str] = None
+    settlement_home_expense_amount: Optional[Decimal] = None
+    settlement_owner_drawings_amount: Optional[Decimal] = None
     status: str
     entered_by: str
     created_at: datetime
@@ -2255,11 +2352,36 @@ class ShopSupplyCustomerLedgerRow(BaseModel):
     ref_id: UUID
     display_id: str
     description: str
+    # sale_amount is the OUTSTANDING contribution this row posted to
+    # running_balance (see get_supply_customer_ledger — "0" for a fully
+    # cash sale), NOT the sale's gross total; gross_amount below is that
+    # true total, added for the Supply Customer Statement PDF (§ Shop
+    # Statement's Amount/Paid pattern) without touching this field's
+    # existing, already-relied-upon meaning.
     sale_amount: Decimal
     payment_amount: Decimal
     running_balance: Decimal
     rate: Optional[Decimal] = None
     entered_by: str
+    # § Supply Customer Statement — structured fields (never parsed from
+    # `description` above) for a "sale" row; null for "payment". Mirrors
+    # ShopTransactionRow's cylinder_weight/customer_name additions for the
+    # same reason: description already embeds this as free text
+    # ("{product} × {qty} {unit_label}"), which is fine for internal
+    # display but not a Description-free customer-facing PDF.
+    gross_amount: Optional[Decimal] = None
+    cylinder_weight: Optional[Decimal] = None
+    quantity: Optional[Decimal] = None
+    unit: Optional[Literal["cylinder", "kg"]] = None
+    # Always per-KG (ShopSale.board_rate_per_kg_used), unlike `rate` above
+    # which is deliberately unit-relative for the on-screen ledger (a
+    # cylinder-unit row's `rate` is sale_rate_per_cylinder — see "Bug 3"
+    # comment above). The Supply Customer Statement PDF needs a real
+    # rate/kg figure regardless of unit — same fix already applied to the
+    # Shop Statement's own Rate column (§ Rate is currently wrong) — so
+    # this is a NEW field rather than changing `rate`'s existing,
+    # already-relied-upon on-screen meaning.
+    board_rate_per_kg: Optional[Decimal] = None
 
 
 class ShopSupplyCustomerLedgerOut(BaseModel):
@@ -2357,6 +2479,16 @@ class ShopCashSummary(BaseModel):
     dowa_payments: Decimal
     transfers_in: Decimal
     transfers_out: Decimal
+    # Shop Cash Transfer (§ Shop Cash Transfer) — distinct from transfers_out
+    # above (AccountTransfer, account-to-account). This is the 3-way-split
+    # money movement OUT of Shop Cash via ShopCashTransfer.
+    cash_transfers_out: Decimal
+    # Sale/Transfer Deductions (§ Shop Cash Flow chip) — purely informational
+    # totals of Home Expense / Owner Drawings bypassed via EITHER a Shop
+    # Sale's or a Shop Cash Transfer's settlement routing, for this period.
+    # Never folded into closing_cash — this money never touched Shop Cash.
+    settlement_home_expense_total: Decimal
+    settlement_owner_drawings_total: Decimal
     closing_cash: Decimal
 
 
@@ -2367,7 +2499,7 @@ class ShopBusinessLedgerRow(BaseModel):
     Payment (those stay in the existing Transaction History section)."""
     kind: Literal[
         "cash_sale", "credit_sale", "customer_payment",
-        "expense", "owner_withdrawal", "dowa_payment",
+        "expense", "owner_withdrawal", "dowa_payment", "shop_cash_transfer",
     ]
     date: datetime
     ref_id: UUID
@@ -2375,6 +2507,17 @@ class ShopBusinessLedgerRow(BaseModel):
     description: str
     amount: Decimal
     cash_impact: Decimal  # signed: + into Shop Cash, - out of Shop Cash
+    # Where the collected amount was routed (§ Settlement Routing) — the
+    # shop-side counterpart to the plant ledger's payment-received row.
+    # Null for a credit sale with nothing collected (all-credit) or a pre-
+    # routing-change row; populated only for kind in ("cash_sale",
+    # "credit_sale").
+    settlement_destination_type: Optional[str] = None
+    settlement_target_plant_id: Optional[UUID] = None
+    settlement_account_id: Optional[UUID] = None
+    settlement_home_expense_description: Optional[str] = None
+    settlement_home_expense_amount: Optional[Decimal] = None
+    settlement_owner_drawings_amount: Optional[Decimal] = None
     entered_by: str
     status: str
 
@@ -2449,6 +2592,22 @@ class ShopTransactionRow(BaseModel):
     # Inline Settlement (§2) — populated only for kind=="shop_sale".
     amount_received: Optional[Decimal] = None
     amount_outstanding: Optional[Decimal] = None
+    # § Shop Statement — the named Supply Customer on a shop_sale row, or
+    # "Walk-in Customer" when none was picked (a shop_sale never requires
+    # one — see routers/shops._apply_shop_sale). Null for every other kind
+    # (Load/Payment/Emergency Transfer have no retail-customer concept).
+    customer_name: Optional[str] = None
+    # Where the collected amount was routed at creation time (§ Settlement
+    # Routing) — null for a sale with nothing collected (all-credit) or a
+    # pre-routing-change row. Mirrors UnifiedSaleBatch's destination_type
+    # pattern (see unified-sale/page.tsx's getDestinationLabel) so the shop
+    # side shows the same "Routed To" info the plant side already gets.
+    settlement_destination_type: Optional[str] = None
+    settlement_target_plant_id: Optional[UUID] = None
+    settlement_account_id: Optional[UUID] = None
+    settlement_home_expense_description: Optional[str] = None
+    settlement_home_expense_amount: Optional[Decimal] = None
+    settlement_owner_drawings_amount: Optional[Decimal] = None
     entered_by: str
     status: str
     correctable: bool = False

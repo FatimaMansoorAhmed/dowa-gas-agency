@@ -8,6 +8,8 @@ import {
   X,
   PlusCircle,
   Check,
+  EyeOff,
+  Eye,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -26,7 +28,7 @@ import {
 import { api } from "@/lib/api";
 import { fmtTime, isSameKarachiDay } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
-import { latestRateByKey, NO_PARTY_VALUE } from "@/lib/rates";
+import { latestRateByKey, rateKey, NO_PARTY_VALUE } from "@/lib/rates";
 
 import type {
   Company,
@@ -160,6 +162,19 @@ function RateDashboardBody() {
   const latestByPartyId = useMemo(() => latestRateByKey(rates), [rates]);
 
   // -------------------------------------------------------
+  // TODAY'S LATEST RATE PER (COMPANY, PARTY) — same reducer as
+  // latestByPartyId above, just fed a today-only slice first. Used ONLY to
+  // decide what VALUE to display per row; it must never drive which
+  // companies/parties appear (that stays keyed off latestByPartyId/
+  // companyOrder below), or a slow day would make rows disappear instead
+  // of showing a "not entered today" blank state.
+  // -------------------------------------------------------
+  const todayByPartyId = useMemo(
+    () => latestRateByKey(rates.filter((r) => isSameKarachiDay(r.timestamp))),
+    [rates]
+  );
+
+  // -------------------------------------------------------
   // GROUP LATEST RATES BY COMPANY
   // -------------------------------------------------------
   const grouped = useMemo(() => {
@@ -203,6 +218,58 @@ function RateDashboardBody() {
       return lb - la;
     });
   }, [grouped]);
+
+  // -------------------------------------------------------
+  // RATE DASHBOARD VISIBILITY (§ Rate Dashboard part b) — a company can be
+  // hidden from this page only (Company.hidden_from_rate_dashboard); it
+  // keeps working everywhere else and its rate history is untouched.
+  // -------------------------------------------------------
+  const visibleCompanyOrder = useMemo(
+    () =>
+      companyOrder.filter(
+        (cid) =>
+          !companies.find((c) => String(c.id) === String(cid))
+            ?.hidden_from_rate_dashboard
+      ),
+    [companyOrder, companies]
+  );
+
+  const hiddenCompanyOrder = useMemo(
+    () =>
+      companyOrder.filter(
+        (cid) =>
+          companies.find((c) => String(c.id) === String(cid))
+            ?.hidden_from_rate_dashboard
+      ),
+    [companyOrder, companies]
+  );
+
+  const [showHiddenCompanies, setShowHiddenCompanies] = useState(false);
+  const [togglingCompanyId, setTogglingCompanyId] = useState<string | null>(null);
+
+  const hideCompanyFromDashboard = async (companyId: string) => {
+    setTogglingCompanyId(companyId);
+    try {
+      await api.companies.hideFromRateDashboard(companyId);
+      await load();
+    } catch (err) {
+      console.error("Failed to hide company from rate dashboard:", err);
+    } finally {
+      setTogglingCompanyId(null);
+    }
+  };
+
+  const showCompanyOnDashboard = async (companyId: string) => {
+    setTogglingCompanyId(companyId);
+    try {
+      await api.companies.showOnRateDashboard(companyId);
+      await load();
+    } catch (err) {
+      console.error("Failed to restore company to rate dashboard:", err);
+    } finally {
+      setTogglingCompanyId(null);
+    }
+  };
 
   // -------------------------------------------------------
   // HISTORY
@@ -572,7 +639,7 @@ function RateDashboardBody() {
         </SectionCaption>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {companyOrder.map((cid) => {
+          {visibleCompanyOrder.map((cid) => {
             const company =
               companies.find(
                 (c) =>
@@ -580,14 +647,36 @@ function RateDashboardBody() {
                   String(cid)
               );
 
+            const todayTimestamps = grouped[cid]
+              .map((r) => todayByPartyId[rateKey(r.company_id, r.party_id)]?.timestamp)
+              .filter(Boolean) as string[];
+
+            const latestToday = todayTimestamps.length
+              ? todayTimestamps.reduce((a, b) =>
+                  new Date(a).getTime() > new Date(b).getTime() ? a : b
+                )
+              : null;
+
             return (
               <div
                 key={cid}
                 className="border border-hairline rounded-lg px-3.5 py-3"
               >
-                <div className="font-body font-semibold text-[13.5px] text-ink mb-2">
-                  {company?.name ||
-                    t("rateDashboard.unknownCompany")}
+                <div className="flex justify-between items-start mb-2">
+                  <div className="font-body font-semibold text-[13.5px] text-ink">
+                    {company?.name ||
+                      t("rateDashboard.unknownCompany")}
+                  </div>
+
+                  <button
+                    type="button"
+                    title={t("rateDashboard.hideFromDashboard")}
+                    disabled={togglingCompanyId === cid}
+                    onClick={() => hideCompanyFromDashboard(cid)}
+                    className="text-steel hover:text-ink disabled:opacity-40 shrink-0"
+                  >
+                    <EyeOff size={14} />
+                  </button>
                 </div>
 
                 <div className="flex flex-col gap-1.5">
@@ -599,6 +688,9 @@ function RateDashboardBody() {
                           String(r.party_id)
                       );
 
+                    const todayRate =
+                      todayByPartyId[rateKey(r.company_id, r.party_id)];
+
                     return (
                       <div
                         key={r.id}
@@ -609,16 +701,22 @@ function RateDashboardBody() {
                             t("rateDashboard.partyFallback")}
                         </span>
 
-                        <span className="text-right">
-                          <span className="font-mono text-[13px] font-semibold text-ink">
-                            {r.rate_118}
-                          </span>
+                        {todayRate ? (
+                          <span className="text-right">
+                            <span className="font-mono text-[13px] font-semibold text-ink">
+                              {todayRate.rate_118}
+                            </span>
 
-                          <span className="font-mono text-[10.5px] text-steel">
-                            {" "}
-                            / {r.rate_454}
+                            <span className="font-mono text-[10.5px] text-steel">
+                              {" "}
+                              / {todayRate.rate_454}
+                            </span>
                           </span>
-                        </span>
+                        ) : (
+                          <span className="font-body text-[11px] italic text-amber-600">
+                            {t("rateDashboard.notEnteredToday")}
+                          </span>
+                        )}
                       </div>
                     );
                   })}
@@ -626,18 +724,63 @@ function RateDashboardBody() {
 
                 <div className="font-mono text-[9.5px] text-steel mt-2 flex items-center gap-1">
                   <Clock size={10} />
-                  {t("rateDashboard.updatedAt", { time: fmtTime(grouped[cid][0].timestamp) })}
+                  {latestToday
+                    ? t("rateDashboard.updatedAt", { time: fmtTime(latestToday) })
+                    : t("rateDashboard.noRateToday")}
                 </div>
               </div>
             );
           })}
 
-          {!companyOrder.length && (
+          {!visibleCompanyOrder.length && (
             <div className="font-body text-steel text-[13px] col-span-3">
               {t("rateDashboard.noRatesYet")}
             </div>
           )}
         </div>
+
+        {!!hiddenCompanyOrder.length && (
+          <div className="mt-3 pt-3 border-t border-hairline">
+            <button
+              type="button"
+              onClick={() => setShowHiddenCompanies((v) => !v)}
+              className="font-body text-xs text-steel hover:text-ink flex items-center gap-1"
+            >
+              <Eye size={12} />
+              {t("rateDashboard.hiddenCompanies", { count: hiddenCompanyOrder.length })}
+            </button>
+
+            {showHiddenCompanies && (
+              <div className="mt-2 flex flex-col gap-1.5">
+                {hiddenCompanyOrder.map((cid) => {
+                  const company = companies.find(
+                    (c) => String(c.id) === String(cid)
+                  );
+
+                  return (
+                    <div
+                      key={cid}
+                      className="flex justify-between items-center border border-hairline rounded-lg px-3 py-1.5"
+                    >
+                      <span className="font-body text-xs text-steel">
+                        {company?.name || t("rateDashboard.unknownCompany")}
+                      </span>
+
+                      <button
+                        type="button"
+                        disabled={togglingCompanyId === cid}
+                        onClick={() => showCompanyOnDashboard(cid)}
+                        className="font-body text-xs text-teal hover:underline disabled:opacity-40"
+                      >
+                        {t("rateDashboard.restoreToDashboard")}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </Panel>
 
       {/* ===================================================

@@ -14,18 +14,22 @@ import type { Company, PaymentAccount, ExpenseCategory, DestinationType } from "
  * than each defining their own copy. Pulled out of what was originally
  * inline JSX in app/payments/page.tsx. */
 
-export type SpecialAccount = "office_cash" | "owner_home" | "dowa_account" | "bank";
+export type SpecialAccount = "office_cash" | "owner_home" | "dowa_account" | "bank" | "shop_cash";
 
-interface Props {
+type CommonProps = {
   grossAmount: number;
   companies: Company[];
   accounts: PaymentAccount[];
-  expenseCategories: ExpenseCategory[];
+  // Only passed by the 3 shop-side settlement features (Shop Sale, Shop
+  // Cash Transfer, Shop Customer Payment) — routes the remaining balance
+  // into THIS shop's own Shop Cash PaymentAccount (account_id="shop_cash",
+  // resolved server-side via resolve_settlement_destination's shop param)
+  // instead of one of the 3 global buckets. Payment Receipt/Cylinder
+  // Return never pass this, so the option never appears for them.
+  shopContext?: { id: string; name: string };
 
   homeExpenseAmount: string;
   onHomeExpenseAmountChange: (v: string) => void;
-  homeExpenseCatId: string;
-  onHomeExpenseCatIdChange: (v: string) => void;
   ownerDrawingsAmount: string;
   onOwnerDrawingsAmountChange: (v: string) => void;
 
@@ -37,12 +41,32 @@ interface Props {
   onSpecialAccountChange: (v: SpecialAccount) => void;
   accountId: string;
   onAccountIdChange: (v: string) => void;
-}
+};
+
+type CategoryModeProps = {
+  expenseCategories: ExpenseCategory[];
+  homeExpenseCatId: string;
+  onHomeExpenseCatIdChange: (v: string) => void;
+  homeExpenseDescription?: never;
+  onHomeExpenseDescriptionChange?: never;
+};
+
+type DescriptionModeProps = {
+  expenseCategories?: never;
+  homeExpenseCatId?: never;
+  onHomeExpenseCatIdChange?: never;
+  homeExpenseDescription: string;
+  onHomeExpenseDescriptionChange: (v: string) => void;
+};
+
+type Props = CommonProps & (CategoryModeProps | DescriptionModeProps);
 
 export default function SettlementDestinationFields({
-  grossAmount, companies, accounts, expenseCategories,
+  grossAmount, companies, accounts, shopContext,
   homeExpenseAmount, onHomeExpenseAmountChange,
+  homeExpenseDescription, onHomeExpenseDescriptionChange,
   homeExpenseCatId, onHomeExpenseCatIdChange,
+  expenseCategories,
   ownerDrawingsAmount, onOwnerDrawingsAmountChange,
   destinationType, onDestinationTypeChange,
   targetPlantId, onTargetPlantIdChange,
@@ -64,16 +88,27 @@ export default function SettlementDestinationFields({
           <Field label={t("modals.homeExpensePkr")}>
             <AmountInput value={homeExpenseAmount} onChange={onHomeExpenseAmountChange} placeholder="0" className={inputClass} />
           </Field>
-          <Field label={t("expenses.categoryLabel")}>
-            <select value={homeExpenseCatId} onChange={(e) => onHomeExpenseCatIdChange(e.target.value)} className={inputClass}>
-              <option value="">{t("modals.selectCategory2")}</option>
-              {expenseCategories.map((cat) => (
-                <option key={cat.id} value={cat.id}>
-                  {cat.name}
-                </option>
-              ))}
-            </select>
-          </Field>
+          {expenseCategories && onHomeExpenseCatIdChange ? (
+            <Field label={t("expenses.categoryLabel")}>
+              <select value={homeExpenseCatId} onChange={(e) => onHomeExpenseCatIdChange(e.target.value)} className={inputClass}>
+                <option value="">{t("modals.selectCategory2")}</option>
+                {expenseCategories.map((cat) => (
+                  <option key={cat.id} value={cat.id}>
+                    {cat.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          ) : (
+            <Field label={t("modals.homeExpenseDescription")}>
+              <input
+                value={homeExpenseDescription || ""}
+                onChange={(e) => onHomeExpenseDescriptionChange?.(e.target.value)}
+                placeholder={t("modals.homeExpenseDescriptionPlaceholder")}
+                className={inputClass}
+              />
+            </Field>
+          )}
         </div>
 
         <Field label={t("modals.ownerDrawingsAmountPkr")}>
@@ -132,6 +167,7 @@ export default function SettlementDestinationFields({
             <div className="space-y-2">
               <Field label={t("modals.selectDestinationAccount")}>
                 <select value={specialAccount} onChange={(e) => onSpecialAccountChange(e.target.value as SpecialAccount)} className={inputClass}>
+                  {shopContext && <option value="shop_cash">{t("shops.shopCash")}</option>}
                   <option value="office_cash">{t("payments.officeCash")}</option>
                   <option value="owner_home">{t("payments.ownerHome")}</option>
                   <option value="dowa_account">{t("payments.dowaAccount")}</option>

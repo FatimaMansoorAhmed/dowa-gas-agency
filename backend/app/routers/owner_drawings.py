@@ -22,12 +22,8 @@ def list_owner_drawings(
 
     # Dashboard P&L / Shop Expense integration (§ Dashboard) — resolve the
     # shop name for rows dual-written from a Shop's Record Expense form
-    # (an owner_withdrawal line), batched to avoid N+1 queries.
-    shop_ids = {r.shop_id for r in rows if r.shop_id}
-    shops = (
-        {s.id: s for s in db.query(models.Customer).filter(models.Customer.id.in_(shop_ids)).all()}
-        if shop_ids else {}
-    )
+    # (an owner_withdrawal line), batched together with Shop Sale attribution
+    # below.
 
     # § Shop Expense/Withdrawal Attribution — same one-hop-back resolution
     # as routers/expenses.list_expenses (a shop owner_withdrawal's own
@@ -38,7 +34,23 @@ def list_owner_drawings(
         {t.id: t for t in db.query(models.ShopExpenseTransaction).filter(models.ShopExpenseTransaction.id.in_(txn_ids)).all()}
         if txn_ids else {}
     )
-    shop_customer_ids = {t.supply_customer_id for t in txns.values() if t.supply_customer_id}
+    source_shop_sale_ids = {r.source_shop_sale_id for r in rows if r.source_shop_sale_id}
+    source_shop_sales = (
+        {s.id: s for s in db.query(models.ShopSale).filter(models.ShopSale.id.in_(source_shop_sale_ids)).all()}
+        if source_shop_sale_ids else {}
+    )
+    shop_ids = {r.shop_id for r in rows if r.shop_id} | {
+        s.customer_id for s in source_shop_sales.values() if s.customer_id
+    }
+    shops = (
+        {s.id: s for s in db.query(models.Customer).filter(models.Customer.id.in_(shop_ids)).all()}
+        if shop_ids else {}
+    )
+
+    shop_customer_ids = (
+        {t.supply_customer_id for t in txns.values() if t.supply_customer_id}
+        | {s.supply_customer_id for s in source_shop_sales.values() if s.supply_customer_id}
+    )
     shop_customers = (
         {c.id: c for c in db.query(models.ShopSupplyCustomer).filter(models.ShopSupplyCustomer.id.in_(shop_customer_ids)).all()}
         if shop_customer_ids else {}
@@ -71,6 +83,17 @@ def list_owner_drawings(
         shop_customer_name = None
         shop_supply_customer_id = None
         shop_sale_display_id = None
+        source_shop_sale = source_shop_sales.get(r.source_shop_sale_id) if r.source_shop_sale_id else None
+        if source_shop_sale:
+            source_shop_customer = (
+                shop_customers.get(source_shop_sale.supply_customer_id)
+                if source_shop_sale.supply_customer_id else None
+            )
+            if source_shop_customer:
+                shop_customer_name = source_shop_customer.name
+                shop_supply_customer_id = source_shop_customer.id
+            shop_sale_display_id = source_shop_sale.display_id
+
         txn = txns.get(r.source_shop_expense_transaction_id) if r.source_shop_expense_transaction_id else None
         if txn:
             sc = shop_customers.get(txn.supply_customer_id) if txn.supply_customer_id else None
@@ -90,11 +113,27 @@ def list_owner_drawings(
                 payment_customer_id = customer.id
                 payment_customer_name = customer.name
 
+        resolved_shop = shops.get(r.shop_id) if r.shop_id else None
+        if resolved_shop is None and source_shop_sale:
+            resolved_shop = shops.get(source_shop_sale.customer_id)
+
+        # Delete Shop (§ Delete Shop) — see routers/expenses.py's identical
+        # comment: shop_origin_label is the permanent snapshot delete_shop
+        # wrote once shop_id/source_shop_*_id above all went NULL, so a
+        # deleted shop's rows never silently show blank shop context.
+        shop_name = resolved_shop.name if resolved_shop else r.shop_origin_label
+
         out.append(schemas.OwnerDrawingsOut(
             id=r.id, display_id=r.display_id, date=r.date, amount=r.amount,
             account_id=r.account_id, notes=r.notes, unified_sale_id=r.unified_sale_id,
-            shop_id=r.shop_id, shop_name=shops[r.shop_id].name if r.shop_id in shops else None,
-            customer_id=payment_customer_id, customer_name=shop_customer_name or payment_customer_name,
+            source_shop_sale_id=r.source_shop_sale_id,
+            source_shop_cash_transfer_id=r.source_shop_cash_transfer_id,
+            source_shop_customer_payment_id=r.source_shop_customer_payment_id,
+            shop_id=r.shop_id or (source_shop_sale.customer_id if source_shop_sale else None),
+            shop_name=shop_name,
+            shop_origin_label=r.shop_origin_label,
+            customer_id=payment_customer_id or shop_supply_customer_id,
+            customer_name=shop_customer_name or payment_customer_name,
             shop_supply_customer_id=shop_supply_customer_id,
             shop_sale_display_id=shop_sale_display_id,
             source_payment_id=r.source_payment_id,

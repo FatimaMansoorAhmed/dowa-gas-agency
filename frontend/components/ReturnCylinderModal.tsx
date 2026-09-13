@@ -164,7 +164,7 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
     setError(null);
 
     let finalAccountId = accountId;
-    if (mode === "cash" && destinationType === "account" && specialAccount !== "bank") {
+    if (mode === "cash" && destinationType === "account" && specialAccount !== "bank" && specialAccount !== "shop_cash") {
       const bucketAccount = findBucketAccount(accounts, specialAccount);
       finalAccountId = bucketAccount ? bucketAccount.id : specialAccount;
     }

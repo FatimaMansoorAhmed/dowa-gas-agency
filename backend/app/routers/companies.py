@@ -44,6 +44,36 @@ def get_company(company_id: UUID, db: Session = Depends(get_db)):
     return _roll_month_if_needed(company, db)
 
 
+# RATE DASHBOARD VISIBILITY (§ Rate Dashboard part b) — scoped purely to
+# whether this company's card shows on the Rate Dashboard. Does not touch
+# Company.active-style status (there isn't one) or any RateEntry row — the
+# company keeps working everywhere else (Purchases, Sales, Plant Ledger,
+# Executive Dashboard). Same PATCH-toggle shape as
+# payment_accounts.deactivate_account, reversible in either direction.
+@router.patch("/{company_id}/hide-from-rate-dashboard", response_model=schemas.CompanyOut)
+def hide_company_from_rate_dashboard(company_id: UUID, db: Session = Depends(get_db)):
+    company = db.query(models.Company).get(company_id)
+    if not company:
+        raise HTTPException(404, "Company not found")
+    company.hidden_from_rate_dashboard = True
+    db.add(company)
+    db.commit()
+    db.refresh(company)
+    return company
+
+
+@router.patch("/{company_id}/show-on-rate-dashboard", response_model=schemas.CompanyOut)
+def show_company_on_rate_dashboard(company_id: UUID, db: Session = Depends(get_db)):
+    company = db.query(models.Company).get(company_id)
+    if not company:
+        raise HTTPException(404, "Company not found")
+    company.hidden_from_rate_dashboard = False
+    db.add(company)
+    db.commit()
+    db.refresh(company)
+    return company
+
+
 @router.post("", response_model=schemas.CompanyOut, status_code=201)
 def create_company(payload: schemas.CompanyCreate, db: Session = Depends(get_db)):
     existing = db.query(models.Company).filter(models.Company.name == payload.name).first()

@@ -132,7 +132,7 @@ export default function PaymentReceiptModal({ isOpen, onClose, onSuccess, defaul
     setError(null);
 
     let finalAccountId = accountId;
-    if (destinationType === "account" && specialAccount !== "bank") {
+    if (destinationType === "account" && specialAccount !== "bank" && specialAccount !== "shop_cash") {
       const bucketAccount = findBucketAccount(accounts, specialAccount);
       finalAccountId = bucketAccount ? bucketAccount.id : specialAccount;
     }

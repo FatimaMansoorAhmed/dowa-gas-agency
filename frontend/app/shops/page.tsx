@@ -1,12 +1,13 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { PlusCircle, Store, Gauge } from "lucide-react";
+import { PlusCircle, Store, Gauge, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
-import { PageHeader, Panel, Eyebrow, Th, Td, BalanceTag, Button } from "@/components/ui";
+import { PageHeader, Panel, BalanceTag, Button } from "@/components/ui";
 import AddShopModal from "@/components/AddShopModal";
 import BoardRateModal from "@/components/BoardRateModal";
+import DeleteShopModal from "@/components/DeleteShopModal";
 import { api } from "@/lib/api";
 import { pkr, fmtTime } from "@/lib/format";
 import type { ShopListRow } from "@/lib/types";
@@ -21,6 +22,7 @@ function ShopsBody() {
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [showBoardRate, setShowBoardRate] = useState(false);
+  const [selectedDeleteShop, setSelectedDeleteShop] = useState<{ id: string; name: string } | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -57,34 +59,55 @@ function ShopsBody() {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {rows.map((r) => (
-            <Panel key={r.customer.id} className="cursor-pointer" >
-              <div onClick={() => router.push(`/shops/${r.customer.id}`)}>
+            <Panel key={r.customer.id} className="cursor-pointer relative group">
+              <div>
                 <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
+                  <div 
+                    className="flex items-center gap-2 cursor-pointer"
+                    onClick={() => router.push(`/shops/${r.customer.id}`)}
+                  >
                     <Store size={16} className="text-teal" />
                     <span className="font-display font-bold text-[16px] text-ink">{r.customer.name}</span>
                   </div>
-                  <BalanceTag amount={r.current_balance} />
-                </div>
-                <div className="font-mono text-[11px] text-steel mb-3 flex items-center justify-between">
-                  <span>
-                    {r.customer.display_id} · {r.customer.mobile}
-                    {r.last_activity ? t("shops.lastActivity", { time: fmtTime(r.last_activity) }) : ""}
-                  </span>
-                  <span>{t("shops.shopCash")}: <span className="font-semibold text-ink">{pkr(r.shop_cash_balance)}</span></span>
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <div>
-                    <div className="font-mono text-[10px] uppercase text-steel">{t("shops.currentStock")}</div>
-                    <div className="font-mono font-semibold text-[15px] text-ink">{r.current_stock}</div>
+                  <div className="flex items-center gap-2">
+                    <BalanceTag amount={r.current_balance} />
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedDeleteShop({ id: r.customer.id, name: r.customer.name });
+                      }}
+                      className="p-1.5 border border-brand-red/30 rounded text-brand-red hover:bg-red-50 cursor-pointer"
+                      title="Delete Shop"
+                    >
+                      <Trash2 size={14} />
+                    </button>
                   </div>
-                  <div>
-                    <div className="font-mono text-[10px] uppercase text-steel">{t("shops.todaysLoad")}</div>
-                    <div className="font-mono font-semibold text-[15px] text-brand-green">+{r.today_load}</div>
+                </div>
+                <div 
+                  className="cursor-pointer"
+                  onClick={() => router.push(`/shops/${r.customer.id}`)}
+                >
+                  <div className="font-mono text-[11px] text-steel mb-3 flex items-center justify-between">
+                    <span>
+                      {r.customer.display_id} · {r.customer.mobile}
+                      {r.last_activity ? t("shops.lastActivity", { time: fmtTime(r.last_activity) }) : ""}
+                    </span>
+                    <span>{t("shops.shopCash")}: <span className="font-semibold text-ink">{pkr(r.shop_cash_balance)}</span></span>
                   </div>
-                  <div>
-                    <div className="font-mono text-[10px] uppercase text-steel">{t("shops.todaysSales")}</div>
-                    <div className="font-mono font-semibold text-[15px] text-ink">-{r.today_sales}</div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <div className="font-mono text-[10px] uppercase text-steel">{t("shops.currentStock")}</div>
+                      <div className="font-mono font-semibold text-[15px] text-ink">{r.current_stock}</div>
+                    </div>
+                    <div>
+                      <div className="font-mono text-[10px] uppercase text-steel">{t("shops.todaysLoad")}</div>
+                      <div className="font-mono font-semibold text-[15px] text-brand-green">+{r.today_load}</div>
+                    </div>
+                    <div>
+                      <div className="font-mono text-[10px] uppercase text-steel">{t("shops.todaysSales")}</div>
+                      <div className="font-mono font-semibold text-[15px] text-ink">-{r.today_sales}</div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -102,6 +125,18 @@ function ShopsBody() {
 
       {showBoardRate && (
         <BoardRateModal onClose={() => setShowBoardRate(false)} />
+      )}
+
+      {selectedDeleteShop && (
+        <DeleteShopModal
+          shopId={selectedDeleteShop.id}
+          shopName={selectedDeleteShop.name}
+          onClose={() => setSelectedDeleteShop(null)}
+          onDeleted={() => {
+            setSelectedDeleteShop(null);
+            load();
+          }}
+        />
       )}
     </div>
   );

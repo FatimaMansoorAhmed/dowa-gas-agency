@@ -400,7 +400,7 @@ def customer_monthly_ledger(
                 if bs.rate_per_cylinder is not None
             ]
             rows.append(schemas.LedgerRow(
-                date=b.sale_approved_at or b.date, kind="unified_sale", ref_id=b.id, display_id=b.display_id,
+                date=b.date, kind="unified_sale", ref_id=b.id, display_id=b.display_id,
                 description="Unified Sale — sale & settlement",
                 sale_amount=b.grand_total, payment_amount=b.total_credit_received,
                 running_balance=running, qty_118=q118, qty_454=q454, cyl_out=q118 + q454,
@@ -715,7 +715,7 @@ def company_monthly_ledger(
         [{"date": p.date, "kind": "purchase", "obj": p} for p in month_purchases]
         + [{"date": p.date, "kind": "payment", "obj": p} for p in month_payments]
         + [{"date": b.date, "kind": "unified_sale", "obj": b} for b in month_batches]
-        + [{"date": b.payment_approved_at or b.date, "kind": "unified_sale_incoming", "obj": b} for b in month_incoming]
+        + [{"date": b.date, "kind": "unified_sale_incoming", "obj": b} for b in month_incoming]
     )
     events.sort(key=lambda e: e["date"])
 
@@ -798,7 +798,7 @@ def company_monthly_ledger(
             else:
                 description = "Unified Sale — settlement (purchase pending)"
             rows.append(schemas.CompanyLedgerRow(
-                date=b.payment_approved_at or b.sale_approved_at or b.date, kind="unified_sale", ref_id=b.id, display_id=b.display_id,
+                date=b.date, kind="unified_sale", ref_id=b.id, display_id=b.display_id,
                 description=description,
                 purchase_amount=purchase_amt, payment_amount=settle,
                 running_balance=running, qty_118=q118, qty_454=q454, vehicle_no=b.vehicle_no,
@@ -811,7 +811,7 @@ def company_monthly_ledger(
             source_plant = all_companies.get(b.company_id)
             source_name = source_plant.name if source_plant else "Unknown Plant"
             rows.append(schemas.CompanyLedgerRow(
-                date=b.payment_approved_at or b.date, kind="unified_sale", ref_id=b.id, display_id=b.display_id,
+                date=b.date, kind="unified_sale", ref_id=b.id, display_id=b.display_id,
                 description=f"Unified Sale settlement received (purchased from {source_name})",
                 purchase_amount=Decimal("0"), payment_amount=b.net_plant_payment,
                 running_balance=running, qty_118=Decimal("0"), qty_454=Decimal("0"),

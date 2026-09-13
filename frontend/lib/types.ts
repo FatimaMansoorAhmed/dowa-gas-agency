@@ -9,6 +9,7 @@ export type Company = {
   last_overpayment_amount: string | null;
   last_overpayment_date: string | null;
   account_credit: string;
+  hidden_from_rate_dashboard: boolean;
 };
 
 export type Party = { id: string; company_id: string; name: string };
@@ -156,11 +157,14 @@ export type Payment = {
 } & CorrectionFields;
 
 export type Expense = {
-  id: string; display_id: string; date: string; category_id: string;
+  id: string; display_id: string; date: string; category_id: string | null;
   amount: string; account_id: string | null; method: string;
   description: string | null; vendor: string | null; reference_no: string | null;
   status: string; entered_by: string; created_at: string;
   unified_sale_id?: string | null;
+  source_shop_sale_id?: string | null;
+  source_shop_cash_transfer_id?: string | null;
+  source_shop_customer_payment_id?: string | null;
   // Set only when this expense was funded straight out of a customer's
   // payment (bypassing a Dowa account) — null for ordinary account-funded expenses.
   customer_id?: string | null;
@@ -175,6 +179,10 @@ export type Expense = {
   // a row dual-written from a Shop's own Record Expense form.
   shop_id?: string | null;
   shop_name?: string | null;
+  // § Delete Shop — permanent snapshot once the shop/sale/transfer/payment
+  // this row came from is gone; shop_name already falls back to this
+  // server-side, exposed here too for any caller that wants the raw label.
+  shop_origin_label?: string | null;
 };
 
 export type LedgerRow = {
@@ -315,10 +323,15 @@ export type OwnerDrawing = {
   account_id: string | null;
   notes: string | null;
   unified_sale_id: string | null;
+  source_shop_sale_id?: string | null;
+  source_shop_cash_transfer_id?: string | null;
+  source_shop_customer_payment_id?: string | null;
   // Dashboard P&L / Shop Expense integration (§ Dashboard) — same
   // convention as Expense.shop_id/shop_name above.
   shop_id?: string | null;
   shop_name?: string | null;
+  // § Delete Shop — same convention as Expense.shop_origin_label above.
+  shop_origin_label?: string | null;
   // § Shop Expense/Withdrawal Attribution — same convention as
   // Expense.customer_name/shop_supply_customer_id/shop_sale_display_id above.
   customer_id?: string | null;
@@ -667,6 +680,16 @@ export type ShopTransactionRow = {
   // Inline Settlement (§2) — populated only for kind=="shop_sale".
   amount_received: string | null;
   amount_outstanding: string | null;
+  // Where the collected amount was routed (§ Settlement Routing) — the
+  // shop-side counterpart to the plant ledger's payment-received row.
+  // Null for a sale with nothing collected (all-credit) or a pre-routing
+  // change row.
+  settlement_destination_type: string | null;
+  settlement_target_plant_id: string | null;
+  settlement_account_id: string | null;
+  settlement_home_expense_description: string | null;
+  settlement_home_expense_amount: string | null;
+  settlement_owner_drawings_amount: string | null;
   entered_by: string;
   status: string;
   correctable: boolean;
@@ -713,6 +736,15 @@ export type ShopCustomerPayment = {
   // Advance/overpayment — same convention as Payment.excess_amount: how
   // much of this payment exceeded what was owed at the time.
   excess_amount: string | null;
+  // Settlement Routing (§ Payment Only mode, Record Shop Sale) — same 3-way
+  // split as ShopSale/ShopCashTransfer. Null means the legacy plain
+  // single-account path (account_id above) was used instead.
+  settlement_destination_type: string | null;
+  settlement_target_plant_id: string | null;
+  settlement_account_id: string | null;
+  settlement_home_expense_description: string | null;
+  settlement_home_expense_amount: string | null;
+  settlement_owner_drawings_amount: string | null;
   status: string;
   entered_by: string;
   created_at: string;
@@ -729,6 +761,15 @@ export type ShopSupplyCustomerLedgerRow = {
   running_balance: string;
   rate: string | null;
   entered_by: string;
+  // § Supply Customer Statement — structured fields for a "sale" row,
+  // null for "payment". gross_amount is the sale's true total (sale_amount
+  // above is the outstanding CONTRIBUTION, a different number); board_rate_
+  // per_kg is always per-KG, unlike `rate` above (unit-relative).
+  gross_amount?: string | null;
+  cylinder_weight?: string | null;
+  quantity?: string | null;
+  unit?: "cylinder" | "kg" | null;
+  board_rate_per_kg?: string | null;
 };
 
 export type ShopSupplyCustomerLedgerOut = {
@@ -788,17 +829,74 @@ export type ShopCashSummary = {
   dowa_payments: string;
   transfers_in: string;
   transfers_out: string;
+  // Shop Cash Transfer (§ Shop Cash Transfer) — distinct from transfers_out
+  // above (account-to-account AccountTransfer). Money pulled OUT of Shop
+  // Cash via the 3-way settlement split (Home Expense / Owner Drawings /
+  // Plant-or-Account).
+  cash_transfers_out: string;
+  // Sale/Transfer Deductions (§ Shop Cash Flow chip) — purely informational
+  // totals of Home Expense / Owner Drawings bypassed via EITHER a Shop
+  // Sale's or a Shop Cash Transfer's settlement routing. Never folded into
+  // closing_cash — this money never touched Shop Cash to begin with.
+  settlement_home_expense_total: string;
+  settlement_owner_drawings_total: string;
   closing_cash: string;
 };
 
+export type ShopCashTransferCreate = {
+  date?: string;
+  gross_amount: number;
+  home_expense_amount?: number;
+  home_expense_description?: string;
+  owner_drawings_amount?: number;
+  destination_type: "plant" | "account";
+  target_plant_id?: string;
+  account_id?: string;
+  notes?: string;
+  entered_by: string;
+};
+
+export type ShopCashTransfer = {
+  id: string;
+  display_id: string;
+  date: string;
+  shop_id: string;
+  gross_amount: string;
+  settlement_destination_type: string;
+  settlement_target_plant_id: string | null;
+  settlement_account_id: string | null;
+  settlement_home_expense_description: string | null;
+  settlement_home_expense_amount: string;
+  settlement_owner_drawings_amount: string;
+  notes: string | null;
+  status: string;
+  entered_by: string;
+  created_at: string;
+  modified_at: string | null;
+  modified_by: string | null;
+};
+
 export type ShopBusinessLedgerRow = {
-  kind: "cash_sale" | "credit_sale" | "customer_payment" | "expense" | "owner_withdrawal" | "dowa_payment";
+  kind:
+    | "cash_sale" | "credit_sale" | "customer_payment" | "expense"
+    | "owner_withdrawal" | "dowa_payment" | "shop_cash_transfer";
   date: string;
   ref_id: string;
   display_id: string;
   description: string;
   amount: string;
   cash_impact: string;
+  // Where the collected amount was routed (§ Settlement Routing) — the
+  // shop-side counterpart to the plant ledger's payment-received row.
+  // Null for a credit sale with nothing collected (all-credit) or a pre-
+  // routing change row; populated only for kind in ("cash_sale",
+  // "credit_sale").
+  settlement_destination_type: string | null;
+  settlement_target_plant_id: string | null;
+  settlement_account_id: string | null;
+  settlement_home_expense_description: string | null;
+  settlement_home_expense_amount: string | null;
+  settlement_owner_drawings_amount: string | null;
   entered_by: string;
   status: string;
 };
