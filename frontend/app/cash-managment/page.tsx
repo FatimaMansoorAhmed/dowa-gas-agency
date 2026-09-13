@@ -238,14 +238,24 @@ function CashManagementBody() {
       // scoped to unified_sale_id only, which silently hid every Payment
       // Receipt/Cylinder Return-sourced row from this table even though
       // the Total Drawings KPI card above already counted it.
-      .filter((d) => d.unified_sale_id || d.source_payment_id)
+      //
+      // !d.shop_id excludes every shop-sourced drawing (Shop Sale, Shop
+      // Cash Transfer, Shop Customer Payment, Record Shop Expense — see
+      // routers/shops.py's bypass_row.shop_id = shop.id tagging on all of
+      // them) so this table stays mutually exclusive with the Shop Owner
+      // Withdrawals table below, which is the ONLY place shop_id-tagged
+      // drawings should appear (see its own comment). d.source_shop_sale_id
+      // alone briefly duplicated rows here that were already showing there,
+      // from a window where shop_id tagging didn't exist yet.
+      .filter((d) => !d.shop_id && (d.unified_sale_id || d.source_payment_id || d.source_shop_sale_id))
       .map((d) => {
         const batch = d.unified_sale_id ? unifiedSales.find((b) => b.id === d.unified_sale_id) : undefined;
         const customer = batch ? customers.find((c) => c.id === batch.customer_id) : undefined;
         return {
           id: d.id,
-          customerName: customer?.name || d.customer_name || "—",
-          saleId: batch?.display_id || d.source_payment_display_id || d.display_id,
+          customerName: customer?.name || d.customer_name || d.shop_name || "—",
+          saleId: batch?.display_id || d.source_payment_display_id || d.shop_sale_display_id || d.display_id,
+          shopName: d.shop_name,
           date: d.date,
           sourceAccount: d.account_id
             ? accounts.find((a) => a.id === d.account_id)?.name || "—"
@@ -472,7 +482,16 @@ function CashManagementBody() {
               ) : (
                 drawingRows.map((row) => (
                   <tr key={row.id}>
-                    <Td bold>{row.customerName}</Td>
+                    <Td bold>
+                      <span className="inline-flex items-center gap-1.5">
+                        {row.customerName}
+                        {row.shopName && (
+                          <span className="rounded bg-[#e8eef4] px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wide text-[#0b2138]">
+                            {row.shopName}
+                          </span>
+                        )}
+                      </span>
+                    </Td>
                     <Td mono bold color="#0b2138">{row.saleId}</Td>
                     <Td mono color="#2D3748">{fmtTime(row.date)}</Td>
                     <Td>
