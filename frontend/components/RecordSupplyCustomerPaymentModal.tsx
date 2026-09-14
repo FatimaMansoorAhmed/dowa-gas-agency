@@ -4,36 +4,66 @@ import { X, Check } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Field, inputClass, Button } from "./ui";
 import AmountInput from "./AmountInput";
-import ExpenseWithdrawLines, { ExpenseLine, expenseLinesValid, hasFilledExpenseLines, toExpenseLinesPayload } from "./ExpenseWithdrawLines";
-import { api } from "@/lib/api";
+import SettlementDestinationFields, { SpecialAccount } from "./SettlementDestinationFields";
+import { api, apiErrorMessage } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { todayLocalInput, pkr } from "@/lib/format";
-import type { ShopSupplyCustomer, PaymentAccount, ExpenseCategory } from "@/lib/types";
+import type { ShopSupplyCustomer, PaymentAccount, Company, DestinationType } from "@/lib/types";
 
 /** Record a Supply Customer's payment to the shop (§25) — collects against
  * a credit ShopSale's receivable, increases Shop Cash (§ Shop Cash Money
  * Routing — posts to a real, shop-scoped PaymentAccount). Never touches the
- * Dowa Customer Ledger/Payment model — this is Engine 3, not Engine 1. */
+ * Dowa Customer Ledger/Payment model — this is Engine 3, not Engine 1.
+ *
+ * Two ways to record the exact same event (§ Payment Only / Receive
+ * Payment unification) — this modal (opened from the Supply Customer
+ * Ledger's "Receive Payment" button) and RecordShopSaleModal's "Payment
+ * Only" tab both post through api.shops.customerPayments.create with the
+ * identical settlement-routing payload shape, so they behave identically
+ * and both feed the same Settlement Breakdown chips already shown in the
+ * Shop Business Ledger / Transaction History / this customer's own ledger.
+ * `method` (Cash/Bank Transfer/Other) is kept as its own simple field —
+ * purely a record-keeping label, same as everywhere else in the app (see
+ * PaymentCreate.method) — it never affects where the money routes. */
 export default function RecordSupplyCustomerPaymentModal({
-  shopId, customer, onClose, onSaved,
-}: { shopId: string; customer: ShopSupplyCustomer; onClose: () => void; onSaved: () => void }) {
+  shopId, shopName, customer, onClose, onSaved,
+}: { shopId: string; shopName: string; customer: ShopSupplyCustomer; onClose: () => void; onSaved: () => void }) {
   const { t } = useTranslation();
   const { user } = useAuth();
+  const shopContext = { id: shopId, name: shopName };
+
   const [date, setDate] = useState(todayLocalInput());
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState("cash");
-  const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
-  const [accountId, setAccountId] = useState("");
   const [notes, setNotes] = useState("");
-  const [categories, setCategories] = useState<ExpenseCategory[]>([]);
-  const [expenseLines, setExpenseLines] = useState<ExpenseLine[]>([]);
+
+  const [companies, setCompanies] = useState<Company[]>([]);
+  const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
+
+  // Settlement Routing (§ Payment Only mode) — identical field set/defaults
+  // to RecordShopSaleModal's payment_only tab.
+  const [homeExpenseAmount, setHomeExpenseAmount] = useState("");
+  const [homeExpenseDescription, setHomeExpenseDescription] = useState("");
+  const [ownerDrawingsAmount, setOwnerDrawingsAmount] = useState("");
+  const [destinationType, setDestinationType] = useState<DestinationType>("account");
+  const [targetPlantId, setTargetPlantId] = useState("");
+  const [specialAccount, setSpecialAccount] = useState<SpecialAccount>("office_cash");
+  const [accountId, setAccountId] = useState("");
+
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => { api.paymentAccounts.list().then((a) => setAccounts(a.filter((x) => x.active === "active"))); }, []);
-  useEffect(() => { api.expenseCategories.list().then(setCategories); }, []);
+  useEffect(() => { api.companies.list().then(setCompanies); }, []);
 
-  const canSubmit = parseFloat(amount) > 0 && date && expenseLinesValid(expenseLines);
+  const effectiveAmount = parseFloat(amount) || 0;
+  const canSubmit = effectiveAmount > 0 && !!date;
+
+  const resolveAccountId = (): string | undefined => {
+    if (destinationType !== "account") return undefined;
+    if (specialAccount === "bank") return accountId || undefined;
+    return specialAccount; // "office_cash", "owner_home", "dowa_account", "shop_cash"
+  };
 
   const submit = async () => {
     if (!canSubmit || !user) return;
@@ -46,30 +76,28 @@ export default function RecordSupplyCustomerPaymentModal({
       const ss = String(now.getSeconds()).padStart(2, "0");
       const isoDate = new Date(`${date}T${hh}:${mm}:${ss}`).toISOString();
 
-      await api.shops.customerPayments.create(shopId, customer.id, {
+      const payload: any = {
         date: isoDate,
         supply_customer_id: customer.id,
-        amount: parseFloat(amount),
+        amount: effectiveAmount,
         method,
-        account_id: accountId || undefined,
         notes: notes || undefined,
         entered_by: user.name,
-      });
-
-      if (hasFilledExpenseLines(expenseLines)) {
-        await api.shops.expenses.create(shopId, {
-          date: isoDate,
-          lines: toExpenseLinesPayload(expenseLines),
-          entered_by: user.name,
-          // § Shop Expense/Withdrawal Attribution — this customer is
-          // exactly who this expense/withdrawal was entered alongside.
-          supply_customer_id: customer.id,
-        });
+        destination_type: destinationType,
+        home_expense_amount: parseFloat(homeExpenseAmount) || 0,
+        home_expense_description: homeExpenseDescription.trim() || undefined,
+        owner_drawings_amount: parseFloat(ownerDrawingsAmount) || 0,
+      };
+      if (destinationType === "plant") {
+        payload.target_plant_id = targetPlantId || undefined;
+      } else {
+        payload.settlement_account_id = resolveAccountId();
       }
 
+      await api.shops.customerPayments.create(shopId, customer.id, payload);
       onSaved();
     } catch (e) {
-      setError(t("modals.couldNotSavePayment"));
+      setError(apiErrorMessage(e, t("modals.couldNotSavePayment")));
     } finally {
       setSaving(false);
     }
@@ -77,7 +105,7 @@ export default function RecordSupplyCustomerPaymentModal({
 
   return (
     <div className="fixed inset-0 bg-[rgba(11,33,56,0.5)] flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl px-6 py-6 w-full max-w-[380px]">
+      <div className="bg-white rounded-xl px-6 py-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-4">
           <div className="font-display font-bold text-[17px] text-ink">{t("modals.receivePaymentTitle", { name: customer.name })}</div>
           <button onClick={onClose} className="bg-transparent border-none cursor-pointer"><X size={16} className="text-steel" /></button>
@@ -86,12 +114,14 @@ export default function RecordSupplyCustomerPaymentModal({
           {t("modals.outstandingLabel", { amount: pkr(customer.current_balance) })}
         </div>
         <div className="flex flex-col gap-3">
-          <Field label={t("unifiedSale.date")}>
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} />
-          </Field>
-          <Field label={t("modals.amountField")}>
-            <AmountInput value={amount} onChange={setAmount} className={inputClass} />
-          </Field>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label={t("unifiedSale.date")}>
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} />
+            </Field>
+            <Field label={t("modals.amountField")}>
+              <AmountInput value={amount} onChange={setAmount} className={inputClass} />
+            </Field>
+          </div>
           <Field label={t("expenses.paymentMethod")}>
             <select value={method} onChange={(e) => setMethod(e.target.value)} className={inputClass}>
               <option value="cash">{t("unifiedSale.methodCash")}</option>
@@ -99,16 +129,34 @@ export default function RecordSupplyCustomerPaymentModal({
               <option value="other">{t("expenses.methodOther")}</option>
             </select>
           </Field>
-          <Field label={t("modals.depositToAccount")}>
-            <select value={accountId} onChange={(e) => setAccountId(e.target.value)} className={inputClass}>
-              <option value="">{t("modals.shopCashDefault")}</option>
-              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </select>
-          </Field>
           <Field label={t("modals.notesOptional")}>
             <input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputClass} />
           </Field>
-          <ExpenseWithdrawLines lines={expenseLines} onChange={setExpenseLines} categories={categories} />
+
+          {effectiveAmount > 0 && (
+            <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/50 p-4">
+              <SettlementDestinationFields
+                grossAmount={effectiveAmount}
+                companies={companies}
+                accounts={accounts}
+                shopContext={shopContext}
+                homeExpenseAmount={homeExpenseAmount}
+                onHomeExpenseAmountChange={setHomeExpenseAmount}
+                homeExpenseDescription={homeExpenseDescription}
+                onHomeExpenseDescriptionChange={setHomeExpenseDescription}
+                ownerDrawingsAmount={ownerDrawingsAmount}
+                onOwnerDrawingsAmountChange={setOwnerDrawingsAmount}
+                destinationType={destinationType}
+                onDestinationTypeChange={setDestinationType}
+                targetPlantId={targetPlantId}
+                onTargetPlantIdChange={setTargetPlantId}
+                specialAccount={specialAccount}
+                onSpecialAccountChange={setSpecialAccount}
+                accountId={accountId}
+                onAccountIdChange={setAccountId}
+              />
+            </div>
+          )}
         </div>
         {error && <div className="font-body text-xs text-brand-red mt-2">{error}</div>}
         <div className="mt-4">

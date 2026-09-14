@@ -2256,6 +2256,7 @@ function TransactionHistoryModal({
         {payCustomerTarget && (
           <RecordSupplyCustomerPaymentModal
             shopId={shopId}
+            shopName={detail.customer.name}
             customer={payCustomerTarget}
             onClose={() => setPayCustomerTarget(null)}
             onSaved={() => {
