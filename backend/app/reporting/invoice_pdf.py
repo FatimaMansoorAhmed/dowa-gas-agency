@@ -1099,6 +1099,7 @@ _SHOP_TYPE_LABELS = {
     "shop_sale": "Sale",
     "payment": "Payment",
     "emergency_transfer_out": "Emergency Transfer",
+    "customer_payment": "Customer Payment",
 }
 
 
@@ -1151,7 +1152,7 @@ def _shop_statement_rate_cell(r: "schemas.ShopTransactionRow") -> str:
 # fields instead). Customer added per its own design pass (§ Customer
 # Information) — still sums to 277mm.
 _SHOP_STATEMENT_COL_WIDTHS = [18 * mm, 18 * mm, 32 * mm, 22 * mm, 16 * mm, 20 * mm, 36 * mm, 36 * mm, 79 * mm]
-_SHOP_STATEMENT_HEADERS = ["Date", "Type", "Customer", "Cylinder Type", "Quantity", "Rate", "Amount", "Paid", "Balance"]
+_SHOP_STATEMENT_HEADERS = ["Date", "Type", "Customer", "Cylinder Type", "Quantity", "Rate", "Amount", "Paid", "Dowa Balance"]
 
 
 def _shop_statement_row_cells(s, r: "schemas.ShopTransactionRow", balance) -> list:
@@ -1191,6 +1192,20 @@ def _shop_statement_row_cells(s, r: "schemas.ShopTransactionRow", balance) -> li
         amount_cell = _fmt_amount(r.amount) if r.amount is not None else "-"
         balance_cell = _fmt_amount(balance)
         balance_style = bold  # the real running Dowa-payable balance
+    elif r.kind == "customer_payment":
+        # Engine 3 only (§ get_shop_business_ledger's own docstring) — a
+        # supply-customer collection never touches the shop's Dowa payable,
+        # so `balance` here would incorrectly conflate two unrelated
+        # concepts, exactly the mixing this function's own docstring
+        # already forbids for shop_sale's amount_outstanding. Customer
+        # comes from r.customer_name (always set — a Payment Only
+        # collection always names one), Amount has no separate "gross"
+        # concept distinct from what was paid (same as "payment" above).
+        cylinder_cell = quantity_cell = rate_cell = "-"
+        amount_cell = "-"
+        paid_cell = _fmt_amount(r.amount) if r.amount is not None else "-"
+        balance_cell = "-"
+        balance_style = s["compact_table_cell"]
     else:  # emergency_transfer_out — pure stock movement, no money/balance
         customer_cell = "-"
         amount_cell = paid_cell = balance_cell = "-"
@@ -1211,14 +1226,17 @@ def _shop_statement_row_cells(s, r: "schemas.ShopTransactionRow", balance) -> li
 
 def _shop_statement_opening_row_cells(s, opening_balance) -> list:
     # The 7 dashes are placeholders only — render_shop_statement_pdf SPANs
-    # columns 0-7 over this row so only the "Opening Balance" label (cell
-    # 0) actually renders, never sitting under the Date column as though
-    # it were one (§ Opening Balance row presentation). Kept here so the
-    # row still has 9 cells, matching every other row's shape.
+    # columns 0-7 over this row so only the "Dowa Payable (Opening)" label
+    # (cell 0) actually renders, never sitting under the Date column as
+    # though it were one (§ Opening Balance row presentation). Kept here so
+    # the row still has 9 cells, matching every other row's shape. Same
+    # "Dowa Payable" naming as the summary tiles above (§ Shop Statement —
+    # Dowa Payable vs Shop Cash) — this row only ever concerns the Dowa
+    # Balance column, never Shop Cash.
     dash = Paragraph("-", s["compact_table_cell"])
     bold = ParagraphStyle("CompactShopOpeningRow", parent=s["compact_table_cell"], fontName="Helvetica-Bold")
     return [
-        Paragraph("Opening Balance", bold),
+        Paragraph("Dowa Payable (Opening)", bold),
         dash, dash, dash, dash, dash, dash, dash,
         Paragraph(_fmt_amount(opening_balance), bold),
     ]
@@ -1247,7 +1265,8 @@ def _compact_shop_block(s, shop, month: str, total_width):
 
 def render_shop_statement_pdf(
     shop, month: str, transactions: list["schemas.ShopTransactionRow"],
-    ledger_summary: "schemas.CustomerLedgerSummary", generated_by: str, generated_at: str,
+    ledger_summary: "schemas.CustomerLedgerSummary", shop_cash_summary: "schemas.ShopCashSummary",
+    generated_by: str, generated_at: str,
 ) -> bytes:
     """Full-activity-log statement PDF for one shop/month — same compact
     A4-landscape design as render_customer_statement_pdf/render_company_
@@ -1256,15 +1275,26 @@ def render_shop_statement_pdf(
     is a live Customer row (a Shop IS a Customer — see routers/shops.py's
     shop_statement_pdf). `transactions` is get_shop_detail's own
     ShopTransactionRow list for this shop/month (Load/Shop Sale/Payment/
-    Emergency Transfer all included — § Full Activity Log, never filter
-    any kind out). `ledger_summary` is customer_monthly_ledger's output
-    for this same shop_id/month — the SAME payable math the Customer
-    Statement already uses (a Load is just an ordinary Sale row against
-    the shop, a Payment just an ordinary Payment row), read here, never
-    recomputed, and merged onto the Load/Payment rows below by matching
-    ref_id to ledger_summary.rows' own ref_id. Shop Sale/Emergency
-    Transfer rows never look anything up here — see
-    _shop_statement_row_cells's Balance handling."""
+    Emergency Transfer/Customer Payment all included — § Full Activity Log,
+    never filter any kind out).
+
+    Two genuinely unrelated running balances appear on this document (§
+    Shop Statement — Dowa Payable vs Shop Cash, added after a customer
+    mistook the two for one broken running total): `ledger_summary` is
+    customer_monthly_ledger's output for this same shop_id/month — the SAME
+    payable-to-Dowa math the Customer Statement already uses (a Load is
+    just an ordinary Sale row against the shop, a Payment just an ordinary
+    Payment row), read here, never recomputed, and merged onto the
+    Load/Payment rows below by matching ref_id to ledger_summary.rows' own
+    ref_id ("Dowa Balance" column). `shop_cash_summary` is
+    routers/shops.py::_compute_cash_summary_range's output for the whole
+    month — the shop's OWN retail cash (Shop Sale/Customer Payment
+    collections actually routed into Shop Cash), completely independent of
+    the Dowa payable; surfaced only as its own 3 summary tiles (Opening/
+    Collected/Closing), never merged into the per-row table. Shop Sale/
+    Customer Payment/Emergency Transfer rows never look anything up in
+    ledger_summary — see _shop_statement_row_cells's Dowa Balance
+    handling."""
     usable_width = landscape(A4)[0] - 20 * mm  # 297mm - 10mm each side = 277mm
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -1293,13 +1323,25 @@ def render_shop_statement_pdf(
         (t.amount_received or Decimal("0") for t in transactions if t.kind == "shop_sale"), Decimal("0")
     )
 
+    # § Shop Statement — Dowa Payable vs Shop Cash: "Opening/Closing
+    # Balance" renamed to "Dowa Payable (Opening/Closing)" — a customer
+    # mistook this for one broken running total spanning the whole
+    # statement when Customer Payment rows didn't move it, since nothing
+    # on the page said this figure was scoped to the Dowa payable only.
+    # The 3 new Shop Cash tiles are the shop's own retail-cash story,
+    # computed independently (shop_cash_summary, § docstring above) —
+    # never derived from or combined with the Dowa Payable figures.
+    shop_cash_collected = shop_cash_summary.cash_retail_sales + shop_cash_summary.supply_customer_collections
     story.append(_compact_summary_row(s, [
-        ("Opening Balance", _fmt_amount(ledger_summary.opening_balance), "#0B2138"),
+        ("Dowa Payable (Opening)", _fmt_amount(ledger_summary.opening_balance), "#0B2138"),
         ("Total Loads", _fmt_amount(ledger_summary.total_sales), "#0B2138"),
-        ("Total Paid", _fmt_amount(ledger_summary.total_payments), "#1E8A5F"),
-        ("Closing Balance", _fmt_amount(ledger_summary.closing_balance), "#0B2138"),
+        ("Total Paid to Dowa", _fmt_amount(ledger_summary.total_payments), "#1E8A5F"),
+        ("Dowa Payable (Closing)", _fmt_amount(ledger_summary.closing_balance), "#0B2138"),
         ("Total Shop Sales", _fmt_amount(total_shop_sales), "#9333EA"),
         ("Collected on Shop Sales", _fmt_amount(total_shop_sale_collections), "#1E8A5F"),
+        ("Shop Cash (Opening)", _fmt_amount(shop_cash_summary.opening_cash), "#0B2138"),
+        ("Shop Cash (Collected)", _fmt_amount(shop_cash_collected), "#1E8A5F"),
+        ("Shop Cash (Closing)", _fmt_amount(shop_cash_summary.closing_cash), "#0B2138"),
     ], usable_width))
     story.append(Spacer(1, 1 * mm))
 

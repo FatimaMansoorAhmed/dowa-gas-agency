@@ -2382,6 +2382,20 @@ class ShopSupplyCustomerLedgerRow(BaseModel):
     # this is a NEW field rather than changing `rate`'s existing,
     # already-relied-upon on-screen meaning.
     board_rate_per_kg: Optional[Decimal] = None
+    # Where a Payment Only collection's money was routed (§ Payment Only /
+    # Settlement Routing) — null for "sale" rows (a ShopSale's own
+    # settlement is a separate concept already covered by sale_amount/
+    # payment_amount above) and for a "payment" row with no routing (the
+    # legacy plain-account collection path). Mirrors ShopTransactionRow/
+    # ShopBusinessLedgerRow's identical 6 fields — this schema never had
+    # them, so a Payment Only collection's breakdown had nowhere to go even
+    # though ShopCustomerPayment itself has always stored it correctly.
+    settlement_destination_type: Optional[str] = None
+    settlement_target_plant_id: Optional[UUID] = None
+    settlement_account_id: Optional[UUID] = None
+    settlement_home_expense_description: Optional[str] = None
+    settlement_home_expense_amount: Optional[Decimal] = None
+    settlement_owner_drawings_amount: Optional[Decimal] = None
 
 
 class ShopSupplyCustomerLedgerOut(BaseModel):
@@ -2510,8 +2524,9 @@ class ShopBusinessLedgerRow(BaseModel):
     # Where the collected amount was routed (§ Settlement Routing) — the
     # shop-side counterpart to the plant ledger's payment-received row.
     # Null for a credit sale with nothing collected (all-credit) or a pre-
-    # routing-change row; populated only for kind in ("cash_sale",
-    # "credit_sale").
+    # routing-change row; populated for kind in ("cash_sale", "credit_sale",
+    # "customer_payment", "shop_cash_transfer") — every row kind whose
+    # underlying model actually carries settlement_* columns.
     settlement_destination_type: Optional[str] = None
     settlement_target_plant_id: Optional[UUID] = None
     settlement_account_id: Optional[UUID] = None
@@ -2576,9 +2591,9 @@ class ShopStockSummary(BaseModel):
 
 class ShopTransactionRow(BaseModel):
     """One row in the Shop detail page's unified transaction history table
-    — covers Load/Sale/Payment/Emergency Transfer Out, columns populated
-    per type as relevant (§16)."""
-    kind: Literal["load", "shop_sale", "payment", "emergency_transfer_out"]
+    — covers Load/Sale/Payment/Emergency Transfer Out/Customer Payment,
+    columns populated per type as relevant (§16)."""
+    kind: Literal["load", "shop_sale", "payment", "emergency_transfer_out", "customer_payment"]
     date: datetime
     ref_id: UUID
     display_id: str
@@ -2594,12 +2609,16 @@ class ShopTransactionRow(BaseModel):
     amount_outstanding: Optional[Decimal] = None
     # § Shop Statement — the named Supply Customer on a shop_sale row, or
     # "Walk-in Customer" when none was picked (a shop_sale never requires
-    # one — see routers/shops._apply_shop_sale). Null for every other kind
-    # (Load/Payment/Emergency Transfer have no retail-customer concept).
+    # one — see routers/shops._apply_shop_sale); the actual named customer
+    # for a customer_payment row (a Payment Only collection always names
+    # one — see ShopCustomerPaymentCreate.supply_customer_id, required).
+    # Null for every other kind (Load/Payment/Emergency Transfer have no
+    # retail-customer concept).
     customer_name: Optional[str] = None
     # Where the collected amount was routed at creation time (§ Settlement
     # Routing) — null for a sale with nothing collected (all-credit) or a
-    # pre-routing-change row. Mirrors UnifiedSaleBatch's destination_type
+    # pre-routing-change row; populated for kind in ("shop_sale",
+    # "customer_payment"). Mirrors UnifiedSaleBatch's destination_type
     # pattern (see unified-sale/page.tsx's getDestinationLabel) so the shop
     # side shows the same "Routed To" info the plant side already gets.
     settlement_destination_type: Optional[str] = None

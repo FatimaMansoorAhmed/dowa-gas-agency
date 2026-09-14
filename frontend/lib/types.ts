@@ -666,7 +666,7 @@ export type ShopStockSummary = {
 };
 
 export type ShopTransactionRow = {
-  kind: "load" | "shop_sale" | "payment" | "emergency_transfer_out";
+  kind: "load" | "shop_sale" | "payment" | "emergency_transfer_out" | "customer_payment";
   date: string;
   ref_id: string;
   display_id: string;
@@ -680,10 +680,14 @@ export type ShopTransactionRow = {
   // Inline Settlement (§2) — populated only for kind=="shop_sale".
   amount_received: string | null;
   amount_outstanding: string | null;
+  // The named Supply Customer for "shop_sale" ("Walk-in Customer" when
+  // none was picked) or "customer_payment" (always named — a Payment Only
+  // collection requires one). Null for every other kind.
+  customer_name: string | null;
   // Where the collected amount was routed (§ Settlement Routing) — the
   // shop-side counterpart to the plant ledger's payment-received row.
-  // Null for a sale with nothing collected (all-credit) or a pre-routing
-  // change row.
+  // Null for a sale/payment with nothing collected or a pre-routing
+  // change row; populated for kind in ("shop_sale", "customer_payment").
   settlement_destination_type: string | null;
   settlement_target_plant_id: string | null;
   settlement_account_id: string | null;
@@ -770,6 +774,15 @@ export type ShopSupplyCustomerLedgerRow = {
   quantity?: string | null;
   unit?: "cylinder" | "kg" | null;
   board_rate_per_kg?: string | null;
+  // Where a Payment Only collection's money was routed (§ Payment Only) —
+  // null for "sale" rows and for a "payment" row with no routing (the
+  // legacy plain-account path).
+  settlement_destination_type?: string | null;
+  settlement_target_plant_id?: string | null;
+  settlement_account_id?: string | null;
+  settlement_home_expense_description?: string | null;
+  settlement_home_expense_amount?: string | null;
+  settlement_owner_drawings_amount?: string | null;
 };
 
 export type ShopSupplyCustomerLedgerOut = {
@@ -889,8 +902,8 @@ export type ShopBusinessLedgerRow = {
   // Where the collected amount was routed (§ Settlement Routing) — the
   // shop-side counterpart to the plant ledger's payment-received row.
   // Null for a credit sale with nothing collected (all-credit) or a pre-
-  // routing change row; populated only for kind in ("cash_sale",
-  // "credit_sale").
+  // routing change row; populated for kind in ("cash_sale", "credit_sale",
+  // "customer_payment", "shop_cash_transfer").
   settlement_destination_type: string | null;
   settlement_target_plant_id: string | null;
   settlement_account_id: string | null;

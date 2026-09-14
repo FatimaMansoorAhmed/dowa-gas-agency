@@ -81,6 +81,7 @@ import type {
       shop_sale: t("shopDetail.shopSale"),
       payment: t("customerLedger.colPayment"),
       emergency_transfer_out: t("shopDetail.emergencyTransferOut"),
+      customer_payment: t("shopDetail.customerPayment"),
     };
 
     return labels[kind] ?? kind;
@@ -142,11 +143,18 @@ function renderShopSaleSettlementBreakdown(
   // outflow, honestly signed for the ledger's own total), and the
   // Home-Expense/Owner-Drawings/Routed-To breakdown below is always a
   // fraction of the GROSS amount moved, regardless of direction.
+  // A "customer_payment" ShopTransactionRow has neither amount_received
+  // (shop_sale-only, partial-payment concept) nor cash_impact
+  // (ShopBusinessLedgerRow-only) — its `amount` IS the full amount
+  // received, by definition (a Payment Only collection has no partial/
+  // outstanding concept of its own), so that's the last fallback.
   const amountReceived = "amount_received" in row && row.amount_received != null
     ? Number(row.amount_received)
     : "cash_impact" in row
       ? Math.abs(Number(row.cash_impact))
-      : 0;
+      : "amount" in row && row.amount != null
+        ? Number(row.amount)
+        : 0;
   const netSettlementAmount = amountReceived - homeExpenseAmount - ownerDrawingsAmount;
   const parts: Array<{ label: string; value: string }> = [];
 
@@ -572,7 +580,7 @@ function TransactionHistoryModal({
                             inline-flex rounded-md px-2 py-1
                             text-[10px] font-semibold uppercase tracking-wide
                             ${
-                              row.kind === "payment"
+                              row.kind === "payment" || row.kind === "customer_payment"
                                 ? "bg-emerald-50 text-emerald-700"
                                 : row.kind === "shop_sale"
                                 ? "bg-blue-50 text-blue-700"
@@ -629,7 +637,7 @@ function TransactionHistoryModal({
                       </td>
 
                        <td className="border-r border-slate-100 px-4 py-3">
-                         {row.kind === "shop_sale"
+                         {row.kind === "shop_sale" || row.kind === "customer_payment"
                            ? renderShopSaleSettlementBreakdown(row, companies, accounts, t)
                            : <span className="text-slate-400">—</span>}
                        </td>

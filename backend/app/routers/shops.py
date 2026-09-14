@@ -3,6 +3,7 @@ from decimal import Decimal
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -330,16 +331,17 @@ def _compute_stock_summary(db: Session, shop_id, business_date: str) -> schemas.
 # schemas.ShopCashSummary's docstring for the Customer-Ledger-vs-
 # Customer.current_balance analogy this mirrors) ----------
 
-def _compute_cash_summary(db: Session, shop: models.Customer, business_date: str) -> schemas.ShopCashSummary:
-    """Shop Cash = opening_cash + cash actually received on sales (any
-    payment_type — a partially-paid credit sale still puts real cash in the
-    till, §2) + supply-customer collections + transfers in − expenses −
-    owner withdrawals − Dowa payments funded from Shop Cash − transfers out.
-    Every term is summed fresh from Engine 3's own history plus the
-    EXISTING Payment/AccountTransfer models (§19: don't duplicate a concept
-    the app already has) — never from the stored account balance itself,
-    mirroring _compute_stock_summary's derive-from-history pattern."""
-    day_start, day_end = karachi_day_bounds(business_date)
+def _compute_cash_summary_range(db: Session, shop: models.Customer, range_start: datetime, range_end: datetime) -> schemas.ShopCashSummary:
+    """Same derive-from-history Shop Cash math as _compute_cash_summary,
+    generalized to an arbitrary [range_start, range_end) window instead of
+    one business day — a single day IS just a range, so _compute_cash_summary
+    below is now a thin wrapper around this. Added for the Shop Statement's
+    month-scoped Shop Cash summary tile (§ Shop Statement — Dowa Payable vs
+    Shop Cash), which needs this exact same proven math over a whole month
+    instead of one day, rather than a separately-written approximation.
+    `business_date` on the returned row is left blank — meaningless for a
+    multi-day range; callers that need it (the single-day wrapper) set it
+    themselves."""
     shop_account = get_or_create_shop_account(db, shop)
 
     # Every term below is filtered to the transactions that actually posted
@@ -347,11 +349,29 @@ def _compute_cash_summary(db: Session, shop: models.Customer, business_date: str
     # with a different destination/source account (§2/§1: "should allow the
     # same account choices as elsewhere") never touches Shop Cash, only
     # whichever account was actually chosen does.
+    #
+    # § Shop Cash settlement-routing gap (found while adding the Shop
+    # Statement's Shop Cash tile) — destination_account_id is ONLY ever set
+    # on the legacy plain-account path (_apply_shop_sale's `elif
+    # amount_received > 0` branch below); a Shop Sale routed via the 3-way
+    # Settlement Routing form (destination_type set — the standard path for
+    # every current Shop Sale form) instead sets settlement_account_id,
+    # even when the chosen destination IS this shop's own Shop Cash
+    # ("shop_cash" resolves to get_or_create_shop_account, i.e.
+    # settlement_account_id == shop_account.id). A query matching
+    # destination_account_id alone silently missed every settlement-routed
+    # collection into Shop Cash — this OR was missing entirely before now,
+    # so Shop Cash's derived opening/closing figures (both here and on the
+    # existing Shop Detail page's daily tile, which shares this function)
+    # undercounted real money that had actually posted to the account.
     all_sales = (
         db.query(models.ShopSale)
         .filter(
             models.ShopSale.customer_id == shop.id, models.ShopSale.status == "active",
-            models.ShopSale.destination_account_id == shop_account.id,
+            or_(
+                models.ShopSale.destination_account_id == shop_account.id,
+                models.ShopSale.settlement_account_id == shop_account.id,
+            ),
         )
         .all()
     )
@@ -367,11 +387,18 @@ def _compute_cash_summary(db: Session, shop: models.Customer, business_date: str
         .filter(models.ShopSale.customer_id == shop.id, models.ShopSale.status == "active")
         .all()
     )
+    # Same settlement-routing gap as all_sales above, for Payment Only
+    # collections (ShopCustomerPayment.account_id is the same legacy-only
+    # field; settlement_account_id is where a Payment Only collection
+    # routed to "shop_cash" actually lands).
     collections = (
         db.query(models.ShopCustomerPayment)
         .filter(
             models.ShopCustomerPayment.shop_id == shop.id, models.ShopCustomerPayment.status == "active",
-            models.ShopCustomerPayment.account_id == shop_account.id,
+            or_(
+                models.ShopCustomerPayment.account_id == shop_account.id,
+                models.ShopCustomerPayment.settlement_account_id == shop_account.id,
+            ),
         )
         .all()
     )
@@ -425,11 +452,11 @@ def _compute_cash_summary(db: Session, shop: models.Customer, business_date: str
                     expense_total += l.amount
         return expense_total, withdrawal_total
 
-    before = lambda rows, attr: [r for r in rows if getattr(r, attr) < day_start]
-    today = lambda rows, attr: [r for r in rows if day_start <= getattr(r, attr) < day_end]
+    before = lambda rows, attr: [r for r in rows if getattr(r, attr) < range_start]
+    within = lambda rows, attr: [r for r in rows if range_start <= getattr(r, attr) < range_end]
 
     before_expense, before_withdrawal = _expense_split(before(expense_txns, "date"))
-    today_expense, today_withdrawal = _expense_split(today(expense_txns, "date"))
+    period_expense, period_withdrawal = _expense_split(within(expense_txns, "date"))
 
     def _received(sales) -> Decimal:
         return sum((s.amount_received if s.amount_received is not None else Decimal("0")) for s in sales) or Decimal("0")
@@ -445,12 +472,12 @@ def _compute_cash_summary(db: Session, shop: models.Customer, business_date: str
         - sum((c.gross_amount for c in before(cash_transfers, "date")), start=Decimal("0"))
     )
 
-    day_cash_sales = _received(today(all_sales, "date"))
-    day_collections = sum((p.amount for p in today(collections, "date")), start=Decimal("0"))
-    day_dowa_payments = sum((p.amount for p in today(dowa_payments, "date")), start=Decimal("0"))
-    day_transfers_in = sum((t.amount for t in today(transfers_in_rows, "date")), start=Decimal("0"))
-    day_transfers_out = sum((t.amount for t in today(transfers_out_rows, "date")), start=Decimal("0"))
-    day_cash_transfers_out = sum((c.gross_amount for c in today(cash_transfers, "date")), start=Decimal("0"))
+    period_cash_sales = _received(within(all_sales, "date"))
+    period_collections = sum((p.amount for p in within(collections, "date")), start=Decimal("0"))
+    period_dowa_payments = sum((p.amount for p in within(dowa_payments, "date")), start=Decimal("0"))
+    period_transfers_in = sum((t.amount for t in within(transfers_in_rows, "date")), start=Decimal("0"))
+    period_transfers_out = sum((t.amount for t in within(transfers_out_rows, "date")), start=Decimal("0"))
+    period_cash_transfers_out = sum((c.gross_amount for c in within(cash_transfers, "date")), start=Decimal("0"))
 
     # Sale/Transfer Deductions (§ Shop Cash Flow chip) — purely informational,
     # deliberately NOT folded into closing_cash below: this money never
@@ -458,37 +485,48 @@ def _compute_cash_summary(db: Session, shop: models.Customer, business_date: str
     # dowa_payments/transfers_out/cash_transfers_out bypass amounts above —
     # it's cash that left the till directly via Expense/OwnerDrawings,
     # account_id=None, before ever being deposited).
-    day_settlement_home_expense = sum(
+    period_settlement_home_expense = sum(
         (
-            (s.settlement_home_expense_amount or Decimal("0")) for s in today(all_sales_for_deductions, "date")
+            (s.settlement_home_expense_amount or Decimal("0")) for s in within(all_sales_for_deductions, "date")
         ), start=Decimal("0"),
-    ) + sum((c.settlement_home_expense_amount for c in today(cash_transfers, "date")), start=Decimal("0"))
-    day_settlement_owner_drawings = sum(
+    ) + sum((c.settlement_home_expense_amount for c in within(cash_transfers, "date")), start=Decimal("0"))
+    period_settlement_owner_drawings = sum(
         (
-            (s.settlement_owner_drawings_amount or Decimal("0")) for s in today(all_sales_for_deductions, "date")
+            (s.settlement_owner_drawings_amount or Decimal("0")) for s in within(all_sales_for_deductions, "date")
         ), start=Decimal("0"),
-    ) + sum((c.settlement_owner_drawings_amount for c in today(cash_transfers, "date")), start=Decimal("0"))
+    ) + sum((c.settlement_owner_drawings_amount for c in within(cash_transfers, "date")), start=Decimal("0"))
 
     closing_cash = (
-        opening_cash + day_cash_sales + day_collections + day_transfers_in
-        - today_expense - today_withdrawal - day_dowa_payments - day_transfers_out - day_cash_transfers_out
+        opening_cash + period_cash_sales + period_collections + period_transfers_in
+        - period_expense - period_withdrawal - period_dowa_payments - period_transfers_out - period_cash_transfers_out
     )
 
     return schemas.ShopCashSummary(
-        business_date=business_date,
+        business_date="",
         opening_cash=opening_cash,
-        cash_retail_sales=day_cash_sales,
-        supply_customer_collections=day_collections,
-        expenses=today_expense,
-        owner_withdrawals=today_withdrawal,
-        dowa_payments=day_dowa_payments,
-        transfers_in=day_transfers_in,
-        transfers_out=day_transfers_out,
-        cash_transfers_out=day_cash_transfers_out,
-        settlement_home_expense_total=day_settlement_home_expense,
-        settlement_owner_drawings_total=day_settlement_owner_drawings,
+        cash_retail_sales=period_cash_sales,
+        supply_customer_collections=period_collections,
+        expenses=period_expense,
+        owner_withdrawals=period_withdrawal,
+        dowa_payments=period_dowa_payments,
+        transfers_in=period_transfers_in,
+        transfers_out=period_transfers_out,
+        cash_transfers_out=period_cash_transfers_out,
+        settlement_home_expense_total=period_settlement_home_expense,
+        settlement_owner_drawings_total=period_settlement_owner_drawings,
         closing_cash=closing_cash,
     )
+
+
+def _compute_cash_summary(db: Session, shop: models.Customer, business_date: str) -> schemas.ShopCashSummary:
+    """Shop Cash for one business day — thin wrapper around
+    _compute_cash_summary_range (a single day IS just a range). Behavior
+    unchanged for every existing caller (Shop Detail's daily cash tile,
+    etc.) — this is a pure extraction, not a formula change."""
+    day_start, day_end = karachi_day_bounds(business_date)
+    summary = _compute_cash_summary_range(db, shop, day_start, day_end)
+    summary.business_date = business_date
+    return summary
 
 
 # ---------- FIFO consumption / reversal for Shop Sales ----------
@@ -1021,6 +1059,34 @@ def get_shop_detail(
             entered_by=p.entered_by, status=p.status, correctable=True,
         ))
 
+    # Payment Only mode / Supply Customer collections (§ Shop Business
+    # Ledger's own customer_payment row — this Transaction History table
+    # never queried ShopCustomerPayment at all, so one of these never
+    # appeared here or on the Shop Statement PDF, which reuses this same
+    # `transactions` list). Distinct from the "payment" kind above — that's
+    # this shop's OWN payment toward its Dowa payable (models.Payment);
+    # this is money the shop collected FROM one of its own supply
+    # customers (models.ShopCustomerPayment), a completely different event.
+    supply_customers = {c.id: c for c in db.query(models.ShopSupplyCustomer).filter(models.ShopSupplyCustomer.shop_id == shop_id).all()}
+    customer_payments = db.query(models.ShopCustomerPayment).filter(
+        models.ShopCustomerPayment.shop_id == shop_id, models.ShopCustomerPayment.status == "active",
+        models.ShopCustomerPayment.date >= month_start, models.ShopCustomerPayment.date < next_month,
+    ).all()
+    for cp in customer_payments:
+        sc = supply_customers.get(cp.supply_customer_id)
+        transactions.append(schemas.ShopTransactionRow(
+            kind="customer_payment", date=cp.date, ref_id=cp.id, display_id=cp.display_id,
+            description=f"Payment from {sc.name if sc else 'Unknown'} · {cp.method}",
+            amount=cp.amount, customer_name=sc.name if sc else "Unknown",
+            settlement_destination_type=cp.settlement_destination_type,
+            settlement_target_plant_id=cp.settlement_target_plant_id,
+            settlement_account_id=cp.settlement_account_id,
+            settlement_home_expense_description=cp.settlement_home_expense_description,
+            settlement_home_expense_amount=cp.settlement_home_expense_amount,
+            settlement_owner_drawings_amount=cp.settlement_owner_drawings_amount,
+            entered_by=cp.entered_by, status=cp.status, correctable=False,
+        ))
+
     # Emergency Transfer Out (§ Shop — Emergency Transfer) — same Sale
     # model _compute_stock_summary above already deducts from this shop's
     # FIFO stock, but that Sale posts to the OTHER customer (Sale.customer_id
@@ -1144,21 +1210,33 @@ def shop_statement_pdf(
     current_user: models.User = Depends(require_active_user),
 ):
     """Read-only, on-demand PDF of the shop's full activity — every Load/
-    Shop Sale/Payment/Emergency Transfer, mirroring render_customer_
-    statement_pdf/render_company_statement_pdf's "reuse the exact data the
-    screen renders, never re-derive" guarantee: transactions come straight
-    from get_shop_detail (the same call the Transaction History modal
-    makes), and the running Balance comes straight from
+    Shop Sale/Payment/Emergency Transfer/Customer Payment, mirroring
+    render_customer_statement_pdf/render_company_statement_pdf's "reuse the
+    exact data the screen renders, never re-derive" guarantee: transactions
+    come straight from get_shop_detail (the same call the Transaction
+    History modal makes), the Dowa Balance comes straight from
     customer_monthly_ledger (a shop IS a Customer row — its Load/Payment
     are just ordinary Sale/Payment rows against it, so this is the exact
     same payable math the Customer Statement already uses, never
-    recomputed here). Shop Sale/Emergency Transfer never touch that
-    balance — see render_shop_statement_pdf's docstring."""
+    recomputed here), and the Shop Cash figures come from
+    _compute_cash_summary_range over the whole month (the exact same
+    derive-from-history math the Shop Detail page's own daily Shop Cash
+    tile uses, § Shop Statement — Dowa Payable vs Shop Cash). Shop Sale/
+    Customer Payment/Emergency Transfer never touch the Dowa Balance, and
+    Load/Payment (Dowa-side) never touch Shop Cash — two genuinely
+    unrelated figures, never combined — see render_shop_statement_pdf's
+    docstring."""
     shop = _get_shop(db, shop_id)
     detail = get_shop_detail(shop_id, date=None, month=month, db=db)
     ledger_summary = customer_monthly_ledger(shop_id, month, db)
+    month_start = datetime.strptime(month, "%Y-%m")
+    year, mo = month_start.year, month_start.month
+    next_month = datetime(year + 1, 1, 1) if mo == 12 else datetime(year, mo + 1, 1)
+    shop_cash_summary = _compute_cash_summary_range(db, shop, month_start, next_month)
     generated_at = datetime.now(KARACHI_TZ).strftime("%Y-%m-%d %H:%M")
-    pdf_bytes = render_shop_statement_pdf(shop, month, detail.transactions, ledger_summary, current_user.name, generated_at)
+    pdf_bytes = render_shop_statement_pdf(
+        shop, month, detail.transactions, ledger_summary, shop_cash_summary, current_user.name, generated_at,
+    )
     return Response(
         content=pdf_bytes, media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="Statement-{shop.display_id}-{month}.pdf"'},
@@ -1609,6 +1687,15 @@ def get_supply_customer_ledger(supply_customer_id: UUID, db: Session = Depends(g
                 date=p.date, kind="payment", ref_id=p.id, display_id=p.display_id,
                 description=description, sale_amount=Decimal("0"), payment_amount=p.amount,
                 running_balance=running, rate=None, entered_by=p.entered_by,
+                # Settlement Routing (§ Payment Only mode) — same fields
+                # ShopBusinessLedgerRow's customer_payment row now carries;
+                # this schema never had them at all until now.
+                settlement_destination_type=p.settlement_destination_type,
+                settlement_target_plant_id=p.settlement_target_plant_id,
+                settlement_account_id=p.settlement_account_id,
+                settlement_home_expense_description=p.settlement_home_expense_description,
+                settlement_home_expense_amount=p.settlement_home_expense_amount,
+                settlement_owner_drawings_amount=p.settlement_owner_drawings_amount,
             ))
 
     return schemas.ShopSupplyCustomerLedgerOut(
@@ -2107,6 +2194,17 @@ def get_shop_business_ledger(
             kind="customer_payment", date=p.date, ref_id=p.id, display_id=p.display_id,
             description=f"Payment from {sc.name if sc else 'Unknown'} · {p.method}",
             amount=p.amount, cash_impact=p.amount,
+            # Settlement Routing (§ Payment Only mode) — this row's ShopCustomerPayment
+            # already carries these from _apply_customer_payment; simply never copied
+            # onto the ledger row before now, so a Payment Only collection's Home
+            # Expense/Owner Drawings/Routed-To breakdown never rendered here even
+            # though cash_sale/credit_sale/shop_cash_transfer rows already do.
+            settlement_destination_type=p.settlement_destination_type,
+            settlement_target_plant_id=p.settlement_target_plant_id,
+            settlement_account_id=p.settlement_account_id,
+            settlement_home_expense_description=p.settlement_home_expense_description,
+            settlement_home_expense_amount=p.settlement_home_expense_amount,
+            settlement_owner_drawings_amount=p.settlement_owner_drawings_amount,
             entered_by=p.entered_by, status=p.status,
         ))
 

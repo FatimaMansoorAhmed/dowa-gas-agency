@@ -4,8 +4,63 @@ import { X, Search, Banknote, Printer, Share2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Th, Td, Eyebrow, BalanceTag, Button } from "./ui";
 import { api } from "@/lib/api";
-import { pkr, fmtTime } from "@/lib/format";
-import type { ShopSupplyCustomer, ShopSupplyCustomerLedgerOut } from "@/lib/types";
+import { pkr, fmtTime, resolveAccountLabel } from "@/lib/format";
+import type { Company, PaymentAccount, ShopSupplyCustomer, ShopSupplyCustomerLedgerOut, ShopSupplyCustomerLedgerRow } from "@/lib/types";
+
+// Settlement Routing breakdown for a Payment Only collection (§ Payment
+// Only mode) — mirrors app/shops/[id]/page.tsx's renderShopSaleSettlement
+// Breakdown/resolveShopSaleRoutedLabel, kept as its own small local copy
+// since this modal has no shared import path to that file's component-local
+// helpers and its own row shape (ShopSupplyCustomerLedgerRow) is simpler
+// (no cash_impact/amount_received — payment_amount IS the full amount).
+function resolveRoutedLabel(
+  row: ShopSupplyCustomerLedgerRow,
+  companies: Company[],
+  accounts: PaymentAccount[],
+  t: (key: string, options?: Record<string, any>) => string
+): string {
+  if (!row.settlement_destination_type) return "—";
+  if (row.settlement_destination_type === "plant") {
+    const plant = companies.find((c) => c.id === row.settlement_target_plant_id);
+    return plant ? t("payments.plantLabel", { name: plant.name }) : t("payments.plantSettlementBadge");
+  }
+  if (row.settlement_account_id) return resolveAccountLabel(row.settlement_account_id, accounts);
+  return t("payments.accountSettlementBadge");
+}
+
+function SettlementBreakdown({
+  row, companies, accounts, t,
+}: {
+  row: ShopSupplyCustomerLedgerRow;
+  companies: Company[];
+  accounts: PaymentAccount[];
+  t: (key: string, options?: Record<string, any>) => string;
+}) {
+  const homeExpenseAmount = Number(row.settlement_home_expense_amount || "0");
+  const ownerDrawingsAmount = Number(row.settlement_owner_drawings_amount || "0");
+  const netSettlementAmount = parseFloat(row.payment_amount) - homeExpenseAmount - ownerDrawingsAmount;
+  const parts: Array<{ label: string; value: string }> = [];
+  if (homeExpenseAmount > 0) {
+    parts.push({ label: row.settlement_home_expense_description || t("shopDetail.homeExpense"), value: pkr(homeExpenseAmount) });
+  }
+  if (ownerDrawingsAmount > 0) {
+    parts.push({ label: t("shopDetail.ownerDrawings"), value: pkr(ownerDrawingsAmount) });
+  }
+  if (netSettlementAmount > 0 && row.settlement_destination_type) {
+    parts.push({ label: t("shopDetail.routedTo"), value: resolveRoutedLabel(row, companies, accounts, t) });
+  }
+  if (!parts.length) return <span className="text-slate-400">—</span>;
+  return (
+    <div className="flex flex-wrap items-center gap-1 text-[10px] leading-tight">
+      {parts.map((part, index) => (
+        <span key={`${part.label}-${index}`} className="inline-flex max-w-[220px] items-center gap-1.5 rounded-md bg-slate-100 px-1.5 py-1">
+          <span className="min-w-0 truncate text-slate-500">{part.label}</span>
+          <span className="shrink-0 font-mono font-semibold text-slate-800">{part.value}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
 
 /** Supply Customer Ledger (§ Shop Customer Ledger) — the shop-scoped mirror
  * of the main Customer Ledger page, scaled down to a modal since a shop's
@@ -33,6 +88,15 @@ export default function SupplyCustomerLedgerModal({
   const [loading, setLoading] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [shareStatus, setShareStatus] = useState<{ type: "info" | "error"; msg: string } | null>(null);
+  // Settlement Routing breakdown (§ Payment Only mode) — needed to resolve
+  // a "routed to" plant/account label, same as the Shop Detail page.
+  const [companies, setCompanies] = useState<Company[]>([]);
+  const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
+
+  useEffect(() => {
+    api.companies.list().then(setCompanies).catch(() => {});
+    api.paymentAccounts.list().then(setAccounts).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!selectedId) { setLedger(null); return; }
@@ -245,7 +309,7 @@ export default function SupplyCustomerLedgerModal({
                     </div>
 
                     <div className="mt-5 overflow-x-auto">
-                      <table className="w-full min-w-[700px] border-collapse">
+                      <table className="w-full min-w-[900px] border-collapse">
                         <thead>
                           <tr className="border-b border-hairline text-left">
                             <Th>{t("customerLedger.colDate")}</Th>
@@ -254,6 +318,7 @@ export default function SupplyCustomerLedgerModal({
                             <Th right>{t("customerLedger.colRate")}</Th>
                             <Th right>{t("modals.colRemainingAmount")}</Th>
                             <Th right>{t("customerLedger.colPayment")}</Th>
+                            <Th>{t("shopDetail.colSettlementBreakdown")}</Th>
                             <Th right>{t("customerLedger.colBalance")}</Th>
                           </tr>
                         </thead>
@@ -266,11 +331,16 @@ export default function SupplyCustomerLedgerModal({
                               <Td right mono color="#8E8E93">{r.rate ? pkr(r.rate) : "—"}</Td>
                               <Td right mono>{parseFloat(r.sale_amount) ? pkr(r.sale_amount) : "—"}</Td>
                               <Td right mono color="#1E8A5F">{parseFloat(r.payment_amount) ? pkr(r.payment_amount) : "—"}</Td>
+                              <Td>
+                                {r.kind === "payment"
+                                  ? <SettlementBreakdown row={r} companies={companies} accounts={accounts} t={t} />
+                                  : <span className="text-slate-400">—</span>}
+                              </Td>
                               <Td right mono bold>{pkr(r.running_balance)}</Td>
                             </tr>
                           ))}
                           {!ledger.rows.length && (
-                            <tr><td colSpan={7} className="text-steel font-body text-[13px] py-6 text-center">{t("modals.noTransactionsYetForCustomer")}</td></tr>
+                            <tr><td colSpan={8} className="text-steel font-body text-[13px] py-6 text-center">{t("modals.noTransactionsYetForCustomer")}</td></tr>
                           )}
                         </tbody>
                       </table>
