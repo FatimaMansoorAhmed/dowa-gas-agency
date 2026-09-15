@@ -183,3 +183,119 @@ def send_report_whatsapp(report_id: UUID, to: str | None = Query(None), db: Sess
     db.commit()
     db.refresh(report)
     return schemas.SendWhatsAppOut(report=report, message="Sent via WhatsApp" if ok else f"WhatsApp send failed: {error}")
+
+
+# ---------- WhatsApp Recipients & Daily Scheduler ----------
+# § WhatsApp Recipients & Daily Scheduler — a stored recipient list +
+# on/off toggle for the 12:00 PM scheduled job (app/scheduler.py) to send
+# the day's Urdu report to automatically, rather than the send-whatsapp
+# endpoint above staying manual-trigger-only forever. Kept in this same
+# file (not a separate router) since it's entirely report-scoped — never
+# a general-purpose WhatsApp feature.
+
+WHATSAPP_AUTO_SEND_SETTING_KEY = "whatsapp_auto_send_enabled"
+
+
+def send_report_to_recipient(
+    db: Session, report: models.GeneratedReport, recipient: models.WhatsAppRecipient,
+) -> tuple[bool, str | None]:
+    """The scheduler's per-recipient send — never raises (same guarantee
+    as send_report_whatsapp above), and always writes a WhatsAppSendLog
+    row so per-recipient delivery stays visible even though GeneratedReport.
+    whatsapp_status itself is a single scalar (meaningless once there's
+    more than one recipient). Deliberately NOT shared code with
+    send_report_whatsapp's manual single-send path above — that endpoint's
+    existing behavior (updating report.whatsapp_status/sent_at/error
+    directly) stays untouched; this is purely additive."""
+    if not os.path.exists(report.file_path):
+        ok, error = False, "Report file is no longer on disk"
+    else:
+        filename = f"Daily_Report_{report.business_date}.pdf"
+        ok, error = whatsapp.send_pdf(report.file_path, filename, report.business_date, to=recipient.phone_number)
+
+    db.add(models.WhatsAppSendLog(
+        report_id=report.id, recipient_id=recipient.id,
+        status="sent" if ok else "failed", error=None if ok else error,
+    ))
+    return ok, error
+
+
+@router.get("/whatsapp/recipients", response_model=list[schemas.WhatsAppRecipientOut])
+def list_whatsapp_recipients(db: Session = Depends(get_db)):
+    return db.query(models.WhatsAppRecipient).order_by(models.WhatsAppRecipient.created_at).all()
+
+
+@router.post("/whatsapp/recipients", response_model=schemas.WhatsAppRecipientOut, status_code=201)
+def create_whatsapp_recipient(payload: schemas.WhatsAppRecipientCreate, db: Session = Depends(get_db)):
+    if not payload.phone_number.strip():
+        raise HTTPException(400, "phone_number is required")
+    recipient = models.WhatsAppRecipient(phone_number=payload.phone_number.strip(), label=payload.label, active="active")
+    db.add(recipient)
+    db.commit()
+    db.refresh(recipient)
+    return recipient
+
+
+@router.patch("/whatsapp/recipients/{recipient_id}/deactivate", response_model=schemas.WhatsAppRecipientOut)
+def deactivate_whatsapp_recipient(recipient_id: UUID, db: Session = Depends(get_db)):
+    """Deactivate, never delete — a WhatsAppSendLog row's recipient_id
+    would otherwise dangle (§ WhatsAppSendLog docstring)."""
+    recipient = db.query(models.WhatsAppRecipient).get(recipient_id)
+    if not recipient:
+        raise HTTPException(404, "Recipient not found")
+    recipient.active = "inactive"
+    db.add(recipient)
+    db.commit()
+    db.refresh(recipient)
+    return recipient
+
+
+@router.patch("/whatsapp/recipients/{recipient_id}/activate", response_model=schemas.WhatsAppRecipientOut)
+def activate_whatsapp_recipient(recipient_id: UUID, db: Session = Depends(get_db)):
+    recipient = db.query(models.WhatsAppRecipient).get(recipient_id)
+    if not recipient:
+        raise HTTPException(404, "Recipient not found")
+    recipient.active = "active"
+    db.add(recipient)
+    db.commit()
+    db.refresh(recipient)
+    return recipient
+
+
+@router.get("/whatsapp/auto-send", response_model=schemas.WhatsAppAutoSendSettingOut)
+def get_whatsapp_auto_send(db: Session = Depends(get_db)):
+    row = db.query(models.AppSetting).get(WHATSAPP_AUTO_SEND_SETTING_KEY)
+    return schemas.WhatsAppAutoSendSettingOut(enabled=bool(row and row.value == "true"))
+
+
+@router.put("/whatsapp/auto-send", response_model=schemas.WhatsAppAutoSendSettingOut)
+def set_whatsapp_auto_send(payload: schemas.WhatsAppAutoSendSettingOut, db: Session = Depends(get_db)):
+    row = db.query(models.AppSetting).get(WHATSAPP_AUTO_SEND_SETTING_KEY)
+    value = "true" if payload.enabled else "false"
+    if row:
+        row.value = value
+    else:
+        row = models.AppSetting(key=WHATSAPP_AUTO_SEND_SETTING_KEY, value=value)
+    db.add(row)
+    db.commit()
+    return schemas.WhatsAppAutoSendSettingOut(enabled=payload.enabled)
+
+
+@router.get("/{report_id}/whatsapp-log", response_model=list[schemas.WhatsAppSendLogOut])
+def get_report_whatsapp_log(report_id: UUID, db: Session = Depends(get_db)):
+    logs = (
+        db.query(models.WhatsAppSendLog)
+        .filter(models.WhatsAppSendLog.report_id == report_id)
+        .order_by(models.WhatsAppSendLog.sent_at.desc())
+        .all()
+    )
+    recipients = {r.id: r for r in db.query(models.WhatsAppRecipient).all()}
+    return [
+        schemas.WhatsAppSendLogOut(
+            id=l.id, report_id=l.report_id, recipient_id=l.recipient_id, status=l.status,
+            sent_at=l.sent_at, error=l.error,
+            recipient_label=recipients[l.recipient_id].label if l.recipient_id in recipients else None,
+            recipient_phone_number=recipients[l.recipient_id].phone_number if l.recipient_id in recipients else None,
+        )
+        for l in logs
+    ]

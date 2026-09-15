@@ -37,7 +37,7 @@ from xml.sax.saxutils import escape
 import arabic_reshaper
 from bidi.algorithm import get_display
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
@@ -46,7 +46,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_RIGHT
 
 from app import schemas
-from app.reporting.invoice_pdf import BUSINESS
+from app.reporting.invoice_pdf import BUSINESS, _compact_header_block, _styles as _invoice_styles
 
 FONTS_DIR = os.path.join(os.path.dirname(__file__), "fonts")
 URDU_FONT = "NotoNaskhArabic"
@@ -241,6 +241,37 @@ def _fmt_amount(value) -> str:
     return f"{Decimal(value):,.2f}"
 
 
+def _compact_tile_row(tiles: list[tuple], total_width) -> Table:
+    """§ WhatsApp PDF Redesign — Visual-Language-Match: visual mirror of
+    invoice_pdf.py's _compact_summary_row (same box/background/padding, so
+    the Daily Report's summary reads as one system with the Shop
+    Statement), but taking a pre-built label Paragraph per tile instead of
+    a raw string — that shared function always wraps a raw string in its
+    own plain-Helvetica style, which would render an Urdu label as missing
+    glyphs (no <font face="..."> tag applied). Kept local to this file
+    rather than generalizing the shared one, since no other caller needs
+    bilingual tile labels."""
+    n = len(tiles)
+    col_width = total_width / n
+    value_style = ParagraphStyle("DailyTileValue", fontName="Helvetica-Bold", fontSize=8.5, textColor=colors.HexColor("#1A2B33"))
+    cells = [
+        [label_para, Paragraph(f'<font color="{color}">{value}</font>', value_style)]
+        for label_para, value, color in tiles
+    ]
+    t = Table([cells], colWidths=[col_width] * n)
+    t.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#C5C1B4")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#C5C1B4")),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FAFAF8")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    return t
+
+
 def render_daily_report_pdf(
     data: "schemas.DailyReportDataOut", generated_by: str, generated_at: str, language: str = "en",
 ) -> bytes:
@@ -265,10 +296,14 @@ def render_daily_report_pdf(
     if is_ur:
         _ensure_urdu_font_registered()
 
+    # § WhatsApp PDF Redesign — Visual-Language-Match: landscape, same as
+    # the Shop Statement, so the compact tile-row summary below has room
+    # to hold all 11 metrics on one line instead of a tall 4-column grid.
+    usable_width = landscape(A4)[0] - 20 * mm  # 297mm - 10mm each side = 277mm
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        topMargin=16 * mm, bottomMargin=16 * mm, leftMargin=14 * mm, rightMargin=14 * mm,
+        buf, pagesize=landscape(A4),
+        topMargin=8 * mm, bottomMargin=8 * mm, leftMargin=10 * mm, rightMargin=10 * mm,
     )
     styles = getSampleStyleSheet()
 
@@ -277,21 +312,22 @@ def render_daily_report_pdf(
     # a single Paragraph can freely mix "DOWA Gas Agency" (Latin) with a
     # shaped Urdu label (see module docstring point 3).
     rtl = TA_RIGHT if is_ur else styles["Title"].alignment
-    title_style = ParagraphStyle("ReportTitle", parent=styles["Title"], fontSize=16, spaceAfter=2, alignment=rtl)
-    meta_style = ParagraphStyle("ReportMeta", parent=styles["Normal"], fontSize=9, textColor=colors.grey, alignment=rtl)
-    section_style = ParagraphStyle("SectionHeading", parent=styles["Heading2"], fontSize=12, spaceBefore=12, spaceAfter=4, alignment=rtl)
+    title_style = ParagraphStyle("ReportTitle", parent=styles["Title"], fontSize=14, spaceAfter=2, alignment=rtl)
+    meta_style = ParagraphStyle("ReportMeta", parent=styles["Normal"], fontSize=8.5, textColor=colors.grey, alignment=rtl)
+    section_style = ParagraphStyle("SectionHeading", parent=styles["Heading2"], fontSize=11, spaceBefore=8, spaceAfter=3, alignment=rtl)
     empty_style = ParagraphStyle("EmptySection", parent=styles["Normal"], fontSize=9, textColor=colors.grey, alignment=rtl)
     cell_style = ParagraphStyle("Cell", parent=styles["Normal"], fontSize=8)
 
-    title_text = f"DOWA Gas Agency — {_urdu_span('روزانہ رپورٹ') if is_ur else 'Daily Report'}"
-    # § System-Wide PDF Statement Header Configuration — company address/
-    # phone/NTN, always plain Latin text regardless of report language (a
-    # legal/contact detail, not UI copy), so it never goes through
-    # _urdu_span/_mixed_line. Sourced from the single BUSINESS dict in
-    # invoice_pdf.py so every PDF in the system agrees, not just this one.
-    company_info_text = (
-        ", ".join(BUSINESS["address_lines"]) + "  |  " + BUSINESS["phone"] + "  |  " + BUSINESS["ntn"]
-    )
+    bold_font = URDU_FONT_BOLD if is_ur else "Helvetica-Bold"
+    # § WhatsApp PDF Redesign — Visual-Language-Match: real logo/address
+    # header block, same one the Shop Statement uses (invoice_pdf.py's
+    # _compact_header_block) — company info is always plain Latin
+    # regardless of report language, so it needs no Urdu-shaping at all,
+    # unlike everything else in this function.
+    invoice_styles = _invoice_styles()
+    story = list(_compact_header_block(invoice_styles, usable_width))
+
+    title_text = _urdu_span('روزانہ رپورٹ') if is_ur else "Daily Report"
     # Both header lines below are built as ONE logical string in natural
     # reading order — label(s) then value(s), left pair before right pair,
     # exactly as read aloud — and, in Urdu, run through _mixed_line() ONCE
@@ -319,46 +355,43 @@ def render_daily_report_pdf(
         )
     )
 
-    story = [
+    story += [
         Paragraph(title_text, title_style),
-        Paragraph(company_info_text, meta_style),
         Paragraph(business_date_text, meta_style),
         Paragraph(generated_text, meta_style),
-        Spacer(1, 8 * mm),
+        Spacer(1, 2 * mm),
     ]
 
-    bold_font = URDU_FONT_BOLD if is_ur else "Helvetica-Bold"
-    label_style = ParagraphStyle("SLabel", fontName=bold_font, fontSize=9, alignment=TA_RIGHT if is_ur else 0)
+    tile_label_style = ParagraphStyle("DailyTileLabel", fontName=bold_font, fontSize=6, textColor=colors.HexColor("#64748B"), alignment=TA_RIGHT if is_ur else 0)
+
+    def tile_label(key: str) -> str:
+        """label(key), all-caps for English (matching every other compact
+        tile row's SHOUTY style) — never .upper()'d for Urdu, which would
+        uppercase the <font face="..."> tag label() already wrapped it in
+        and break the font lookup, not just the (case-less) Urdu text."""
+        return label(key).upper() if not is_ur else label(key)
 
     s = data.summary
-    summary_rows = [
-        [label("sales", bold=True), _fmt_amount(s.total_sales), label("purchases", bold=True), _fmt_amount(s.total_purchases)],
-        [label("delivery_charges", bold=True), _fmt_amount(s.total_delivery_charges), "", ""],
-        [label("customer_payments", bold=True), _fmt_amount(s.total_customer_payments), label("plant_payments", bold=True), _fmt_amount(s.total_plant_payments)],
-        [label("investments", bold=True), _fmt_amount(s.total_investments), label("expenses", bold=True), _fmt_amount(s.total_expenses)],
-        [label("owner_drawings", bold=True), _fmt_amount(s.total_owner_drawings), label("net_cash_movement", bold=True), _fmt_amount(s.net_cash_movement)],
-        [label("cylinders_out", bold=True), str(s.total_cylinders_out), label("cylinders_in", bold=True), str(s.total_cylinders_in)],
-    ]
-    # Labels (col 0/2) use the language-aware bold font (bare UI copy,
-    # never mixed with Latin data, so a Paragraph carries the <font> tag
-    # cleanly); values (col 1/3) are always plain Latin digits, so they
-    # stay on Helvetica as plain table-cell strings regardless of language.
-    summary_table = Table(
-        [[Paragraph(v, label_style) if i in (0, 2) else v for i, v in enumerate(row)] for row in summary_rows],
-        colWidths=[45 * mm, 40 * mm, 45 * mm, 40 * mm],
-    )
-    summary_table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
-        ("ALIGN", (3, 0), (3, -1), "RIGHT"),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F8FAFC")),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-    ]))
-    story.append(Paragraph(label("daily_summary"), section_style))
-    story.append(summary_table)
+    # § WhatsApp PDF Redesign — Visual-Language-Match: the old 4-column/
+    # 6-row bordered grid replaced with one compact tile row (same visual
+    # language as the Shop Statement's summary row) — all 11 metrics side
+    # by side instead of stacked, so the summary costs one short row
+    # instead of a page-eating block. Every figure is the exact same one
+    # the old grid showed, just re-laid-out.
+    story.append(_compact_tile_row([
+        (Paragraph(tile_label("sales"), tile_label_style), _fmt_amount(s.total_sales), "#0B2138"),
+        (Paragraph(tile_label("purchases"), tile_label_style), _fmt_amount(s.total_purchases), "#0B2138"),
+        (Paragraph(tile_label("delivery_charges"), tile_label_style), _fmt_amount(s.total_delivery_charges), "#0B2138"),
+        (Paragraph(tile_label("customer_payments"), tile_label_style), _fmt_amount(s.total_customer_payments), "#1E8A5F"),
+        (Paragraph(tile_label("plant_payments"), tile_label_style), _fmt_amount(s.total_plant_payments), "#9B4A4A"),
+        (Paragraph(tile_label("investments"), tile_label_style), _fmt_amount(s.total_investments), "#1E8A5F"),
+        (Paragraph(tile_label("expenses"), tile_label_style), _fmt_amount(s.total_expenses), "#9B4A4A"),
+        (Paragraph(tile_label("owner_drawings"), tile_label_style), _fmt_amount(s.total_owner_drawings), "#9B4A4A"),
+        (Paragraph(tile_label("net_cash_movement"), tile_label_style), _fmt_amount(s.net_cash_movement), "#0B2138"),
+        (Paragraph(tile_label("cylinders_out"), tile_label_style), str(s.total_cylinders_out), "#0B2138"),
+        (Paragraph(tile_label("cylinders_in"), tile_label_style), str(s.total_cylinders_in), "#0B2138"),
+    ], usable_width))
+    story.append(Spacer(1, 3 * mm))
 
     header = [
         header_cell("col_date"), header_cell("col_id"), header_cell("col_description"), header_cell("col_customer_plant"),
@@ -390,12 +423,19 @@ def render_daily_report_pdf(
                 r.approval_info or r.status,
                 _fmt_amount(r.amount),
             ])
-        table = Table(table_rows, colWidths=[16 * mm, 22 * mm, 45 * mm, 30 * mm, 20 * mm, 22 * mm, 22 * mm, 20 * mm], repeatRows=1)
+        # § WhatsApp PDF Redesign — Visual-Language-Match: teal header
+        # background + white text, same as the Shop Statement's per-page
+        # table header (invoice_pdf.py's _statement_table_chunk), replacing
+        # the old plain grey header — landscape's extra width also goes
+        # to wider Description/Customer-Plant columns instead of staying
+        # cramped at the old portrait widths.
+        table = Table(table_rows, colWidths=[18 * mm, 24 * mm, 65 * mm, 40 * mm, 25 * mm, 26 * mm, 24 * mm, 25 * mm], repeatRows=1)
         table.setStyle(TableStyle([
             ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
             ("FONTSIZE", (0, 0), (-1, -1), 8),
             ("FONTNAME", (0, 0), (-1, 0), bold_font),
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E2E8F0")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F8B8D")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
             ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CBD5E1")),
             ("ALIGN", (-1, 0), (-1, -1), "RIGHT"),
             ("ALIGN", (0, 0), (-1, 0), "RIGHT" if is_ur else "LEFT"),
@@ -404,6 +444,9 @@ def render_daily_report_pdf(
             ("TOPPADDING", (0, 0), (-1, -1), 3),
         ]))
         story.append(table)
+
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph(f"System-generated document — printed by {escape(generated_by)} on {escape(generated_at)}.", invoice_styles["compact_footer"]))
 
     doc.build(story)
     return buf.getvalue()

@@ -15,6 +15,7 @@ import { useTranslation } from "react-i18next";
 import { Field, inputClass, Button } from "./ui";
   import AmountInput from "./AmountInput";
   import SettlementDestinationFields, { SpecialAccount } from "./SettlementDestinationFields";
+  import { HomeExpenseLine, homeExpenseLinesValid, toHomeExpenseLinesPayload } from "./HomeExpenseLinesEditor";
   import { api, apiErrorMessage } from "@/lib/api";
   import { useAuth } from "@/lib/auth";
   import { todayLocalInput, pkr } from "@/lib/format";
@@ -119,9 +120,17 @@ export default function RecordShopSaleModal({
   // Expense category reversion), same ExpenseCategory list the main
   // Expenses page uses, including the system "Salary" category (which
   // requires picking an Employee — § Employee Salary Tracking).
+  // § Payment Only mode — still the legacy single-amount shape: that path
+  // posts through api.shops.customerPayments.create (a ShopCustomerPayment,
+  // not a ShopSale), which was never extended to support multi-line Home
+  // Expense (§ Multi-line Categorized Home Expense is Shop-Sale-scoped only).
   const [homeExpenseAmount, setHomeExpenseAmount] = useState("");
   const [homeExpenseCategoryId, setHomeExpenseCategoryId] = useState("");
   const [homeExpenseEmployeeId, setHomeExpenseEmployeeId] = useState("");
+  // § Multi-line Categorized Home Expense — Record Sale mode only (both
+  // the Walk-in and Named-Customer settlement sections below share this
+  // one array, exactly like they already shared homeExpenseAmount above).
+  const [homeExpenseLines, setHomeExpenseLines] = useState<HomeExpenseLine[]>([]);
   const [ownerDrawingsAmount, setOwnerDrawingsAmount] = useState("");
   const [destinationType, setDestinationType] = useState<DestinationType>("account");
   const [targetPlantId, setTargetPlantId] = useState("");
@@ -280,8 +289,14 @@ export default function RecordShopSaleModal({
     isSalaryCategorySelected(expenseCategories, homeExpenseCategoryId) &&
     !homeExpenseEmployeeId;
 
+  // § Multi-line Categorized Home Expense — Record Sale mode's own
+  // validation (an unfilled/blank line never blocks submission, same
+  // convention homeExpenseNeedsEmployee above already follows for the
+  // Payment Only path).
+  const homeExpenseLinesInvalid = !homeExpenseLinesValid(homeExpenseLines, expenseCategories);
+
   const canSubmit =
-    !homeExpenseNeedsEmployee &&
+    (formMode === "payment_only" ? !homeExpenseNeedsEmployee : !homeExpenseLinesInvalid) &&
     (formMode === "payment_only"
       ? !!supplyCustomerId && !!date && parseFloat(amountReceived) > 0
       : !!productId &&
@@ -364,9 +379,11 @@ export default function RecordShopSaleModal({
       // Include settlement fields if funds are collected
       if (effectiveCollectedAmount > 0) {
         payload.destination_type = destinationType;
-        payload.home_expense_amount = parseFloat(homeExpenseAmount) || 0;
-        payload.home_expense_category_id = homeExpenseCategoryId || undefined;
-        payload.home_expense_employee_id = homeExpenseEmployeeId || undefined;
+        // § Multi-line Categorized Home Expense — replaces the legacy
+        // single-amount fields entirely for Shop Sale (never sent
+        // alongside home_expense_lines; the backend ignores those scalars
+        // whenever this list is non-empty anyway — see _apply_shop_sale).
+        payload.home_expense_lines = toHomeExpenseLinesPayload(homeExpenseLines);
         payload.owner_drawings_amount = parseFloat(ownerDrawingsAmount) || 0;
 
         if (destinationType === "plant") {
@@ -810,6 +827,9 @@ export default function RecordShopSaleModal({
                   employees={employees}
                   homeExpenseEmployeeId={homeExpenseEmployeeId}
                   onHomeExpenseEmployeeIdChange={setHomeExpenseEmployeeId}
+                  homeExpenseLines={homeExpenseLines}
+                  onHomeExpenseLinesChange={setHomeExpenseLines}
+                  onExpenseCategoriesChange={setExpenseCategories}
                   ownerDrawingsAmount={ownerDrawingsAmount}
                   onOwnerDrawingsAmountChange={setOwnerDrawingsAmount}
                   destinationType={destinationType}
@@ -873,6 +893,9 @@ export default function RecordShopSaleModal({
                       employees={employees}
                       homeExpenseEmployeeId={homeExpenseEmployeeId}
                       onHomeExpenseEmployeeIdChange={setHomeExpenseEmployeeId}
+                      homeExpenseLines={homeExpenseLines}
+                      onHomeExpenseLinesChange={setHomeExpenseLines}
+                      onExpenseCategoriesChange={setExpenseCategories}
                       ownerDrawingsAmount={ownerDrawingsAmount}
                       onOwnerDrawingsAmountChange={setOwnerDrawingsAmount}
                       destinationType={destinationType}

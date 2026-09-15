@@ -668,7 +668,18 @@
     "noReportsYet": "No reports generated yet.",
     "colLanguage": "Language",
     "languageEn": "English",
-    "languageUr": "Urdu"
+    "languageUr": "Urdu",
+    "whatsappAutoSendTitle": "WhatsApp Auto-Send",
+    "whatsappAutoSendCaption": "Manage recipient numbers and turn on automatic daily sending right after the 12:00 PM report is generated.",
+    "whatsappAutoSendToggleLabel": "Toggle WhatsApp auto-send",
+    "recipientPhonePlaceholder": "Phone number",
+    "recipientLabelPlaceholder": "Label (optional)",
+    "addRecipient": "Add",
+    "deactivateRecipientTitle": "Remove recipient",
+    "activateRecipientTitle": "Re-add recipient",
+    "noRecipientsYet": "No recipients added yet.",
+    "noAutoSendLogYet": "No scheduled auto-send attempts for this report yet.",
+    "viewAutoSendLogTitle": "View auto-send log"
   },
   "dailyActivity": {
     "title": "One business date, every transaction",
@@ -942,6 +953,7 @@
     "amountPlaceholderShort": "Amount",
     "descriptionOptionalPlaceholder": "Description (optional)",
     "removeLineTitle": "Remove line",
+    "homeExpenseLinesTotal": "Total: {{amount}}",
     "addEmptyCylinderTitle": "Add Empty Cylinder — {{name}}",
     "cylinderSize": "Cylinder Size",
     "cylinderType": "Cylinder Type",

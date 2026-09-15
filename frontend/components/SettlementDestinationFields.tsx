@@ -3,6 +3,7 @@ import { Building2, Wallet } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Field, inputClass } from "@/components/ui";
 import AmountInput from "@/components/AmountInput";
+import HomeExpenseLinesEditor, { HomeExpenseLine, homeExpenseLinesTotal } from "@/components/HomeExpenseLinesEditor";
 import { pkr } from "@/lib/format";
 import type { Company, PaymentAccount, ExpenseCategory, DestinationType, Employee } from "@/lib/types";
 
@@ -41,6 +42,19 @@ type CommonProps = {
   onHomeExpenseAmountChange: (v: string) => void;
   ownerDrawingsAmount: string;
   onOwnerDrawingsAmountChange: (v: string) => void;
+
+  // § Multi-line Categorized Home Expense — when given, REPLACES the
+  // single Home Expense Amount + Category fields below with
+  // HomeExpenseLinesEditor's repeatable category+amount rows entirely;
+  // homeExpenseAmount/homeExpenseCatId above are then ignored for
+  // display (the caller still owns that state for backward compat, but
+  // this component stops reading it). Only RecordShopSaleModal/
+  // CorrectTransactionModal pass this — the other 4 consumers
+  // (Payment Receipt, Cylinder Return, Shop Cash Transfer, Shop
+  // Customer Payment) keep the single-field UI unchanged.
+  homeExpenseLines?: HomeExpenseLine[];
+  onHomeExpenseLinesChange?: (lines: HomeExpenseLine[]) => void;
+  onExpenseCategoriesChange?: (categories: ExpenseCategory[]) => void;
 
   destinationType: DestinationType;
   onDestinationTypeChange: (v: DestinationType) => void;
@@ -88,6 +102,7 @@ export default function SettlementDestinationFields({
   homeExpenseCatId, onHomeExpenseCatIdChange,
   expenseCategories,
   employees, homeExpenseEmployeeId, onHomeExpenseEmployeeIdChange,
+  homeExpenseLines, onHomeExpenseLinesChange, onExpenseCategoriesChange,
   ownerDrawingsAmount, onOwnerDrawingsAmountChange,
   destinationType, onDestinationTypeChange,
   targetPlantId, onTargetPlantIdChange,
@@ -95,7 +110,8 @@ export default function SettlementDestinationFields({
   accountId, onAccountIdChange,
 }: Props) {
   const { t } = useTranslation();
-  const homeExpense = parseFloat(homeExpenseAmount) || 0;
+  const useHomeExpenseLines = !!homeExpenseLines && !!onHomeExpenseLinesChange;
+  const homeExpense = useHomeExpenseLines ? homeExpenseLinesTotal(homeExpenseLines!) : (parseFloat(homeExpenseAmount) || 0);
   const ownerDrawings = parseFloat(ownerDrawingsAmount) || 0;
   const netRemaining = Math.max(0, grossAmount - homeExpense - ownerDrawings);
 
@@ -107,6 +123,18 @@ export default function SettlementDestinationFields({
       <div className="p-3.5 bg-paper rounded-lg border border-hairline space-y-3">
         <div className="font-mono text-[10px] text-steel uppercase font-bold tracking-wider">{t("modals.deductionsOptional")}</div>
 
+        {useHomeExpenseLines ? (
+          <div>
+            <div className="font-body text-[11px] text-steel mb-1.5">{t("modals.homeExpensePkr")}</div>
+            <HomeExpenseLinesEditor
+              lines={homeExpenseLines!}
+              onChange={onHomeExpenseLinesChange!}
+              categories={expenseCategories || []}
+              onCategoriesChange={onExpenseCategoriesChange || (() => {})}
+              employees={employees || []}
+            />
+          </div>
+        ) : (
         <div className="grid grid-cols-2 gap-2">
           <Field label={t("modals.homeExpensePkr")}>
             <AmountInput value={homeExpenseAmount} onChange={onHomeExpenseAmountChange} placeholder="0" className={inputClass} />
@@ -133,8 +161,9 @@ export default function SettlementDestinationFields({
             </Field>
           )}
         </div>
+        )}
 
-        {isSalarySelected && employees && onHomeExpenseEmployeeIdChange && (
+        {!useHomeExpenseLines && isSalarySelected && employees && onHomeExpenseEmployeeIdChange && (
           <Field label={t("expenses.employeeLabel")}>
             <select
               value={homeExpenseEmployeeId || ""}

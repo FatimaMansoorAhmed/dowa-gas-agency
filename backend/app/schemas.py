@@ -2166,6 +2166,39 @@ class SendWhatsAppOut(BaseModel):
     message: str
 
 
+# ---------- WhatsApp Recipients & Daily Scheduler ----------
+class WhatsAppRecipientCreate(BaseModel):
+    phone_number: str
+    label: Optional[str] = None
+
+
+class WhatsAppRecipientOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    phone_number: str
+    label: Optional[str] = None
+    active: str
+    created_at: datetime
+
+
+class WhatsAppSendLogOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    report_id: UUID
+    recipient_id: UUID
+    status: str
+    sent_at: datetime
+    error: Optional[str] = None
+    # Denormalized for display without a second lookup — resolved in the
+    # router from the already-joined recipient row, not a DB-level column.
+    recipient_label: Optional[str] = None
+    recipient_phone_number: Optional[str] = None
+
+
+class WhatsAppAutoSendSettingOut(BaseModel):
+    enabled: bool
+
+
 # ---------- Shop Management + Board Rate ----------
 class BoardRateCreate(BaseModel):
     effective_date: UtcDateTime
@@ -2218,6 +2251,19 @@ class ShopStockBatchCreate(BaseModel):
     notes: Optional[str] = None
 
 
+class ShopSaleHomeExpenseLineIn(BaseModel):
+    """One categorized Home Expense line within a Shop Sale's settlement
+    (§ Multi-line Categorized Home Expense) — see ShopSaleCreate.
+    home_expense_lines below."""
+    category_id: UUID
+    amount: Decimal
+    # Required whenever category_id is the system "Salary" category (§
+    # Employee Salary Tracking), enforced in routers/shops.py, same as the
+    # legacy home_expense_employee_id field below.
+    employee_id: Optional[UUID] = None
+    description: Optional[str] = None
+
+
 class ShopSaleCreate(BaseModel):
     date: UtcDateTime
     product_id: UUID
@@ -2265,6 +2311,13 @@ class ShopSaleCreate(BaseModel):
     home_expense_category_id: Optional[UUID] = None
     home_expense_description: Optional[str] = None
     home_expense_employee_id: Optional[UUID] = None
+    # § Multi-line Categorized Home Expense — when provided (non-empty),
+    # REPLACES the single home_expense_amount/category_id/employee_id
+    # fields above entirely: one ShopSaleHomeExpenseLine + one Expense row
+    # per entry, summed for the settlement net-amount math. Those scalar
+    # fields stay only for historical rows and are ignored server-side
+    # whenever this list is non-empty (see _apply_shop_sale).
+    home_expense_lines: Optional[list[ShopSaleHomeExpenseLineIn]] = None
     owner_drawings_amount: Decimal = Decimal("0")
     destination_type: Optional[Literal["plant", "account"]] = None
     target_plant_id: Optional[UUID] = None
@@ -2275,6 +2328,19 @@ class ShopSaleCorrect(ShopSaleCreate):
     for the convention this mirrors."""
     correction_reason: str
     corrected_by: str
+
+
+class ShopSaleHomeExpenseLineOut(BaseModel):
+    """Mirrors ShopSaleHomeExpenseLineIn — raw category_id/employee_id, not
+    resolved names, matching the existing settlement_home_expense_category_id
+    convention (the frontend already has categories/employees lists fetched
+    and resolves names client-side, e.g. resolveHomeExpenseLabel)."""
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    category_id: UUID
+    employee_id: Optional[UUID] = None
+    amount: Decimal
+    description: Optional[str] = None
 
 
 class ShopSaleOut(BaseModel):
@@ -2317,6 +2383,11 @@ class ShopSaleOut(BaseModel):
     settlement_home_expense_employee_id: Optional[UUID] = None
     settlement_home_expense_amount: Optional[Decimal] = None
     settlement_owner_drawings_amount: Optional[Decimal] = None
+    # § Multi-line Categorized Home Expense — empty for a sale created
+    # before this table existed (or one whose Home Expense used the
+    # legacy single-amount path); non-empty replaces the settlement_home_
+    # expense_* scalars above as the source of truth for that sale.
+    home_expense_lines: list[ShopSaleHomeExpenseLineOut] = []
 
 
 class ShopCashTransferCreate(BaseModel):
@@ -2667,6 +2738,11 @@ class ShopBusinessLedgerRow(BaseModel):
     # much of it was tax. Mirrors ShopTransactionRow.gst_rate/gst_amount.
     gst_rate: Optional[Decimal] = None
     gst_amount: Optional[Decimal] = None
+    # § Multi-line Categorized Home Expense — populated only for kind in
+    # ("cash_sale", "credit_sale") when that ShopSale used the multi-line
+    # path; empty otherwise (settlement_home_expense_* above still carries
+    # the legacy single-amount shape for older rows).
+    home_expense_lines: list[ShopSaleHomeExpenseLineOut] = []
     entered_by: str
     status: str
 
@@ -2769,6 +2845,9 @@ class ShopTransactionRow(BaseModel):
     settlement_home_expense_employee_id: Optional[UUID] = None
     settlement_home_expense_amount: Optional[Decimal] = None
     settlement_owner_drawings_amount: Optional[Decimal] = None
+    # § Multi-line Categorized Home Expense — populated only for
+    # kind=="shop_sale" when that sale used the multi-line path.
+    home_expense_lines: list[ShopSaleHomeExpenseLineOut] = []
     entered_by: str
     status: str
     correctable: bool = False

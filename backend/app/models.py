@@ -1052,6 +1052,43 @@ class GeneratedReport(Base):
     whatsapp_error = Column(String, nullable=True)
 
 
+class WhatsAppRecipient(Base):
+    """A phone number that scheduled Daily Reports auto-send to (§ WhatsApp
+    Recipients & Daily Scheduler) — add/remove list, managed on the
+    Reports page. `active` lets a number be paused without losing its
+    history (deleting it would orphan any WhatsAppSendLog rows pointing at
+    it); the scheduler only ever sends to active rows."""
+    __tablename__ = "whatsapp_recipients"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    phone_number = Column(String, nullable=False)  # E.164-ish, whatever whatsapp.py's Graph API call expects
+    label = Column(String, nullable=True)  # e.g. "Owner", "Accountant" — display only
+    active = Column(String, nullable=False, default="active")  # active | inactive — same convention as ExpenseCategory/Product/PaymentAccount
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class WhatsAppSendLog(Base):
+    """One send attempt of one GeneratedReport to one WhatsAppRecipient (§
+    WhatsApp Recipients & Daily Scheduler) — the per-recipient trail
+    GeneratedReport.whatsapp_status can't provide on its own (that column
+    is a single scalar per report, meaningless once there's more than one
+    recipient: "sent to 3 of 4, failed for 1" has nowhere to live there).
+    One row per (report, recipient) attempt; a retry inserts a NEW row
+    rather than overwriting the old one, same "keep full history" rule
+    GeneratedReport itself already follows."""
+    __tablename__ = "whatsapp_send_logs"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    report_id = Column(GUID(), ForeignKey("generated_reports.id"), nullable=False)
+    recipient_id = Column(GUID(), ForeignKey("whatsapp_recipients.id"), nullable=False)
+    status = Column(String, nullable=False)  # "sent" | "failed"
+    sent_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    error = Column(String, nullable=True)
+
+    report = relationship("GeneratedReport")
+    recipient = relationship("WhatsAppRecipient")
+
+
 class BoardRate(Base):
     """The single, system-wide official daily rate/kg for shop retail
     sales — a real Pakistani LPG-trade concept, deliberately NOT per-plant
@@ -1276,6 +1313,38 @@ class ShopSale(Base):
         "Company",
         foreign_keys=[settlement_target_plant_id]
     )
+    home_expense_lines = relationship(
+        "ShopSaleHomeExpenseLine", back_populates="shop_sale", cascade="all, delete-orphan"
+    )
+
+
+class ShopSaleHomeExpenseLine(Base):
+    """One categorized Home Expense line within a Shop Sale's settlement
+    (§ Multi-line Categorized Home Expense) — the mirror of ShopExpenseLine/
+    ShopExpenseTransaction, but for the Home Expense deduction INSIDE a
+    Shop Sale's settlement routing rather than a standalone expense entry.
+    ShopSale.settlement_home_expense_amount/category_id/employee_id/
+    description stay on the parent row read-only, for historical sales
+    created before this table existed; a sale WITH rows here is a
+    multi-line sale and those legacy scalar columns are left null on it.
+    Each line also has its own matching Expense row (account_id=None, same
+    bypass pattern every other Home Expense deduction uses), created
+    alongside this one in _apply_shop_sale — this table is the structured/
+    categorized record, the Expense row is what P&L/category totals read."""
+    __tablename__ = "shop_sale_home_expense_lines"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    shop_sale_id = Column(GUID(), ForeignKey("shop_sales.id"), nullable=False)
+    category_id = Column(GUID(), ForeignKey("expense_categories.id"), nullable=False)
+    # Required whenever category is the system "Salary" category (§ Employee
+    # Salary Tracking) — same convention as ShopExpenseLine.employee_id.
+    employee_id = Column(GUID(), ForeignKey("employees.id"), nullable=True)
+    amount = Column(Numeric(14, 2), nullable=False)
+    description = Column(String, nullable=True)
+
+    shop_sale = relationship("ShopSale", back_populates="home_expense_lines")
+    category = relationship("ExpenseCategory")
+    employee = relationship("Employee")
 
 
 class ShopCashTransfer(Base):

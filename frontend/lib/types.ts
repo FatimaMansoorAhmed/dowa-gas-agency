@@ -612,6 +612,26 @@ export type GeneratedReport = {
 
 export type SendWhatsAppResult = { report: GeneratedReport; message: string };
 
+// § WhatsApp Recipients & Daily Scheduler
+export type WhatsAppRecipient = {
+  id: string;
+  phone_number: string;
+  label: string | null;
+  active: "active" | "inactive";
+  created_at: string;
+};
+
+export type WhatsAppSendLog = {
+  id: string;
+  report_id: string;
+  recipient_id: string;
+  status: "sent" | "failed";
+  sent_at: string;
+  error: string | null;
+  recipient_label: string | null;
+  recipient_phone_number: string | null;
+};
+
 /* --- Shop Management + Board Rate --- */
 
 export type BoardRate = {
@@ -646,6 +666,18 @@ export type ShopStockBatchCreate = {
   product_id: string;
   quantity: number;
   notes?: string;
+};
+
+// § Multi-line Categorized Home Expense — one categorized deduction line
+// within a Shop Sale's settlement. Raw category_id/employee_id, resolved
+// to names client-side the same way settlement_home_expense_category_id
+// already is (see resolveHomeExpenseLabel in app/shops/[id]/page.tsx).
+export type ShopSaleHomeExpenseLine = {
+  id: string;
+  category_id: string;
+  employee_id: string | null;
+  amount: string;
+  description: string | null;
 };
 
 export type ShopSale = {
@@ -688,6 +720,7 @@ export type ShopSale = {
   settlement_home_expense_employee_id: string | null;
   settlement_home_expense_amount: string | null;
   settlement_owner_drawings_amount: string | null;
+  home_expense_lines: ShopSaleHomeExpenseLine[];
 } & CorrectionFields;
 
 export type ShopListRow = {
@@ -761,6 +794,9 @@ export type ShopTransactionRow = {
   settlement_home_expense_employee_id: string | null;
   settlement_home_expense_amount: string | null;
   settlement_owner_drawings_amount: string | null;
+  // § Multi-line Categorized Home Expense — populated only for
+  // kind=="shop_sale" when that sale used the multi-line path.
+  home_expense_lines: ShopSaleHomeExpenseLine[];
   entered_by: string;
   status: string;
   correctable: boolean;
@@ -997,6 +1033,9 @@ export type ShopBusinessLedgerRow = {
   // "credit_sale"); amount above is already grand_total-inclusive.
   gst_rate: string | null;
   gst_amount: string | null;
+  // § Multi-line Categorized Home Expense — populated only for kind in
+  // ("cash_sale", "credit_sale") when that ShopSale used the multi-line path.
+  home_expense_lines: ShopSaleHomeExpenseLine[];
   entered_by: string;
   status: string;
 };

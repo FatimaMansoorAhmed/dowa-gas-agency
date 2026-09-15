@@ -676,7 +676,23 @@ def approve_unified_sale_sale(
     is approved completely independently (§ Independent Sale/Payment
     Approval). Guarded by sale_status so calling this twice never re-posts.
     A Payment-Only batch (company_id IS NULL) has nothing meaningful to
-    approve here separately — see approve_payment_only instead."""
+    approve here separately — see approve_payment_only instead.
+
+    § Zero-Payment Sale Auto-Approval — when the batch collected nothing
+    at all (total_credit_received <= 0), the payment side genuinely has
+    nothing to post: the bypass_sum <= total_credit_received validation
+    enforced at create/edit time (see _resolve_settlement above) means
+    home_expense_amount/owner_drawings_amount must also be 0 whenever
+    total_credit_received is 0, so net_plant_payment is 0 and no Payment/
+    Expense/OwnerDrawings child row exists to activate either. Rather than
+    forcing a separate, meaningless "Approve Payment" click for a batch
+    with nothing to approve there, this call also approves payment_status
+    in the SAME transaction — the frontend correspondingly never renders
+    a separate Approve Payment action for this case (see
+    unified-sale/page.tsx). Any batch with a nonzero total_credit_received
+    is completely untouched by this: payment_status stays "pending" and
+    still requires its own separate approve-payment call, exactly as
+    before this change."""
     batch = db.query(models.UnifiedSaleBatch).get(unified_sale_id)
     if not batch:
         raise HTTPException(404, "Unified sale not found")
@@ -685,6 +701,8 @@ def approve_unified_sale_sale(
 
     try:
         _do_approve_sale(db, batch, sales, purchases, by)
+        if _dec(batch.total_credit_received) <= 0 and batch.payment_status == "pending":
+            _do_approve_payment(db, batch, payment, expense, owner_drawing, by, None)
         db.commit()
     except HTTPException:
         db.rollback()

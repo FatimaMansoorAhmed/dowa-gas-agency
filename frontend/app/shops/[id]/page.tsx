@@ -178,6 +178,21 @@ function resolveHomeExpenseLabel(
   return row.settlement_home_expense_description || t("shopDetail.homeExpense");
 }
 
+// § Multi-line Categorized Home Expense — per-line mirror of
+// resolveHomeExpenseLabel above, for one ShopSaleHomeExpenseLine rather
+// than a row's single legacy settlement_home_expense_* scalars.
+function resolveHomeExpenseLineLabel(
+  line: { category_id: string; employee_id: string | null; description: string | null },
+  categories: ExpenseCategory[],
+  employees: Employee[],
+  t: (key: string, options?: Record<string, any>) => string
+): string {
+  const cat = categories.find((c) => c.id === line.category_id);
+  const emp = line.employee_id ? employees.find((e) => e.id === line.employee_id) : undefined;
+  const catName = cat?.name || line.description || t("shopDetail.homeExpense");
+  return emp ? `${catName} · ${emp.name}` : catName;
+}
+
 function renderShopSaleSettlementBreakdown(
   row: ShopTransactionRow | ShopBusinessLedgerRow,
   companies: Company[],
@@ -186,7 +201,14 @@ function renderShopSaleSettlementBreakdown(
   categories: ExpenseCategory[] = [],
   employees: Employee[] = []
 ) {
-  const homeExpenseAmount = Number(row.settlement_home_expense_amount || "0");
+  // § Multi-line Categorized Home Expense — a row with home_expense_lines
+  // uses that as the source of truth (one chip per line below); a legacy
+  // row without lines still reads the single settlement_home_expense_amount
+  // scalar exactly as before.
+  const homeExpenseLines = row.home_expense_lines || [];
+  const homeExpenseAmount = homeExpenseLines.length > 0
+    ? homeExpenseLines.reduce((sum, l) => sum + Number(l.amount), 0)
+    : Number(row.settlement_home_expense_amount || "0");
   const ownerDrawingsAmount = Number(row.settlement_owner_drawings_amount || "0");
   // Math.abs on the cash_impact branch: existing callers (cash_sale/
   // credit_sale) always have a non-negative cash_impact (money INTO Shop
@@ -210,7 +232,13 @@ function renderShopSaleSettlementBreakdown(
   const netSettlementAmount = amountReceived - homeExpenseAmount - ownerDrawingsAmount;
   const parts: Array<{ label: string; value: string }> = [];
 
-  if (homeExpenseAmount > 0) {
+  if (homeExpenseLines.length > 0) {
+    for (const line of homeExpenseLines) {
+      const amt = Number(line.amount);
+      if (amt <= 0) continue;
+      parts.push({ label: resolveHomeExpenseLineLabel(line, categories, employees, t), value: pkr(amt) });
+    }
+  } else if (homeExpenseAmount > 0) {
     parts.push({
       label: resolveHomeExpenseLabel(row, categories, employees, t),
       value: pkr(homeExpenseAmount),
@@ -269,13 +297,22 @@ function SettlementBreakdownCell({
   const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
 
-  const homeExpenseAmount = Number(row.settlement_home_expense_amount || "0");
+  const homeExpenseLines = row.home_expense_lines || [];
+  const homeExpenseAmount = homeExpenseLines.length > 0
+    ? homeExpenseLines.reduce((sum, l) => sum + Number(l.amount), 0)
+    : Number(row.settlement_home_expense_amount || "0");
   const ownerDrawingsAmount = Number(row.settlement_owner_drawings_amount || "0");
   const amountReceived = Math.abs(Number(row.cash_impact));
   const netSettlementAmount = amountReceived - homeExpenseAmount - ownerDrawingsAmount;
 
   const parts: Array<{ label: string; value: string }> = [];
-  if (homeExpenseAmount > 0) {
+  if (homeExpenseLines.length > 0) {
+    for (const line of homeExpenseLines) {
+      const amt = Number(line.amount);
+      if (amt <= 0) continue;
+      parts.push({ label: resolveHomeExpenseLineLabel(line, categories, employees, t), value: pkr(amt) });
+    }
+  } else if (homeExpenseAmount > 0) {
     parts.push({ label: resolveHomeExpenseLabel(row, categories, employees, t), value: pkr(homeExpenseAmount) });
   }
   if (ownerDrawingsAmount > 0) {

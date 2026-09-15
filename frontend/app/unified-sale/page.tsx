@@ -690,6 +690,14 @@ function UnifiedSaleBody() {
   // plant, no items. The discriminator the create endpoint leaves behind.
   const isPaymentOnlyBatch = (r: UnifiedSaleBatch) => r.company_id == null;
 
+  // § Zero-Payment Sale Auto-Approval — a real (non-Payment-Only) sale
+  // that collected nothing at all has no separate payment action to take:
+  // the backend auto-approves payment_status the moment Approve Sale is
+  // clicked (routers/unified_sale.py's approve_unified_sale_sale), since
+  // there's genuinely nothing to post. Never true for a Payment-Only
+  // batch — its total_credit_received IS the payment.
+  const hasZeroPayment = (r: UnifiedSaleBatch) => !isPaymentOnlyBatch(r) && Number(r.total_credit_received || 0) <= 0;
+
   // Sale/Load and Plant Payment/Settlement are independent — a batch shows
   // up in one, both, or neither of these two queues depending on which
   // side(s) are still pending. A Payment-Only batch is excluded from the
@@ -700,7 +708,10 @@ function UnifiedSaleBody() {
     () => recent.filter((r) => r.sale_status === "pending" && !isPaymentOnlyBatch(r)),
     [recent]
   );
-  const paymentPendingOrders = useMemo(() => recent.filter((r) => r.payment_status === "pending"), [recent]);
+  const paymentPendingOrders = useMemo(
+    () => recent.filter((r) => r.payment_status === "pending" && !hasZeroPayment(r)),
+    [recent]
+  );
 
   // § Bug Fix — Approved Payments destination display. A Payment's own
   // account_id is only meaningful for a plain quick-pay row — for a
@@ -1378,7 +1389,7 @@ function UnifiedSaleBody() {
                           <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approveSale")}
                         </Button>
                       )}
-                      {lastResult.payment_status === "pending" && (
+                      {lastResult.payment_status === "pending" && !hasZeroPayment(lastResult) && (
                         <Button variant="teal" onClick={() => handleApprovePayment(lastResult.id)} disabled={actionBusyId === lastResult.id}>
                           <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approvePayment")}
                         </Button>
@@ -2029,7 +2040,7 @@ function UnifiedSaleBody() {
                               <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approveSale")}
                             </Button>
                           )}
-                          {selectedTransaction.payment_status === "pending" && (
+                          {selectedTransaction.payment_status === "pending" && !hasZeroPayment(selectedTransaction) && (
                             <Button variant="teal" onClick={() => handleApprovePayment(selectedTransaction.id)} disabled={actionBusyId === selectedTransaction.id}>
                               <ThumbsUp size={13} className="mr-1" /> {t("unifiedSale.approvePayment")}
                             </Button>

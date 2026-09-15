@@ -111,6 +111,7 @@ import type {
   CompanyLedgerSummary, PlantLedgerSummaryRow, CylinderTransaction, CylinderBalance, OwnerDrawing, UnifiedSaleBatch, UnifiedSaleResult, DestinationType,
   AccountType, AccountTransferResult, CylinderTransactionCreate, CustomerCombinedLedger, CylinderReturn,
   OwnerCapital, OwnerCapitalDestination, DailyReportData, GeneratedReport, SendWhatsAppResult,
+  WhatsAppRecipient, WhatsAppSendLog,
   BoardRate, ShopListRow, ShopDetailOut, ShopSale, ShopStockBatch, ShopStockBatchCreate,
   ShopSupplyCustomer, ShopSupplyCustomerLedgerOut, ShopCustomerPayment, ShopExpenseTransaction, ShopBusinessLedgerOut,
   ShopCashTransfer, ShopCashTransferCreate,
@@ -637,6 +638,20 @@ export const api = {
       request<SendWhatsAppResult>(`/reports/${id}/send-whatsapp${to ? `?to=${encodeURIComponent(to)}` : ""}`, {
         method: "POST",
       }),
+    // § WhatsApp Recipients & Daily Scheduler
+    whatsappRecipients: {
+      list: () => request<WhatsAppRecipient[]>("/reports/whatsapp/recipients"),
+      create: (payload: { phone_number: string; label?: string }) =>
+        request<WhatsAppRecipient>("/reports/whatsapp/recipients", { method: "POST", body: JSON.stringify(payload) }),
+      deactivate: (id: string) => request<WhatsAppRecipient>(`/reports/whatsapp/recipients/${id}/deactivate`, { method: "PATCH" }),
+      activate: (id: string) => request<WhatsAppRecipient>(`/reports/whatsapp/recipients/${id}/activate`, { method: "PATCH" }),
+    },
+    whatsappAutoSend: {
+      get: () => request<{ enabled: boolean }>("/reports/whatsapp/auto-send"),
+      set: (enabled: boolean) =>
+        request<{ enabled: boolean }>("/reports/whatsapp/auto-send", { method: "PUT", body: JSON.stringify({ enabled }) }),
+    },
+    whatsappLog: (reportId: string) => request<WhatsAppSendLog[]>(`/reports/${reportId}/whatsapp-log`),
   },
   // Board Rate history — the single system-wide daily rate/kg Shop Sales
   // are priced from (§ Shop Management, distinct from RateEntry above,
@@ -698,6 +713,14 @@ export const api = {
       // from 0 up to the sale total for a partial payment.
       amount_received?: number; destination_account_id?: string;
       notes?: string; entered_by: string;
+      // Settlement routing (sent alongside destination_type when funds
+      // were collected) — § Multi-line Categorized Home Expense:
+      // home_expense_lines REPLACES home_expense_amount/category_id/
+      // employee_id entirely when non-empty.
+      destination_type?: "plant" | "account"; target_plant_id?: string; account_id?: string;
+      home_expense_amount?: number; home_expense_category_id?: string; home_expense_employee_id?: string;
+      home_expense_lines?: { category_id: string; amount: number; employee_id?: string; description?: string }[];
+      owner_drawings_amount?: number;
     }) => request<ShopSale>(`/shops/${shopId}/sales`, { method: "POST", body: JSON.stringify(payload) }),
     cancelSale: (saleId: string, by: string) =>
       request<ShopSale>(`/shops/sales/${saleId}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
@@ -710,6 +733,10 @@ export const api = {
       amount_received?: number; destination_account_id?: string;
       notes?: string; entered_by: string;
       correction_reason: string; corrected_by: string;
+      destination_type?: "plant" | "account"; target_plant_id?: string; account_id?: string;
+      home_expense_amount?: number; home_expense_category_id?: string; home_expense_employee_id?: string;
+      home_expense_lines?: { category_id: string; amount: number; employee_id?: string; description?: string }[];
+      owner_drawings_amount?: number;
     }) => request<ShopSale>(`/shops/sales/${saleId}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
     saleInvoiceUrl: (saleId: string) => `${BASE}/shops/sales/${saleId}/invoice`,
     // Full-activity-log Shop Statement PDF (§ Shop Statement) — mirrors

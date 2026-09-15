@@ -666,7 +666,18 @@
     "noReportsYet": "ابھی تک کوئی رپورٹ تیار نہیں ہوئی۔",
     "colLanguage": "زبان",
     "languageEn": "انگریزی",
-    "languageUr": "اردو"
+    "languageUr": "اردو",
+    "whatsappAutoSendTitle": "واٹس ایپ خودکار ارسال",
+    "whatsappAutoSendCaption": "وصول کنندگان کے نمبر منظم کریں اور 12:00 PM کی رپورٹ تیار ہونے کے فوراً بعد خودکار روزانہ ارسال آن کریں۔",
+    "whatsappAutoSendToggleLabel": "واٹس ایپ خودکار ارسال آن/آف کریں",
+    "recipientPhonePlaceholder": "فون نمبر",
+    "recipientLabelPlaceholder": "لیبل (اختیاری)",
+    "addRecipient": "شامل کریں",
+    "deactivateRecipientTitle": "وصول کنندہ ہٹائیں",
+    "activateRecipientTitle": "وصول کنندہ دوبارہ شامل کریں",
+    "noRecipientsYet": "ابھی تک کوئی وصول کنندہ شامل نہیں ہوا۔",
+    "noAutoSendLogYet": "اس رپورٹ کے لیے ابھی تک کوئی خودکار ارسال نہیں ہوا۔",
+    "viewAutoSendLogTitle": "خودکار ارسال لاگ دیکھیں"
   },
   "dailyActivity": {
     "title": "ایک کاروباری تاریخ، ہر ٹرانزیکشن",
@@ -940,6 +951,7 @@
     "amountPlaceholderShort": "رقم",
     "descriptionOptionalPlaceholder": "تفصیل (اختیاری)",
     "removeLineTitle": "لائن ہٹائیں",
+    "homeExpenseLinesTotal": "کل: {{amount}}",
     "addEmptyCylinderTitle": "خالی سلنڈر شامل کریں — {{name}}",
     "cylinderSize": "سلنڈر سائز",
     "cylinderType": "سلنڈر کی قسم",

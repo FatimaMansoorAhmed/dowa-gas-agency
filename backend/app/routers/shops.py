@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.database import get_db
 from app import models, schemas
@@ -631,16 +631,35 @@ def _apply_shop_sale(db: Session, shop: models.Customer, payload: schemas.ShopSa
     settlement_account_row = None
     settlement_net_amount = Decimal("0")
 
+    # § Multi-line Categorized Home Expense — when home_expense_lines is
+    # given (non-empty), it REPLACES the legacy single home_expense_amount/
+    # category_id/employee_id fields entirely for this sale's math; those
+    # scalars stay 0/None below whenever lines are used. home_expense_total
+    # is what every downstream calc (bypass_sum, settlement_net_amount)
+    # uses instead of payload.home_expense_amount directly, so both paths
+    # share the exact same math from here on.
+    home_expense_lines = payload.home_expense_lines or []
+    use_home_expense_lines = bool(home_expense_lines)
+    home_expense_total = (
+        sum((l.amount for l in home_expense_lines), Decimal("0")) if use_home_expense_lines
+        else payload.home_expense_amount
+    )
+
     if use_settlement_routing:
-        bypass_sum = payload.home_expense_amount + payload.owner_drawings_amount
+        bypass_sum = home_expense_total + payload.owner_drawings_amount
         if bypass_sum > amount_received + Decimal("0.01"):
             raise HTTPException(400, "Home expense + owner drawings exceeds the amount collected")
         # Employee Salary Tracking (§ Employee Salary Tracking) — required
-        # whenever the Home Expense category is the system "Salary"
-        # category, same as every other Salary-entry surface.
-        if payload.home_expense_amount > 0 and is_salary_category(db, payload.home_expense_category_id) and not payload.home_expense_employee_id:
+        # whenever a Home Expense category is the system "Salary" category,
+        # same as every other Salary-entry surface. Checked per-line when
+        # multi-line; the single legacy field otherwise.
+        if use_home_expense_lines:
+            for line in home_expense_lines:
+                if line.amount > 0 and is_salary_category(db, line.category_id) and not line.employee_id:
+                    raise HTTPException(400, "Employee is required when a Home Expense line's category is Salary")
+        elif payload.home_expense_amount > 0 and is_salary_category(db, payload.home_expense_category_id) and not payload.home_expense_employee_id:
             raise HTTPException(400, "Employee is required when Home Expense category is Salary")
-        settlement_net_amount = amount_received - payload.home_expense_amount - payload.owner_drawings_amount
+        settlement_net_amount = amount_received - home_expense_total - payload.owner_drawings_amount
         settlement_destination_type, settlement_target_plant_id, settlement_account_row, _ = resolve_settlement_destination(
             db, payload.destination_type, payload.target_plant_id, payload.account_id, settlement_net_amount, shop=shop
         )
@@ -699,7 +718,7 @@ def _apply_shop_sale(db: Session, shop: models.Customer, payload: schemas.ShopSa
         notes=payload.notes,
         status="active",
         entered_by=entered_by,
-        settlement_home_expense_amount=payload.home_expense_amount if use_settlement_routing else None,
+        settlement_home_expense_amount=home_expense_total if use_settlement_routing else None,
         settlement_owner_drawings_amount=payload.owner_drawings_amount if use_settlement_routing else None,
     )
     db.add(sale)
@@ -735,13 +754,58 @@ def _apply_shop_sale(db: Session, shop: models.Customer, payload: schemas.ShopSa
     # with the sale itself. Never posted for outstanding/credit portions.
     # Shop Cash Money Routing (§1/§2)
     if use_settlement_routing:
-        apply_settlement_routing(
-            db, payload.date, payload.home_expense_amount, payload.home_expense_category_id,
-            payload.owner_drawings_amount, settlement_destination_type, settlement_target_plant_id,
-            settlement_account_row, settlement_net_amount, entered_by, None, f"Shop Sale {sale.display_id}",
-            source_shop_sale_id=sale.id,
-            home_expense_employee_id=payload.home_expense_employee_id,
-        )
+        if use_home_expense_lines:
+            # § Multi-line Categorized Home Expense — create the
+            # structured ShopSaleHomeExpenseLine + its matching bypass
+            # Expense row (account_id=None, same pattern apply_settlement_
+            # routing uses internally for the single-amount path) per
+            # line, THEN call apply_settlement_routing with
+            # home_expense_amount=0 so it skips its own single-Expense
+            # creation — it still handles owner_drawings_amount and the
+            # destination routing exactly as before, untouched. This keeps
+            # apply_settlement_routing's signature/behavior identical for
+            # its other 4 callers (Payment Receipt, Cylinder Return, Shop
+            # Cash Transfer, Shop Customer Payment).
+            for line in home_expense_lines:
+                if line.amount <= 0:
+                    continue
+                db.add(models.ShopSaleHomeExpenseLine(
+                    shop_sale_id=sale.id, category_id=line.category_id,
+                    employee_id=line.employee_id, amount=line.amount,
+                    description=line.description,
+                ))
+                db.add(models.Expense(
+                    display_id=next_display_id(db, models.Expense, "EXP", width=6),
+                    date=payload.date, category_id=line.category_id,
+                    amount=line.amount, account_id=None, method="cash",
+                    description=line.description or f"Auto-created from Shop Sale {sale.display_id}",
+                    status="active", entered_by=entered_by,
+                    source_shop_sale_id=sale.id, employee_id=line.employee_id,
+                    shop_id=shop.id,
+                ))
+                # Flush before the NEXT iteration's next_display_id call —
+                # the session is autoflush=False (app.database.SessionLocal),
+                # so without this, next_display_id's MAX(display_id) query
+                # can't see the Expense row just added above and hands back
+                # the SAME display_id twice, a unique-constraint violation on
+                # commit (caught while testing this feature: EXP-000029
+                # assigned to two rows in one sale's multi-line settlement).
+                db.flush()
+                apply_salary_expense_if_needed(db, line.category_id, line.employee_id, line.amount, by=entered_by)
+            apply_settlement_routing(
+                db, payload.date, Decimal("0"), None,
+                payload.owner_drawings_amount, settlement_destination_type, settlement_target_plant_id,
+                settlement_account_row, settlement_net_amount, entered_by, None, f"Shop Sale {sale.display_id}",
+                source_shop_sale_id=sale.id,
+            )
+        else:
+            apply_settlement_routing(
+                db, payload.date, payload.home_expense_amount, payload.home_expense_category_id,
+                payload.owner_drawings_amount, settlement_destination_type, settlement_target_plant_id,
+                settlement_account_row, settlement_net_amount, entered_by, None, f"Shop Sale {sale.display_id}",
+                source_shop_sale_id=sale.id,
+                home_expense_employee_id=payload.home_expense_employee_id,
+            )
         # Flush BEFORE re-querying for the rows apply_settlement_routing
         # just created — the session is autoflush=False (see
         # app.database.SessionLocal), so without this the query below runs
@@ -752,13 +816,17 @@ def _apply_shop_sale(db: Session, shop: models.Customer, payload: schemas.ShopSa
         sale.settlement_account_id = settlement_account_row.id if settlement_account_row else None
         sale.settlement_target_plant_id = settlement_target_plant_id
         # § Home Expense category reversion — category_id/employee_id
-        # replace the old free-text description going forward.
-        sale.settlement_home_expense_category_id = (
-            payload.home_expense_category_id if payload.home_expense_amount > 0 else None
-        )
-        sale.settlement_home_expense_employee_id = (
-            payload.home_expense_employee_id if payload.home_expense_amount > 0 else None
-        )
+        # replace the old free-text description going forward. Left None
+        # for a multi-line sale — ShopSaleHomeExpenseLine rows are the
+        # source of truth then, a single category/employee no longer
+        # describes it.
+        if not use_home_expense_lines:
+            sale.settlement_home_expense_category_id = (
+                payload.home_expense_category_id if payload.home_expense_amount > 0 else None
+            )
+            sale.settlement_home_expense_employee_id = (
+                payload.home_expense_employee_id if payload.home_expense_amount > 0 else None
+            )
         for bypass_row in db.query(models.Expense).filter(
             models.Expense.source_shop_sale_id == sale.id,
         ).all() + db.query(models.OwnerDrawings).filter(
@@ -791,13 +859,22 @@ def _reverse_shop_sale_settlement(db: Session, sale: models.ShopSale) -> None:
     elif sale.settlement_destination_type == "account" and sale.settlement_account_id:
         account = db.query(models.PaymentAccount).get(sale.settlement_account_id)
         if account:
-            home_exp = db.query(models.Expense).filter(
-                models.Expense.source_shop_sale_id == sale.id, models.Expense.status == "active"
-            ).first()
+            # § Multi-line Categorized Home Expense bug fix — a sale can
+            # now have MULTIPLE active Expense rows (one per home expense
+            # line), not just one; summing via .all() here (rather than
+            # the old .first()) is required so bypass_total — and
+            # therefore net_amount debited back from the account — stays
+            # correct for a multi-line sale. Harmless no-op for a legacy
+            # single-line sale (sum of one row == that row's amount).
+            home_exp_total = sum(
+                (e.amount for e in db.query(models.Expense).filter(
+                    models.Expense.source_shop_sale_id == sale.id, models.Expense.status == "active"
+                ).all()), Decimal("0"),
+            )
             drawing = db.query(models.OwnerDrawings).filter(
                 models.OwnerDrawings.source_shop_sale_id == sale.id, models.OwnerDrawings.status == "active"
             ).first()
-            bypass_total = (home_exp.amount if home_exp else Decimal("0")) + (drawing.amount if drawing else Decimal("0"))
+            bypass_total = home_exp_total + (drawing.amount if drawing else Decimal("0"))
             net_amount = (sale.amount_received or Decimal("0")) - bypass_total
             if net_amount > 0:
                 account.current_balance = account.current_balance - net_amount
@@ -1179,7 +1256,12 @@ def get_shop_detail(
             entered_by=s.entered_by, status=s.status, correctable=False,
         ))
 
-    shop_sales = db.query(models.ShopSale).filter(
+    # § Multi-line Categorized Home Expense — selectinload(home_expense_lines)
+    # avoids one extra SELECT per row below (each row reads s.home_expense_
+    # lines to populate ShopTransactionRow/ShopBusinessLedgerRow), same
+    # bulk-fetch convention the rest of this function already follows for
+    # products/categories/companies/accounts.
+    shop_sales = db.query(models.ShopSale).options(selectinload(models.ShopSale.home_expense_lines)).filter(
         models.ShopSale.customer_id == shop_id, models.ShopSale.status == "active",
         models.ShopSale.date >= month_start, models.ShopSale.date < next_month,
     ).all()
@@ -1214,6 +1296,7 @@ def get_shop_detail(
             quantity=s.quantity, board_rate_per_kg=s.board_rate_per_kg_used, cylinder_weight=s.cylinder_weight_used,
             sale_rate_per_cylinder=s.sale_rate_per_cylinder, amount=s.grand_total,
             gst_rate=s.gst_rate, gst_amount=s.gst_amount,
+            home_expense_lines=s.home_expense_lines,
             amount_received=received, amount_outstanding=outstanding,
             # § Shop Statement — structured field for the same customer
             # name credit_label above already embeds into free text; "Walk-in
@@ -2253,7 +2336,12 @@ def get_shop_business_ledger(
     companies = {c.id: c for c in db.query(models.Company).all()}
     accounts = {a.id: a for a in db.query(models.PaymentAccount).all()}
 
-    shop_sales = db.query(models.ShopSale).filter(
+    # § Multi-line Categorized Home Expense — selectinload(home_expense_lines)
+    # avoids one extra SELECT per row below (each row reads s.home_expense_
+    # lines to populate ShopTransactionRow/ShopBusinessLedgerRow), same
+    # bulk-fetch convention the rest of this function already follows for
+    # products/categories/companies/accounts.
+    shop_sales = db.query(models.ShopSale).options(selectinload(models.ShopSale.home_expense_lines)).filter(
         models.ShopSale.customer_id == shop_id, models.ShopSale.status == "active",
         models.ShopSale.date >= month_start, models.ShopSale.date < next_month,
     ).all()
@@ -2295,6 +2383,7 @@ def get_shop_business_ledger(
                 settlement_home_expense_amount=s.settlement_home_expense_amount,
                 settlement_owner_drawings_amount=s.settlement_owner_drawings_amount,
                 gst_rate=s.gst_rate, gst_amount=s.gst_amount,
+                home_expense_lines=s.home_expense_lines,
                 entered_by=s.entered_by, status=s.status,
             ))
         else:
@@ -2311,6 +2400,7 @@ def get_shop_business_ledger(
                 settlement_home_expense_amount=s.settlement_home_expense_amount,
                 settlement_owner_drawings_amount=s.settlement_owner_drawings_amount,
                 gst_rate=s.gst_rate, gst_amount=s.gst_amount,
+                home_expense_lines=s.home_expense_lines,
                 entered_by=s.entered_by, status=s.status,
             ))
 
