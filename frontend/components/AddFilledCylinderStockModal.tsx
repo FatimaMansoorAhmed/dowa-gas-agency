@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { X, PackagePlus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Field, inputClass, Button } from "@/components/ui";
-import { api } from "@/lib/api";
+import { api, apiErrorMessage } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import type { Product } from "@/lib/types";
 
@@ -60,7 +60,7 @@ export default function AddFilledCylinderStockModal({ isOpen, onClose, onSuccess
       onSuccess();
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : t("modals.failedAddStock"));
+      setError(apiErrorMessage(e, t("modals.failedAddStock")));
     } finally {
       setSaving(false);
     }

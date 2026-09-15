@@ -69,7 +69,11 @@ export default function CorrectTransactionModal({
     }
     if (showRouting) {
       api.companies.list().then(setCompanies);
-      api.expenseCategories.list().then(setExpenseCategories);
+      // § Employee Salary Tracking — excluded here for the same reason as
+      // PaymentReceiptModal/ReturnCylinderModal: this correction flow's
+      // routingFields has no Employee picker, so Salary (which requires
+      // one) would be selectable-but-broken if left in.
+      api.expenseCategories.list().then((c) => setExpenseCategories(c.filter((x) => !(x.is_system && x.name === "Salary"))));
     }
     if (kind === "shopSale") {
       api.shops.customers.list((transaction as ShopSale).customer_id).then(setSupplyCustomers);
@@ -103,6 +107,22 @@ export default function CorrectTransactionModal({
   const [ratePerCylinder, setRatePerCylinder] = useState(
     kind === "sale" ? sale.rate_per_cylinder || "" : kind === "purchase" ? (transaction as Purchase).rate_per_cylinder || "" : ""
   );
+  // § Board Rate manual entry — pre-filled from the original sale's own
+  // frozen rate (never auto-resolved — see routers/shops.py::
+  // _apply_shop_sale), same "preserve unless deliberately changed"
+  // convention as unit/paymentType/supplyCustomerId below.
+  const [boardRatePerKg, setBoardRatePerKg] = useState(
+    kind === "shopSale" ? shopSale.board_rate_per_kg_used || "" : ""
+  );
+  // § Selling Price override — pre-filled ONLY when the original sale
+  // actually used one (manual_rate_override), same "preserve unless
+  // deliberately changed" convention as boardRatePerKg above; a sale that
+  // used plain Board Rate pricing starts blank here too. Pre-fills from
+  // total_amount (GST-exclusive, what the override actually replaced) —
+  // NOT sale_rate_per_cylinder, which stays board-rate-derived always.
+  const [manualTotalAmount, setManualTotalAmount] = useState(
+    kind === "shopSale" && shopSale.manual_rate_override ? shopSale.total_amount || "" : ""
+  );
   const [cylindersReturned, setCylindersReturned] = useState("0");
   const [gatePassNo, setGatePassNo] = useState(
     kind === "sale" ? sale.gate_pass_no || "" : kind === "purchase" ? (transaction as Purchase).gate_pass_no || "" : ""
@@ -114,8 +134,12 @@ export default function CorrectTransactionModal({
   // GST on Sale (optional, locked at entry — § GST on Sale) — pre-filled
   // from the original sale so a correction that doesn't touch GST reposts
   // the exact same gst_enabled/gst_rate, never silently dropping it.
-  const [gstEnabled, setGstEnabled] = useState(kind === "sale" ? !!sale.gst_enabled : false);
-  const [gstRate, setGstRate] = useState(kind === "sale" ? String(sale.gst_rate || "") : "");
+  const [gstEnabled, setGstEnabled] = useState(
+    kind === "sale" ? !!sale.gst_enabled : kind === "shopSale" ? !!shopSale.gst_enabled : false
+  );
+  const [gstRate, setGstRate] = useState(
+    kind === "sale" ? String(sale.gst_rate || "") : kind === "shopSale" ? String(shopSale.gst_rate || "") : ""
+  );
 
   // Shop Sale-only fields — a correction must preserve unit/payment_type/
   // supply_customer_id unless the user deliberately changes them; the
@@ -224,8 +248,9 @@ export default function CorrectTransactionModal({
         && (!sale.emergency_transfer_shop_id || !!emergencyTransferShopId)
         && (kind !== "sale" || !gstEnabled || parseFloat(gstRate) > 0)
       : kind === "shopSale"
-      ? parseFloat(quantity) > 0 && (paymentType === "cash" || !!supplyCustomerId)
+      ? parseFloat(quantity) > 0 && parseFloat(boardRatePerKg) > 0 && (paymentType === "cash" || !!supplyCustomerId)
         && (paymentType === "cash" || (parseFloat(amountReceived) || 0) >= 0)
+        && (!gstEnabled || parseFloat(gstRate) > 0)
       : parseFloat(amount) > 0) &&
     (showRouting
       ? routingValid
@@ -323,6 +348,10 @@ export default function CorrectTransactionModal({
           product_id: shopSale.product_id,
           quantity: parseFloat(quantity),
           unit,
+          board_rate_per_kg: parseFloat(boardRatePerKg),
+          manual_total_amount: parseFloat(manualTotalAmount) > 0 ? parseFloat(manualTotalAmount) : undefined,
+          gst_enabled: gstEnabled,
+          gst_rate: gstEnabled ? parseFloat(gstRate) : undefined,
           payment_type: paymentType,
           supply_customer_id: supplyCustomerId || undefined,
           amount_received: paymentType === "credit" ? parseFloat(amountReceived) || 0 : undefined,
@@ -584,6 +613,45 @@ export default function CorrectTransactionModal({
                 <Field label={unit === "kg" ? t("modals.quantityKg") : t("modals.quantityCylinders")}>
                   <input type="number" autoFocus value={quantity} onChange={(e) => setQuantity(e.target.value)} className={inputClass} />
                 </Field>
+              </div>
+              <Field label={t("modals.boardRatePerKgLabel")}>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={boardRatePerKg}
+                  onChange={(e) => setBoardRatePerKg(e.target.value)}
+                  placeholder={t("modals.boardRatePerKgPlaceholder")}
+                  className={inputClass}
+                />
+              </Field>
+              <Field label={t("modals.manualTotalAmountLabel")}>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={manualTotalAmount}
+                  onChange={(e) => setManualTotalAmount(e.target.value)}
+                  placeholder={t("modals.manualTotalAmountPlaceholder")}
+                  className={inputClass}
+                />
+              </Field>
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-1.5 font-body text-[13px] text-ink cursor-pointer">
+                  <input type="checkbox" checked={gstEnabled} onChange={(e) => setGstEnabled(e.target.checked)} />
+                  {t("unifiedSale.applyGst")}
+                </label>
+                {gstEnabled && (
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={gstRate}
+                    onChange={(e) => setGstRate(e.target.value)}
+                    placeholder="Rate %"
+                    className={`${inputClass} w-24`}
+                  />
+                )}
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <Field label={t("modals.paymentTypeLabel")}>

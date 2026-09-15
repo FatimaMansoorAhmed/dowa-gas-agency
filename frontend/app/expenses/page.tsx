@@ -24,10 +24,12 @@ import {
   toKarachiDateString,
 } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
+import { isSalaryCategorySelected } from "@/components/SettlementDestinationFields";
 import type {
   ExpenseCategory,
   PaymentAccount,
   Expense,
+  Employee,
 } from "@/lib/types";
 
 // Derived from the Asia/Karachi-aware todayLocalInput() ("YYYY-MM-DD"), so
@@ -221,6 +223,10 @@ function ExpensesBody() {
     Expense[]
   >([]);
 
+  // § Employee Salary Tracking
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [employeeId, setEmployeeId] = useState("");
+
   // Form visibility
   const [showExpenseForm, setShowExpenseForm] =
     useState(false);
@@ -284,16 +290,18 @@ function ExpensesBody() {
   const month = currentMonth();
 
   const load = async () => {
-    const [cats, accs, expenses] =
+    const [cats, accs, expenses, emps] =
       await Promise.all([
         api.expenseCategories.list(),
         api.paymentAccounts.list(),
         api.expenses.list(),
+        api.employees.list(),
       ]);
 
     setCategories(cats);
     setAccounts(accs);
     setAllExpenses(expenses);
+    setEmployees(emps);
   };
 
   useEffect(() => {
@@ -319,11 +327,14 @@ function ExpensesBody() {
     setAddingCategory(false);
   };
 
+  const isSalarySelected = isSalaryCategorySelected(categories, categoryId);
+
   const canSubmit =
     date &&
     categoryId &&
     parseFloat(amount) > 0 &&
-    accountId;
+    accountId &&
+    (!isSalarySelected || !!employeeId);
 
   const handleSubmit = async () => {
     if (!canSubmit || !user) return;
@@ -348,6 +359,7 @@ function ExpensesBody() {
         reference_no:
           referenceNo || undefined,
         entered_by: user.name,
+        employee_id: isSalarySelected ? employeeId : undefined,
       });
 
       setToast(t("expenses.expenseSavedToast"));
@@ -356,6 +368,7 @@ function ExpensesBody() {
       setDescription("");
       setVendor("");
       setReferenceNo("");
+      setEmployeeId("");
 
       await load();
 
@@ -963,6 +976,23 @@ function ExpensesBody() {
                         </div>
                       )}
                     </FormField>
+
+                    {isSalarySelected && (
+                      <FormField label={t("expenses.employeeLabel")}>
+                        <select
+                          value={employeeId}
+                          onChange={(e) => setEmployeeId(e.target.value)}
+                          className={fieldInputCls}
+                        >
+                          <option value="">{t("expenses.selectEmployee")}</option>
+                          {employees.map((emp) => (
+                            <option key={emp.id} value={emp.id}>
+                              {emp.name}
+                            </option>
+                          ))}
+                        </select>
+                      </FormField>
+                    )}
                   </div>
                 </div>
 
@@ -1330,6 +1360,10 @@ function ExpensesBody() {
                                   </span>
                                 )}
                               </div>
+                            ) : expense.employee_name ? (
+                              <span className="text-[12px] font-medium text-slate-800">
+                                {expense.employee_name}
+                              </span>
                             ) : expense.customer_name ? (
                               <span className="text-[12px] font-medium text-slate-800">
                                 {expense.customer_name}

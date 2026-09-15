@@ -11,7 +11,7 @@ from app.routers import (
     companies, parties, rates, customers, products, payment_accounts,
     expense_categories, sales, payments, payment_receipts, expenses, ledger, purchases, company_payments,
     cylinder_transactions,owner_drawings, unified_sale, owner_capital, reports, board_rates, shops,
-    auth, users, emergency_transfers, cylinder_returns,
+    auth, users, emergency_transfers, cylinder_returns, employees,
 )
 
 load_dotenv()
@@ -56,6 +56,7 @@ app.include_router(owner_capital.router)
 app.include_router(reports.router)
 app.include_router(board_rates.router)
 app.include_router(shops.router)
+app.include_router(employees.router)
 
 
 @app.on_event("startup")

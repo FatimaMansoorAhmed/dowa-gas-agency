@@ -937,6 +937,9 @@ class CustomerOut(BaseModel):
     empty_cylinders_454_cross: Decimal = Decimal("0")
     empty_cylinders_454_pso: Decimal = Decimal("0")
     customer_type: str = "individual"
+    # § Add Filled Cylinder Stock — one-time-only; meaningless/unused for
+    # customer_type != "shop".
+    initial_stock_added: bool = False
 
 
 class CustomerAdjust(BaseModel):
@@ -1024,6 +1027,11 @@ class ExpenseCategoryOut(BaseModel):
     name: str
     description: Optional[str]
     active: str
+    # System-provided category (§ Employee Salary Tracking) — currently
+    # only "Salary". Frontend hides the Deactivate button for these as a
+    # courtesy; the real enforcement is the server-side guard in
+    # routers/expense_categories.py's deactivate_category.
+    is_system: bool = False
 
 
 # ---------- Sale ----------
@@ -1294,6 +1302,11 @@ class ExpenseCreate(BaseModel):
     vendor: Optional[str] = None
     reference_no: Optional[str] = None
     entered_by: str
+    # Employee Salary Tracking (§ Employee Salary Tracking) — required
+    # (enforced in routers/expenses.py) whenever category_id is the system
+    # "Salary" category; ignored/null for every other category. Reduces
+    # the named Employee's current_balance by `amount`.
+    employee_id: Optional[UUID] = None
 
 
 class ExpenseOut(BaseModel):
@@ -1348,9 +1361,66 @@ class ExpenseOut(BaseModel):
     # this (see routers/expenses.py) for display compatibility — exposed
     # here too for any caller that wants the raw label specifically.
     shop_origin_label: Optional[str] = None
+    # Employee Salary Tracking (§ Employee Salary Tracking) — set only for
+    # a Salary-category row; employee_name resolved server-side the same
+    # way customer_name/shop_name already are.
+    employee_id: Optional[UUID] = None
+    employee_name: Optional[str] = None
     status: str
     entered_by: str
     created_at: datetime
+
+
+# ---------- Employee Salary Tracking ----------
+class EmployeeCreate(BaseModel):
+    name: str
+    monthly_salary: Decimal
+    entered_by: str
+
+
+class EmployeeUpdate(BaseModel):
+    """Both optional — a plain balance/status edit, not a full replace.
+    Changing monthly_salary never touches past EmployeeSalaryAccrual rows
+    (each is frozen at whatever the salary was for its own month, §
+    EmployeeSalaryAccrual) — it only takes effect the next time this
+    employee's accrual catches up to a new month."""
+    monthly_salary: Optional[Decimal] = None
+    status: Optional[Literal["active", "inactive"]] = None
+
+
+class EmployeeOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    name: str
+    monthly_salary: Decimal
+    status: str
+    opening_balance: Decimal
+    opening_balance_month: str
+    current_balance: Decimal
+    entered_by: str
+    created_at: datetime
+
+
+class EmployeeLedgerRow(BaseModel):
+    date: datetime
+    kind: Literal["accrual", "payment"]
+    ref_id: UUID
+    display_id: str
+    description: str
+    accrued_amount: Decimal
+    paid_amount: Decimal
+    running_balance: Decimal
+    entered_by: str
+
+
+class EmployeeLedgerSummary(BaseModel):
+    employee: EmployeeOut
+    month: str
+    opening_balance: Decimal
+    total_accrued: Decimal
+    total_paid: Decimal
+    closing_balance: Decimal
+    rows: list[EmployeeLedgerRow]
 
 
 # ---------- Customer Ledger (computed, read-only view) ----------
@@ -2153,6 +2223,26 @@ class ShopSaleCreate(BaseModel):
     product_id: UUID
     quantity: Decimal
     unit: Literal["cylinder", "kg"] = "cylinder"
+    # § Board Rate — manual entry only. There is no system-wide auto-resolve
+    # for Shop Sale pricing (see routers/shops.py::_apply_shop_sale) — the
+    # user types this every time, no default, no pre-fill. Required (no
+    # default value here) so a request missing it is rejected at the schema
+    # level before ever reaching pricing logic.
+    board_rate_per_kg: Decimal
+    # § Selling Price override — optional. When set, this REPLACES the
+    # final total_amount outright (post board-rate calculation) — NOT
+    # sale_rate_per_cylinder, which stays board-rate-derived always (the
+    # audit trail of what the calculation would have produced). No
+    # per-cylinder math for the user: they type the final Rs amount they
+    # want to charge, full stop (e.g. a round negotiated total).
+    # board_rate_per_kg above is still required and still stored either
+    # way, purely as a record of what was typed there.
+    manual_total_amount: Optional[Decimal] = None
+    # GST on Sale, extended to Shop Sale (optional, locked at entry — same
+    # convention as SaleCreate/UnifiedSale's own gst_enabled/gst_rate).
+    # Default off; computed via utils.compute_gst in _apply_shop_sale.
+    gst_enabled: bool = False
+    gst_rate: Optional[Decimal] = None
     supply_customer_id: Optional[UUID] = None
     payment_type: Literal["cash", "credit"] = "cash"
     amount_received: Optional[Decimal] = None
@@ -2161,14 +2251,20 @@ class ShopSaleCreate(BaseModel):
     entered_by: str
 
     # Settlement routing fields — the Shop Sale form's Deductions section.
-    # Home Expense here is a FREE-TEXT description the user typed ("fuel",
-    # "tea", ...), NOT a Category dropdown: a shop's on-the-spot field
-    # expense genuinely has no ExpenseCategory behind it. Mirrors the
-    # Expense.description field the backend writes it into (see
-    # utils.apply_settlement_routing). Owner Drawings is amount-only, as
-    # always.
+    # § Home Expense category reversion — Home Expense is category-based
+    # again (same ExpenseCategory list the main Expenses page uses,
+    # including the system "Salary" category), matching every other
+    # settlement-routing caller (Payment Receipt, Cylinder Return).
+    # home_expense_description is kept ONLY for backward-reading historical
+    # rows created while the free-text version was live — never sent by
+    # current forms. home_expense_employee_id is required (enforced in
+    # routers/shops.py) whenever home_expense_category_id is the system
+    # "Salary" category (§ Employee Salary Tracking). Owner Drawings is
+    # amount-only, as always.
     home_expense_amount: Decimal = Decimal("0")
+    home_expense_category_id: Optional[UUID] = None
     home_expense_description: Optional[str] = None
+    home_expense_employee_id: Optional[UUID] = None
     owner_drawings_amount: Decimal = Decimal("0")
     destination_type: Optional[Literal["plant", "account"]] = None
     target_plant_id: Optional[UUID] = None
@@ -2200,6 +2296,11 @@ class ShopSaleOut(BaseModel):
     saleable_kg_used: Optional[Decimal] = None
     sale_rate_per_cylinder: Decimal
     total_amount: Decimal
+    manual_rate_override: bool = False
+    gst_enabled: bool = False
+    gst_rate: Optional[Decimal] = None
+    gst_amount: Decimal = Decimal("0")
+    grand_total: Decimal = Decimal("0")
     notes: Optional[str] = None
     status: str
     entered_by: str
@@ -2212,6 +2313,8 @@ class ShopSaleOut(BaseModel):
     settlement_target_plant_id: Optional[UUID] = None
     settlement_account_id: Optional[UUID] = None
     settlement_home_expense_description: Optional[str] = None
+    settlement_home_expense_category_id: Optional[UUID] = None
+    settlement_home_expense_employee_id: Optional[UUID] = None
     settlement_home_expense_amount: Optional[Decimal] = None
     settlement_owner_drawings_amount: Optional[Decimal] = None
 
@@ -2226,7 +2329,9 @@ class ShopCashTransferCreate(BaseModel):
     date: UtcDateTime
     gross_amount: Decimal
     home_expense_amount: Decimal = Decimal("0")
-    home_expense_description: Optional[str] = None
+    home_expense_category_id: Optional[UUID] = None
+    home_expense_description: Optional[str] = None  # kept only for reading historical rows
+    home_expense_employee_id: Optional[UUID] = None
     owner_drawings_amount: Decimal = Decimal("0")
     destination_type: Literal["plant", "account"]
     target_plant_id: Optional[UUID] = None
@@ -2246,6 +2351,8 @@ class ShopCashTransferOut(BaseModel):
     settlement_target_plant_id: Optional[UUID] = None
     settlement_account_id: Optional[UUID] = None
     settlement_home_expense_description: Optional[str] = None
+    settlement_home_expense_category_id: Optional[UUID] = None
+    settlement_home_expense_employee_id: Optional[UUID] = None
     settlement_home_expense_amount: Decimal
     settlement_owner_drawings_amount: Decimal
     notes: Optional[str] = None
@@ -2311,7 +2418,9 @@ class ShopCustomerPaymentCreate(BaseModel):
     # account_id above — that field is UUID-only and means something
     # different (the legacy path's single real PaymentAccount).
     home_expense_amount: Decimal = Decimal("0")
-    home_expense_description: Optional[str] = None
+    home_expense_category_id: Optional[UUID] = None
+    home_expense_description: Optional[str] = None  # kept only for reading historical rows
+    home_expense_employee_id: Optional[UUID] = None
     owner_drawings_amount: Decimal = Decimal("0")
     destination_type: Optional[Literal["plant", "account"]] = None
     target_plant_id: Optional[UUID] = None
@@ -2335,6 +2444,8 @@ class ShopCustomerPaymentOut(BaseModel):
     settlement_target_plant_id: Optional[UUID] = None
     settlement_account_id: Optional[UUID] = None
     settlement_home_expense_description: Optional[str] = None
+    settlement_home_expense_category_id: Optional[UUID] = None
+    settlement_home_expense_employee_id: Optional[UUID] = None
     settlement_home_expense_amount: Optional[Decimal] = None
     settlement_owner_drawings_amount: Optional[Decimal] = None
     status: str
@@ -2394,8 +2505,17 @@ class ShopSupplyCustomerLedgerRow(BaseModel):
     settlement_target_plant_id: Optional[UUID] = None
     settlement_account_id: Optional[UUID] = None
     settlement_home_expense_description: Optional[str] = None
+    settlement_home_expense_category_id: Optional[UUID] = None
+    settlement_home_expense_employee_id: Optional[UUID] = None
     settlement_home_expense_amount: Optional[Decimal] = None
     settlement_owner_drawings_amount: Optional[Decimal] = None
+    # § Shop Customer Ledger GST columns — populated only for kind=="sale"
+    # (the only kind backed by a real ShopSale); mirrors ShopTransactionRow/
+    # ShopBusinessLedgerRow's identical gst_rate/gst_amount fields. Like
+    # gross_amount above, sale_amount stays whatever it already meant
+    # (outstanding contribution) — these are purely the tax breakout.
+    gst_rate: Optional[Decimal] = None
+    gst_amount: Optional[Decimal] = None
 
 
 class ShopSupplyCustomerLedgerOut(BaseModel):
@@ -2425,6 +2545,10 @@ class ShopExpenseLineCreate(BaseModel):
     line_type: Literal["expense", "owner_withdrawal"] = "expense"
     amount: Decimal
     description: Optional[str] = None
+    # Employee Salary Tracking (§ Employee Salary Tracking) — required
+    # (enforced in create_shop_expense) whenever category_id is the
+    # system "Salary" category; null for every other category.
+    employee_id: OptionalUUID = None
 
 
 class ShopExpenseLineOut(BaseModel):
@@ -2435,6 +2559,8 @@ class ShopExpenseLineOut(BaseModel):
     line_type: str
     amount: Decimal
     description: Optional[str] = None
+    employee_id: Optional[UUID] = None
+    employee_name: Optional[str] = None
 
 
 class ShopExpenseTransactionCreate(BaseModel):
@@ -2531,8 +2657,16 @@ class ShopBusinessLedgerRow(BaseModel):
     settlement_target_plant_id: Optional[UUID] = None
     settlement_account_id: Optional[UUID] = None
     settlement_home_expense_description: Optional[str] = None
+    settlement_home_expense_category_id: Optional[UUID] = None
+    settlement_home_expense_employee_id: Optional[UUID] = None
     settlement_home_expense_amount: Optional[Decimal] = None
     settlement_owner_drawings_amount: Optional[Decimal] = None
+    # § GST visibility gap — populated only for kind in ("cash_sale",
+    # "credit_sale") (the only kinds backed by a real ShopSale); amount
+    # above is already grand_total-inclusive, these just break out how
+    # much of it was tax. Mirrors ShopTransactionRow.gst_rate/gst_amount.
+    gst_rate: Optional[Decimal] = None
+    gst_amount: Optional[Decimal] = None
     entered_by: str
     status: str
 
@@ -2604,6 +2738,12 @@ class ShopTransactionRow(BaseModel):
     sale_rate_per_cylinder: Optional[Decimal] = None
     load_rate_per_kg: Optional[Decimal] = None
     amount: Optional[Decimal] = None
+    # § GST on Shop Sale — populated only for kind=="shop_sale"; `amount`
+    # above is already grand_total-inclusive (see get_shop_detail), these
+    # just break out how much of it was tax. Mirrors LedgerRow.gst_rate/
+    # gst_amount (§ Shop Statement PDF GST columns).
+    gst_rate: Optional[Decimal] = None
+    gst_amount: Optional[Decimal] = None
     # Inline Settlement (§2) — populated only for kind=="shop_sale".
     amount_received: Optional[Decimal] = None
     amount_outstanding: Optional[Decimal] = None
@@ -2625,6 +2765,8 @@ class ShopTransactionRow(BaseModel):
     settlement_target_plant_id: Optional[UUID] = None
     settlement_account_id: Optional[UUID] = None
     settlement_home_expense_description: Optional[str] = None
+    settlement_home_expense_category_id: Optional[UUID] = None
+    settlement_home_expense_employee_id: Optional[UUID] = None
     settlement_home_expense_amount: Optional[Decimal] = None
     settlement_owner_drawings_amount: Optional[Decimal] = None
     entered_by: str

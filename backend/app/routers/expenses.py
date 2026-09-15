@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app import models, schemas
 from app.deps import require_active_user, require_csrf
-from app.utils import next_display_id
+from app.utils import next_display_id, apply_salary_expense_if_needed
 
 router = APIRouter(prefix="/expenses", tags=["expenses"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
@@ -86,6 +86,13 @@ def list_expenses(
         if shop_sale_ids else {}
     )
 
+    # Employee Salary Tracking (§ Employee Salary Tracking)
+    employee_ids = {r.employee_id for r in rows if r.employee_id}
+    employees = (
+        {e.id: e for e in db.query(models.Employee).filter(models.Employee.id.in_(employee_ids)).all()}
+        if employee_ids else {}
+    )
+
     out: list[schemas.ExpenseOut] = []
     for r in rows:
         customer = None
@@ -146,6 +153,8 @@ def list_expenses(
             shop_id=r.shop_id or (source_shop_sale.customer_id if source_shop_sale else None),
             shop_name=shop_name,
             shop_origin_label=r.shop_origin_label,
+            employee_id=r.employee_id,
+            employee_name=employees[r.employee_id].name if r.employee_id in employees else None,
             status=r.status, entered_by=r.entered_by, created_at=r.created_at,
         ))
     return out
@@ -178,6 +187,7 @@ def create_expense(
         reference_no=payload.reference_no,
         status="active",
         entered_by=current_user.name,
+        employee_id=payload.employee_id,
     )
     db.add(expense)
 
@@ -188,6 +198,11 @@ def create_expense(
     if account:
         account.current_balance = account.current_balance - payload.amount
         db.add(account)
+
+    # Employee Salary Tracking (§ Employee Salary Tracking) — a no-op
+    # unless category_id is the system "Salary" category, in which case
+    # this requires employee_id and reduces that employee's balance.
+    apply_salary_expense_if_needed(db, payload.category_id, payload.employee_id, payload.amount, by=current_user.name)
 
     db.commit()
     db.refresh(expense)

@@ -322,6 +322,7 @@ def apply_settlement_routing(
     source_shop_sale_id=None,
     source_shop_cash_transfer_id=None,
     source_shop_customer_payment_id=None,
+    home_expense_employee_id=None,
 ) -> None:
     """The money-movement side of a Payment Receipt settlement (§ Settlement
     Routing) — home_expense_amount/owner_drawings_amount bypass every Dowa
@@ -369,7 +370,19 @@ def apply_settlement_routing(
             source_shop_sale_id=source_shop_sale_id,
             source_shop_cash_transfer_id=source_shop_cash_transfer_id,
             source_shop_customer_payment_id=source_shop_customer_payment_id,
+            employee_id=home_expense_employee_id,
         ))
+        # Employee Salary Tracking (§ Employee Salary Tracking) — a
+        # settlement-routed Home Expense tagged with the system "Salary"
+        # category is a payment against that employee's balance, same as
+        # any other Salary-category Expense (routers/expenses.py,
+        # routers/shops.py's create_shop_expense). The caller is expected
+        # to have already required home_expense_employee_id on its own
+        # form when Salary was picked (see SettlementDestinationFields) —
+        # this call is what actually posts the balance reduction.
+        apply_salary_expense_if_needed(
+            db, home_expense_category_id, home_expense_employee_id, home_expense_amount, by=entered_by,
+        )
 
     if owner_drawings_amount and owner_drawings_amount > 0:
         db.add(models.OwnerDrawings(
@@ -457,3 +470,56 @@ def reverse_payment_receipt(db: Session, payment) -> None:
     ).all():
         draw.status = "cancelled"
         db.add(draw)
+
+
+SALARY_CATEGORY_NAME = "Salary"
+
+
+def is_salary_category(db: Session, category_id) -> bool:
+    """True only for the one system-provided "Salary" ExpenseCategory (§
+    Employee Salary Tracking) — never for a user-created category that
+    happens to share the name (name is globally unique, so this can never
+    actually collide, but the explicit is_system check documents intent)."""
+    if not category_id:
+        return False
+    from app import models  # local import avoids a circular import with models.py
+    category = db.query(models.ExpenseCategory).get(category_id)
+    return bool(category and category.is_system and category.name == SALARY_CATEGORY_NAME)
+
+
+def apply_salary_expense_if_needed(db: Session, category_id, employee_id, amount, by: str = "system") -> None:
+    """If category_id is the system "Salary" category, requires employee_id
+    and reduces that Employee's current_balance by `amount` — a Salary-
+    category Expense/ShopExpenseLine is a payment against what's owed, the
+    same relationship a Customer Payment has to Customer.current_balance
+    (§ Employee Salary Tracking). A no-op for every other category.
+
+    Shared by all THREE places a Salary-tagged expense can be created —
+    routers/expenses.py's create_expense (main Expenses page),
+    routers/shops.py's create_shop_expense (standalone Shop Expense form,
+    one call per ShopExpenseLine), and apply_settlement_routing above (the
+    Home Expense deduction inside Shop Sale/Shop Cash Transfer/Shop
+    Customer Payment) — so the balance-reduction logic lives in exactly
+    one place regardless of which of the three forms was used.
+
+    Runs the lazy accrual catch-up first (routers/employees.py's
+    _accrue_if_needed) so the balance being reduced already reflects the
+    real current month's accrual, not a stale pre-rollover figure. Each
+    caller is expected to have already validated "Employee is required
+    when category is Salary" against its own payload before creating the
+    Expense/ShopExpenseLine row — the check here is defense-in-depth, not
+    the only place it's enforced."""
+    if not is_salary_category(db, category_id):
+        return
+    from fastapi import HTTPException
+    from app import models  # local import avoids a circular import with models.py
+    from app.routers.employees import _accrue_if_needed  # local import avoids a circular import
+
+    if not employee_id:
+        raise HTTPException(400, "Employee is required when category is Salary")
+    employee = db.query(models.Employee).get(employee_id)
+    if not employee:
+        raise HTTPException(404, "Employee not found")
+    _accrue_if_needed(db, employee, by=by)
+    employee.current_balance = employee.current_balance - amount
+    db.add(employee)

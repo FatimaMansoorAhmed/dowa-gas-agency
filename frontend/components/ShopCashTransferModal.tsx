@@ -11,7 +11,8 @@ import { api, apiErrorMessage } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { todayLocalInput, pkr } from "@/lib/format";
 
-import type { PaymentAccount, Company, DestinationType } from "@/lib/types";
+import { isSalaryCategorySelected } from "./SettlementDestinationFields";
+import type { PaymentAccount, Company, DestinationType, ExpenseCategory, Employee } from "@/lib/types";
 
 /**
  * Shop Cash Transfer — pushes money OUT of a shop's real Shop Cash balance
@@ -43,12 +44,15 @@ export default function ShopCashTransferModal({
 
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
+  const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
 
   const [date, setDate] = useState(todayLocalInput());
   const [grossAmount, setGrossAmount] = useState("");
 
   const [homeExpenseAmount, setHomeExpenseAmount] = useState("");
-  const [homeExpenseDescription, setHomeExpenseDescription] = useState("");
+  const [homeExpenseCategoryId, setHomeExpenseCategoryId] = useState("");
+  const [homeExpenseEmployeeId, setHomeExpenseEmployeeId] = useState("");
   const [ownerDrawingsAmount, setOwnerDrawingsAmount] = useState("");
   const [destinationType, setDestinationType] = useState<DestinationType>("account");
   const [targetPlantId, setTargetPlantId] = useState("");
@@ -68,6 +72,14 @@ export default function ShopCashTransferModal({
     api.companies.list().then((c) => setCompanies(c.filter((x: any) => (x.status ? x.status === "active" : true))));
   }, []);
 
+  useEffect(() => {
+    api.expenseCategories.list().then((c) => setExpenseCategories(c.filter((x) => x.active === "active" || x.is_system)));
+  }, []);
+
+  useEffect(() => {
+    api.employees.list().then(setEmployees);
+  }, []);
+
   const gross = parseFloat(grossAmount) || 0;
   const exceedsBalance = gross > availableBalance;
 
@@ -77,7 +89,12 @@ export default function ShopCashTransferModal({
     return specialAccount; // "office_cash", "owner_home", "dowa_account"
   };
 
-  const canSubmit = !!date && gross > 0 && !exceedsBalance;
+  const homeExpenseNeedsEmployee =
+    parseFloat(homeExpenseAmount) > 0 &&
+    isSalaryCategorySelected(expenseCategories, homeExpenseCategoryId) &&
+    !homeExpenseEmployeeId;
+
+  const canSubmit = !!date && gross > 0 && !exceedsBalance && !homeExpenseNeedsEmployee;
 
   const submit = async () => {
     if (!canSubmit || !user) return;
@@ -96,7 +113,8 @@ export default function ShopCashTransferModal({
         date: isoDate,
         gross_amount: gross,
         home_expense_amount: parseFloat(homeExpenseAmount) || 0,
-        home_expense_description: homeExpenseDescription.trim() || undefined,
+        home_expense_category_id: homeExpenseCategoryId || undefined,
+        home_expense_employee_id: homeExpenseEmployeeId || undefined,
         owner_drawings_amount: parseFloat(ownerDrawingsAmount) || 0,
         destination_type: destinationType,
         notes: notes || undefined,
@@ -188,8 +206,12 @@ export default function ShopCashTransferModal({
                   accounts={accounts}
                   homeExpenseAmount={homeExpenseAmount}
                   onHomeExpenseAmountChange={setHomeExpenseAmount}
-                  homeExpenseDescription={homeExpenseDescription}
-                  onHomeExpenseDescriptionChange={setHomeExpenseDescription}
+                  expenseCategories={expenseCategories}
+                  homeExpenseCatId={homeExpenseCategoryId}
+                  onHomeExpenseCatIdChange={setHomeExpenseCategoryId}
+                  employees={employees}
+                  homeExpenseEmployeeId={homeExpenseEmployeeId}
+                  onHomeExpenseEmployeeIdChange={setHomeExpenseEmployeeId}
                   ownerDrawingsAmount={ownerDrawingsAmount}
                   onOwnerDrawingsAmountChange={setOwnerDrawingsAmount}
                   destinationType={destinationType}

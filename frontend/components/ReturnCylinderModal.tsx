@@ -98,7 +98,9 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
         setCustomers(cList);
         setCompanies(compList);
         setAccounts(accList);
-        setExpenseCategories(catList);
+        // § Employee Salary Tracking — excluded, same reasoning as
+        // PaymentReceiptModal (no Employee picker on this flow).
+        setExpenseCategories(catList.filter((c) => !(c.is_system && c.name === "Salary")));
       } catch (e) {
         setError(e instanceof Error ? e.message : t("modals.failedLoadFormData"));
       }

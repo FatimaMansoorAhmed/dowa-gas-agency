@@ -209,7 +209,13 @@ function UnifiedSaleBody() {
     // "stop working", since the calc keys off product118/product454's
     // specific id, which the duplicate never matched.
     setCompanies(c); setCustomers(cu); setProducts(p.filter((x) => x.active === "active"));
-    setCategories(cat); setAccounts(acc); setRates(r); setParties(parties); setRecent(ru);
+    // § Employee Salary Tracking — "Salary" excluded here: this settlement
+    // section has no Employee picker, so leaving it selectable would be a
+    // dead end (backend requires an employee for Salary). See
+    // RecordShopSaleModal/ShopCashTransferModal/RecordSupplyCustomerPaymentModal
+    // for where Salary IS wired end-to-end.
+    setCategories(cat.filter((x) => !(x.is_system && x.name === "Salary")));
+    setAccounts(acc); setRates(r); setParties(parties); setRecent(ru);
     setAllSales(sales); setAllPayments(payments); setAllPurchases(purchases);
   };
   useEffect(() => { load(); }, []);

@@ -61,6 +61,9 @@ export type Customer = {
   // a Shop IS a Customer row (§ Shop Management), reusing the entire
   // Sale/Payment/Customer-Ledger pipeline for the money side unchanged.
   customer_type: "individual" | "shop";
+  // § Add Filled Cylinder Stock — one-time-only; meaningless/unused for
+  // customer_type != "shop".
+  initial_stock_added: boolean;
 };
 
 export type Product = { id: string; name: string; weight_kg: string; active: string };
@@ -100,7 +103,7 @@ export type AccountTransferRecord = {
   created_at: string;
 };
 
-export type ExpenseCategory = { id: string; name: string; description: string | null; active: string };
+export type ExpenseCategory = { id: string; name: string; description: string | null; active: string; is_system: boolean };
 
 // Ledger Corrections (§1) — present on Sale/Payment/Purchase/CompanyPayment.
 // corrected_from_id points at the ORIGINAL row this one replaces; the
@@ -183,6 +186,9 @@ export type Expense = {
   // this row came from is gone; shop_name already falls back to this
   // server-side, exposed here too for any caller that wants the raw label.
   shop_origin_label?: string | null;
+  // § Employee Salary Tracking — set only when category is "Salary".
+  employee_id?: string | null;
+  employee_name?: string | null;
 };
 
 export type LedgerRow = {
@@ -280,6 +286,42 @@ export type PlantLedgerSummaryRow = {
   total_purchases: string; total_payments: string; closing_balance: string;
   // Vehicle from the most recent Purchase this plant received this month.
   vehicle_no?: string | null;
+};
+
+// ---------- Employee Salary Tracking ----------
+
+export type Employee = {
+  id: string;
+  name: string;
+  monthly_salary: string;
+  status: "active" | "inactive";
+  opening_balance: string;
+  opening_balance_month: string;
+  current_balance: string;
+  entered_by: string;
+  created_at: string;
+};
+
+export type EmployeeLedgerRow = {
+  date: string;
+  kind: "accrual" | "payment";
+  ref_id: string;
+  display_id: string;
+  description: string;
+  accrued_amount: string;
+  paid_amount: string;
+  running_balance: string;
+  entered_by: string;
+};
+
+export type EmployeeLedgerSummary = {
+  employee: Employee;
+  month: string;
+  opening_balance: string;
+  total_accrued: string;
+  total_paid: string;
+  closing_balance: string;
+  rows: EmployeeLedgerRow[];
 };
 
 export type CylinderTransaction = {
@@ -624,10 +666,28 @@ export type ShopSale = {
   saleable_kg_used: string | null;
   sale_rate_per_cylinder: string;
   total_amount: string;
+  // § Manual Selling Rate override — true when sale_rate_per_cylinder was
+  // typed directly rather than derived from board_rate_per_kg_used × saleable_kg_used.
+  manual_rate_override: boolean;
+  // § GST on Shop Sale — total_amount above stays GST-exclusive (what
+  // Dashboard/P&L/Tonnage read); grand_total (= total_amount + gst_amount,
+  // or equal to total_amount when GST is off) is what's actually owed/collected.
+  gst_enabled: boolean;
+  gst_rate: string | null;
+  gst_amount: string;
+  grand_total: string;
   notes: string | null;
   status: string;
   entered_by: string;
   created_at: string;
+  settlement_destination_type: string | null;
+  settlement_target_plant_id: string | null;
+  settlement_account_id: string | null;
+  settlement_home_expense_description: string | null;
+  settlement_home_expense_category_id: string | null;
+  settlement_home_expense_employee_id: string | null;
+  settlement_home_expense_amount: string | null;
+  settlement_owner_drawings_amount: string | null;
 } & CorrectionFields;
 
 export type ShopListRow = {
@@ -677,6 +737,11 @@ export type ShopTransactionRow = {
   sale_rate_per_cylinder: string | null;
   load_rate_per_kg: string | null;
   amount: string | null;
+  // § GST visibility gap — populated only for kind=="shop_sale"; amount
+  // above is already grand_total-inclusive, these break out how much of
+  // it was tax.
+  gst_rate: string | null;
+  gst_amount: string | null;
   // Inline Settlement (§2) — populated only for kind=="shop_sale".
   amount_received: string | null;
   amount_outstanding: string | null;
@@ -692,6 +757,8 @@ export type ShopTransactionRow = {
   settlement_target_plant_id: string | null;
   settlement_account_id: string | null;
   settlement_home_expense_description: string | null;
+  settlement_home_expense_category_id: string | null;
+  settlement_home_expense_employee_id: string | null;
   settlement_home_expense_amount: string | null;
   settlement_owner_drawings_amount: string | null;
   entered_by: string;
@@ -747,6 +814,8 @@ export type ShopCustomerPayment = {
   settlement_target_plant_id: string | null;
   settlement_account_id: string | null;
   settlement_home_expense_description: string | null;
+  settlement_home_expense_category_id: string | null;
+  settlement_home_expense_employee_id: string | null;
   settlement_home_expense_amount: string | null;
   settlement_owner_drawings_amount: string | null;
   status: string;
@@ -781,8 +850,13 @@ export type ShopSupplyCustomerLedgerRow = {
   settlement_target_plant_id?: string | null;
   settlement_account_id?: string | null;
   settlement_home_expense_description?: string | null;
+  settlement_home_expense_category_id?: string | null;
+  settlement_home_expense_employee_id?: string | null;
   settlement_home_expense_amount?: string | null;
   settlement_owner_drawings_amount?: string | null;
+  // § Shop Customer Ledger GST columns — populated only for kind=="sale".
+  gst_rate?: string | null;
+  gst_amount?: string | null;
 };
 
 export type ShopSupplyCustomerLedgerOut = {
@@ -808,6 +882,9 @@ export type ShopExpenseLine = {
   line_type: "expense" | "owner_withdrawal";
   amount: string;
   description: string | null;
+  // § Employee Salary Tracking — set only when category is "Salary".
+  employee_id?: string | null;
+  employee_name?: string | null;
 };
 
 export type ShopExpenseTransaction = {
@@ -860,7 +937,9 @@ export type ShopCashTransferCreate = {
   date?: string;
   gross_amount: number;
   home_expense_amount?: number;
+  home_expense_category_id?: string;
   home_expense_description?: string;
+  home_expense_employee_id?: string;
   owner_drawings_amount?: number;
   destination_type: "plant" | "account";
   target_plant_id?: string;
@@ -879,6 +958,8 @@ export type ShopCashTransfer = {
   settlement_target_plant_id: string | null;
   settlement_account_id: string | null;
   settlement_home_expense_description: string | null;
+  settlement_home_expense_category_id: string | null;
+  settlement_home_expense_employee_id: string | null;
   settlement_home_expense_amount: string;
   settlement_owner_drawings_amount: string;
   notes: string | null;
@@ -908,8 +989,14 @@ export type ShopBusinessLedgerRow = {
   settlement_target_plant_id: string | null;
   settlement_account_id: string | null;
   settlement_home_expense_description: string | null;
+  settlement_home_expense_category_id: string | null;
+  settlement_home_expense_employee_id: string | null;
   settlement_home_expense_amount: string | null;
   settlement_owner_drawings_amount: string | null;
+  // § GST visibility gap — populated only for kind in ("cash_sale",
+  // "credit_sale"); amount above is already grand_total-inclusive.
+  gst_rate: string | null;
+  gst_amount: string | null;
   entered_by: string;
   status: string;
 };

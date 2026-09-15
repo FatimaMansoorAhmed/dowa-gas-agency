@@ -4,7 +4,16 @@ import { useTranslation } from "react-i18next";
 import { Field, inputClass } from "@/components/ui";
 import AmountInput from "@/components/AmountInput";
 import { pkr } from "@/lib/format";
-import type { Company, PaymentAccount, ExpenseCategory, DestinationType } from "@/lib/types";
+import type { Company, PaymentAccount, ExpenseCategory, DestinationType, Employee } from "@/lib/types";
+
+// § Employee Salary Tracking — the system-provided category name whose
+// selection requires an Employee (mirrors backend utils.SALARY_CATEGORY_NAME).
+const SALARY_CATEGORY_NAME = "Salary";
+
+export function isSalaryCategorySelected(categories: ExpenseCategory[] | undefined, categoryId: string | undefined): boolean {
+  const cat = categories?.find((c) => c.id === categoryId);
+  return !!(cat?.is_system && cat.name === SALARY_CATEGORY_NAME);
+}
 
 /** The "Deductions" + "Route Remaining Balance" sections shared by every
  * settlement-routing flow in the app: PaymentReceiptModal (Part A) and
@@ -49,6 +58,14 @@ type CategoryModeProps = {
   onHomeExpenseCatIdChange: (v: string) => void;
   homeExpenseDescription?: never;
   onHomeExpenseDescriptionChange?: never;
+  // § Employee Salary Tracking — only rendered when the selected category
+  // is the system "Salary" category. Optional so existing category-mode
+  // callers that deliberately exclude "Salary" from expenseCategories
+  // (Payment Receipt, Cylinder Return, Unified Sale — Salary doesn't apply
+  // to Dowa-side customer money) don't need to pass these at all.
+  employees?: Employee[];
+  homeExpenseEmployeeId?: string;
+  onHomeExpenseEmployeeIdChange?: (v: string) => void;
 };
 
 type DescriptionModeProps = {
@@ -57,6 +74,9 @@ type DescriptionModeProps = {
   onHomeExpenseCatIdChange?: never;
   homeExpenseDescription: string;
   onHomeExpenseDescriptionChange: (v: string) => void;
+  employees?: never;
+  homeExpenseEmployeeId?: never;
+  onHomeExpenseEmployeeIdChange?: never;
 };
 
 type Props = CommonProps & (CategoryModeProps | DescriptionModeProps);
@@ -67,6 +87,7 @@ export default function SettlementDestinationFields({
   homeExpenseDescription, onHomeExpenseDescriptionChange,
   homeExpenseCatId, onHomeExpenseCatIdChange,
   expenseCategories,
+  employees, homeExpenseEmployeeId, onHomeExpenseEmployeeIdChange,
   ownerDrawingsAmount, onOwnerDrawingsAmountChange,
   destinationType, onDestinationTypeChange,
   targetPlantId, onTargetPlantIdChange,
@@ -77,6 +98,8 @@ export default function SettlementDestinationFields({
   const homeExpense = parseFloat(homeExpenseAmount) || 0;
   const ownerDrawings = parseFloat(ownerDrawingsAmount) || 0;
   const netRemaining = Math.max(0, grossAmount - homeExpense - ownerDrawings);
+
+  const isSalarySelected = isSalaryCategorySelected(expenseCategories, homeExpenseCatId);
 
   return (
     <>
@@ -110,6 +133,23 @@ export default function SettlementDestinationFields({
             </Field>
           )}
         </div>
+
+        {isSalarySelected && employees && onHomeExpenseEmployeeIdChange && (
+          <Field label={t("expenses.employeeLabel")}>
+            <select
+              value={homeExpenseEmployeeId || ""}
+              onChange={(e) => onHomeExpenseEmployeeIdChange(e.target.value)}
+              className={inputClass}
+            >
+              <option value="">{t("expenses.selectEmployee")}</option>
+              {employees.map((emp: Employee) => (
+                <option key={emp.id} value={emp.id}>
+                  {emp.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
 
         <Field label={t("modals.ownerDrawingsAmountPkr")}>
           <AmountInput value={ownerDrawingsAmount} onChange={onOwnerDrawingsAmountChange} placeholder="0" className={inputClass} />

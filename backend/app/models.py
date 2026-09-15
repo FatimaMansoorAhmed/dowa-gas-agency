@@ -133,6 +133,14 @@ class Customer(Base):
     # Meaningless/unused for customer_type != "shop".
     shop_opening_cash = Column(Numeric(14, 2), nullable=False, default=0)
 
+    # § Add Filled Cylinder Stock — one-time-only. Flips true the first time
+    # routers/shops.py::create_manual_stock_batch succeeds for this shop
+    # (onboarding: enter physical stock already on-site); every later call
+    # is rejected outright, with no separate "manual correction" path — see
+    # that function's docstring for the explicit scope decision this
+    # enforces. Meaningless/unused for customer_type != "shop".
+    initial_stock_added = Column(Boolean, nullable=False, default=False)
+
     # "Year Opening Balance" — the anchor for the whole ledger. Monthly
     # opening balances (see opening_balance_month below) are always derived
     # from this plus everything that happened since, never edited by hand.
@@ -255,6 +263,13 @@ class ExpenseCategory(Base):
     name = Column(String, unique=True, nullable=False)
     description = Column(String, nullable=True)
     active = Column(String, nullable=False, default="active")
+    # System-provided category (§ Employee Salary Tracking) — currently
+    # only "Salary", seeded once at startup (see migrations.py). Blocks
+    # deactivate_category server-side (routers/expense_categories.py) the
+    # same way Product has no delete/deactivate endpoint at all — this is
+    # the one category the app itself depends on existing and staying
+    # active, unlike every user-created category.
+    is_system = Column(Boolean, nullable=False, default=False)
 
 
 class Sale(Base):
@@ -451,6 +466,14 @@ class Expense(Base):
     # live — read shop_id/source_shop_*_id/the live join for those.
     shop_origin_label = Column(String, nullable=True)
 
+    # Employee Salary Tracking (§ Employee Salary Tracking) — required
+    # whenever category_id is the system "Salary" category (enforced at
+    # the router, not the DB, same convention as every other "required if
+    # X" field in this app); null for every other category. Reduces
+    # Employee.current_balance by `amount` — the same "an Expense is a
+    # payment against what's owed" relationship a Customer Payment has.
+    employee_id = Column(GUID(), ForeignKey("employees.id"), nullable=True)
+
     status = Column(String, nullable=False, default="active")
     entered_by = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -461,6 +484,59 @@ class Expense(Base):
     source_shop_sale = relationship("ShopSale", foreign_keys=[source_shop_sale_id])
     source_shop_cash_transfer = relationship("ShopCashTransfer", foreign_keys=[source_shop_cash_transfer_id])
     source_shop_customer_payment = relationship("ShopCustomerPayment", foreign_keys=[source_shop_customer_payment_id])
+
+
+class Employee(Base):
+    """An employee whose monthly salary is tracked as a running balance —
+    same opening/current-balance convention as Customer's receivable/
+    Company's payable, just on the "amount owed TO this person" side.
+    current_balance > 0 = still owed to them (salary due); < 0 = they were
+    overpaid (credit carried into next month's accrual) — never clamped to
+    zero, mirroring every other advance/credit convention in this app.
+    monthly_salary can change over time; past months' actual accrued
+    amounts live on their own frozen EmployeeSalaryAccrual rows below,
+    never recomputed from today's monthly_salary (§ Employee Salary
+    Tracking)."""
+    __tablename__ = "employees"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    name = Column(String, nullable=False)
+    monthly_salary = Column(Numeric(14, 2), nullable=False)
+    # active | inactive — an inactive employee stops accruing new salary
+    # (see routers/employees.py's _accrue_if_needed) but keeps their
+    # history and whatever balance they still have.
+    status = Column(String, nullable=False, default="active")
+    opening_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    opening_balance_month = Column(String, nullable=False, default=karachi_month_str)
+    current_balance = Column(Numeric(14, 2), nullable=False, default=0)
+    entered_by = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class EmployeeSalaryAccrual(Base):
+    """One month's salary becoming owed — an immutable row, frozen at
+    whatever Employee.monthly_salary was for that specific month (never
+    recomputed if the salary later changes, same "never overwritten"
+    convention as RateEntry). Created lazily — the first time anything
+    reads this employee after their opening_balance_month has fallen
+    behind the real current month, routers/employees.py's
+    _accrue_if_needed inserts one of these per missed month (correctly
+    catching up if nobody opened the Salary page for 2-3 months, not just
+    detecting "the month changed once") and bumps current_balance by
+    `amount` each time. Dated the 1st of its own month so it sorts
+    correctly alongside Salary-category Expense rows in this employee's
+    ledger."""
+    __tablename__ = "employee_salary_accruals"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    display_id = Column(String, unique=True, nullable=False)  # e.g. SALACC-000123
+    employee_id = Column(GUID(), ForeignKey("employees.id"), nullable=False)
+    month = Column(String, nullable=False)  # "YYYY-MM"
+    date = Column(DateTime, nullable=False)
+    amount = Column(Numeric(14, 2), nullable=False)
+    status = Column(String, nullable=False, default="active")
+    entered_by = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class OwnerDrawings(Base):
@@ -1061,12 +1137,17 @@ class ShopSale(Base):
     """A shop's retail sale to its own end customers — a real-world event
     Dowa's ordinary Sale model doesn't represent (it's not a Dowa
     receivable; a shop's Load already paid Dowa in full via the normal
-    Sale/Customer.current_balance flow). Priced ALWAYS from the Board Rate
-    in effect on `date`, never from any ShopStockBatch.load_rate_per_kg —
-    FIFO (see ShopSaleBatchConsumption) only ever decides which physical
-    batch quantity is reduced, never the money. Every pricing field below
-    is a frozen snapshot, computed once at creation and never recomputed —
-    a later Board Rate change must never alter an existing ShopSale."""
+    Sale/Customer.current_balance flow). Priced from board_rate_per_kg_used
+    (manually typed at sale time — see routers/shops.py::_apply_shop_sale,
+    § Board Rate manual entry) — never from any ShopStockBatch.load_rate_
+    per_kg, and never from any resolved system-wide BoardRate row.
+    total_amount may be replaced outright by a manually typed final price
+    (manual_rate_override, § Selling Price override) — sale_rate_per_
+    cylinder/board_rate_per_kg_used stay board-rate-derived regardless,
+    the audit trail of what the calculation would have produced. FIFO (see
+    ShopSaleBatchConsumption) only ever decides which physical batch
+    quantity is reduced, never the money. Every pricing field below is a
+    frozen snapshot, computed once at creation and never recomputed."""
     __tablename__ = "shop_sales"
 
     id = Column(GUID(), primary_key=True, default=gen_uuid)
@@ -1119,8 +1200,29 @@ class ShopSale(Base):
     # (their sale_rate_per_cylinder was computed from the full physical
     # weight, not the saleable weight) and are left NULL rather than guessed.
     saleable_kg_used = Column(Numeric(8, 2), nullable=True)
-    sale_rate_per_cylinder = Column(Numeric(10, 2), nullable=False)  # = board_rate_per_kg_used * saleable_kg_used
-    total_amount = Column(Numeric(14, 2), nullable=False)  # = quantity * sale_rate_per_cylinder
+    # ALWAYS = board_rate_per_kg_used * saleable_kg_used — the audit trail
+    # of what the board-rate calculation produced, never touched by the
+    # Selling Price override below (§ Selling Price override).
+    sale_rate_per_cylinder = Column(Numeric(10, 2), nullable=False)
+    # = quantity(cylinder-equivalent) * sale_rate_per_cylinder, UNLESS
+    # manual_rate_override is true — then this is whatever final amount the
+    # user typed directly into the Selling Price override field, replacing
+    # that calculation outright (§ Selling Price override). EXCLUDING GST
+    # either way — Dashboard/P&L/Tonnage read this, never grand_total.
+    total_amount = Column(Numeric(14, 2), nullable=False)
+    manual_rate_override = Column(Boolean, nullable=False, default=False)
+
+    # GST on Sale, extended to Shop Sale (optional, locked at entry — same
+    # convention as models.Sale.gst_enabled/UnifiedSaleBatch.gst_enabled).
+    # gst_amount/grand_total are computed from gst_rate at that moment, then
+    # frozen forever — a later gst_rate change never recomputes an existing
+    # row. grand_total (= total_amount + gst_amount, or just total_amount
+    # when GST is off) is what actually drives amount_received bounds/
+    # outstanding — see routers/shops.py::_apply_shop_sale.
+    gst_enabled = Column(Boolean, nullable=False, default=False)
+    gst_rate = Column(Numeric(5, 2), nullable=True)
+    gst_amount = Column(Numeric(14, 2), nullable=False, default=0)
+    grand_total = Column(Numeric(14, 2), nullable=False)  # = total_amount + gst_amount; equals total_amount when GST is off
 
     notes = Column(String, nullable=True)
     status = Column(String, nullable=False, default="active")  # active | cancelled | corrected
@@ -1142,6 +1244,16 @@ class ShopSale(Base):
     # (§ Settlement Routing — Shop Sale form). Only set on a settlement-
     # routed sale with a non-zero home_expense_amount; null otherwise.
     settlement_home_expense_description = Column(String, nullable=True)
+    # § Home Expense category reversion — replaces free-text description
+    # going forward (kept, never dropped, for historical rows created
+    # while the free-text version was live). category_id lets the on-
+    # screen breakdown chip resolve a name without a join, same "store
+    # what's needed to render without a join" convention as
+    # settlement_account_id above; employee_id is required whenever that
+    # category is the system "Salary" category (§ Employee Salary
+    # Tracking), reducing Employee.current_balance by the deducted amount.
+    settlement_home_expense_category_id = Column(GUID(), ForeignKey("expense_categories.id"), nullable=True)
+    settlement_home_expense_employee_id = Column(GUID(), ForeignKey("employees.id"), nullable=True)
     settlement_home_expense_amount = Column(Numeric(14, 2), nullable=True)
     settlement_owner_drawings_amount = Column(Numeric(14, 2), nullable=True)
 
@@ -1191,6 +1303,16 @@ class ShopCashTransfer(Base):
     # Free-text description the user typed for the Home Expense deduction —
     # same convention as ShopSale.settlement_home_expense_description.
     settlement_home_expense_description = Column(String, nullable=True)
+    # § Home Expense category reversion — replaces free-text description
+    # going forward (kept, never dropped, for historical rows created
+    # while the free-text version was live). category_id lets the on-
+    # screen breakdown chip resolve a name without a join, same "store
+    # what's needed to render without a join" convention as
+    # settlement_account_id above; employee_id is required whenever that
+    # category is the system "Salary" category (§ Employee Salary
+    # Tracking), reducing Employee.current_balance by the deducted amount.
+    settlement_home_expense_category_id = Column(GUID(), ForeignKey("expense_categories.id"), nullable=True)
+    settlement_home_expense_employee_id = Column(GUID(), ForeignKey("employees.id"), nullable=True)
     settlement_home_expense_amount = Column(Numeric(14, 2), nullable=False, default=0)
     settlement_owner_drawings_amount = Column(Numeric(14, 2), nullable=False, default=0)
 
@@ -1320,6 +1442,16 @@ class ShopCustomerPayment(Base):
     settlement_target_plant_id = Column(GUID(), ForeignKey("companies.id"), nullable=True)
     settlement_account_id = Column(GUID(), ForeignKey("payment_accounts.id"), nullable=True)
     settlement_home_expense_description = Column(String, nullable=True)
+    # § Home Expense category reversion — replaces free-text description
+    # going forward (kept, never dropped, for historical rows created
+    # while the free-text version was live). category_id lets the on-
+    # screen breakdown chip resolve a name without a join, same "store
+    # what's needed to render without a join" convention as
+    # settlement_account_id above; employee_id is required whenever that
+    # category is the system "Salary" category (§ Employee Salary
+    # Tracking), reducing Employee.current_balance by the deducted amount.
+    settlement_home_expense_category_id = Column(GUID(), ForeignKey("expense_categories.id"), nullable=True)
+    settlement_home_expense_employee_id = Column(GUID(), ForeignKey("employees.id"), nullable=True)
     settlement_home_expense_amount = Column(Numeric(14, 2), nullable=True)
     settlement_owner_drawings_amount = Column(Numeric(14, 2), nullable=True)
 
@@ -1402,6 +1534,11 @@ class ShopExpenseLine(Base):
     line_type = Column(String, nullable=False, default="expense")
     amount = Column(Numeric(14, 2), nullable=False)
     description = Column(String, nullable=True)
+    # Employee Salary Tracking (§ Employee Salary Tracking) — required
+    # whenever category_id is the system "Salary" category, same
+    # convention as Expense.employee_id above. Reduces Employee.
+    # current_balance by `amount`.
+    employee_id = Column(GUID(), ForeignKey("employees.id"), nullable=True)
 
     transaction = relationship("ShopExpenseTransaction", back_populates="lines")
     category = relationship("ExpenseCategory")

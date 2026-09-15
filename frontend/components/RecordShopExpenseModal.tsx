@@ -7,11 +7,12 @@ import AmountInput from "./AmountInput";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { todayLocalInput } from "@/lib/format";
-import type { ExpenseCategory, PaymentAccount } from "@/lib/types";
+import { isSalaryCategorySelected } from "./SettlementDestinationFields";
+import type { ExpenseCategory, PaymentAccount, Employee } from "@/lib/types";
 
-type Line = { category_id: string; line_type: "expense" | "owner_withdrawal"; amount: string; description: string };
+type Line = { category_id: string; line_type: "expense" | "owner_withdrawal"; amount: string; description: string; employee_id: string };
 
-const emptyLine = (): Line => ({ category_id: "", line_type: "expense", amount: "", description: "" });
+const emptyLine = (): Line => ({ category_id: "", line_type: "expense", amount: "", description: "", employee_id: "" });
 
 export default function RecordShopExpenseModal({
   shopId, onClose, onSaved,
@@ -20,6 +21,7 @@ export default function RecordShopExpenseModal({
   const { user } = useAuth();
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
   const [date, setDate] = useState(todayLocalInput());
   const [lines, setLines] = useState<Line[]>([emptyLine()]);
   const [accountId, setAccountId] = useState("");
@@ -30,11 +32,15 @@ export default function RecordShopExpenseModal({
 
   useEffect(() => { api.expenseCategories.list().then(setCategories); }, []);
   useEffect(() => { api.paymentAccounts.list().then((a) => setAccounts(a.filter((x) => x.active === "active"))); }, []);
+  useEffect(() => { api.employees.list().then(setEmployees); }, []);
 
   const total = lines.reduce((sum, l) => sum + (parseFloat(l.amount) || 0), 0);
 
   const canSubmit = date && lines.length > 0 && lines.every(
-    (l) => (l.line_type === "owner_withdrawal" || l.category_id) && parseFloat(l.amount) > 0
+    (l) =>
+      (l.line_type === "owner_withdrawal" || l.category_id) &&
+      parseFloat(l.amount) > 0 &&
+      (l.line_type === "owner_withdrawal" || !isSalaryCategorySelected(categories, l.category_id) || !!l.employee_id)
   );
 
   const updateLine = (i: number, patch: Partial<Line>) =>
@@ -58,6 +64,7 @@ export default function RecordShopExpenseModal({
           line_type: l.line_type,
           amount: parseFloat(l.amount),
           description: l.description || undefined,
+          employee_id: l.line_type === "expense" && l.employee_id ? l.employee_id : undefined,
         })),
         account_id: accountId || undefined,
         payment_source: paymentSource || undefined,
@@ -164,6 +171,22 @@ export default function RecordShopExpenseModal({
                 <Trash2 size={14} />
               </button>
             </div>
+            {line.line_type === "expense" && isSalaryCategorySelected(categories, line.category_id) && (
+              <div className="mt-1.5 max-w-[280px]">
+                <select
+                  value={line.employee_id}
+                  onChange={(e) => updateLine(i, { employee_id: e.target.value })}
+                  className={inputClass}
+                >
+                  <option value="">{t("expenses.selectEmployee")}</option>
+                  {employees.map((emp) => (
+                    <option key={emp.id} value={emp.id}>
+                      {emp.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             </div>
           ))}
 

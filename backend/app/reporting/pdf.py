@@ -46,6 +46,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_RIGHT
 
 from app import schemas
+from app.reporting.invoice_pdf import BUSINESS
 
 FONTS_DIR = os.path.join(os.path.dirname(__file__), "fonts")
 URDU_FONT = "NotoNaskhArabic"
@@ -283,6 +284,14 @@ def render_daily_report_pdf(
     cell_style = ParagraphStyle("Cell", parent=styles["Normal"], fontSize=8)
 
     title_text = f"DOWA Gas Agency — {_urdu_span('روزانہ رپورٹ') if is_ur else 'Daily Report'}"
+    # § System-Wide PDF Statement Header Configuration — company address/
+    # phone/NTN, always plain Latin text regardless of report language (a
+    # legal/contact detail, not UI copy), so it never goes through
+    # _urdu_span/_mixed_line. Sourced from the single BUSINESS dict in
+    # invoice_pdf.py so every PDF in the system agrees, not just this one.
+    company_info_text = (
+        ", ".join(BUSINESS["address_lines"]) + "  |  " + BUSINESS["phone"] + "  |  " + BUSINESS["ntn"]
+    )
     # Both header lines below are built as ONE logical string in natural
     # reading order — label(s) then value(s), left pair before right pair,
     # exactly as read aloud — and, in Urdu, run through _mixed_line() ONCE
@@ -312,6 +321,7 @@ def render_daily_report_pdf(
 
     story = [
         Paragraph(title_text, title_style),
+        Paragraph(company_info_text, meta_style),
         Paragraph(business_date_text, meta_style),
         Paragraph(generated_text, meta_style),
         Spacer(1, 8 * mm),

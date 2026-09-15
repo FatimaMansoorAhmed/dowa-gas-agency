@@ -26,6 +26,7 @@ import {
   UserCog,
   Menu,
   X,
+  UserRound,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { CylinderStripe } from "./ui";
@@ -49,6 +50,7 @@ const NAV = [
    { href: "/cash-managment", labelKey: "nav.cashBook", icon: Wallet },
   { href: "/owner-capital", labelKey: "nav.ownerInvestment", icon: Banknote },
   { href: "/shops", labelKey: "nav.shops", icon: Store },
+  { href: "/employees", labelKey: "nav.employees", icon: UserRound },
   { href: "/daily-activity", labelKey: "nav.dailyActivity", icon: CalendarClock },
   { href: "/reports", labelKey: "nav.reports", icon: FileStack },
 

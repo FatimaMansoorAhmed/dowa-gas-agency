@@ -26,7 +26,10 @@ import type {
   ShopProductStockSummary,
   Company,
   DestinationType,
+  ExpenseCategory,
+  Employee,
 } from "@/lib/types";
+import { isSalaryCategorySelected } from "./SettlementDestinationFields";
 
 /**
  * Record Shop Sale
@@ -69,6 +72,8 @@ export default function RecordShopSaleModal({
   const [customers, setCustomers] = useState<ShopSupplyCustomer[]>([]);
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
+  const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
 
   const [liveStockProducts, setLiveStockProducts] = useState(stockProducts);
   useEffect(() => {
@@ -81,6 +86,25 @@ export default function RecordShopSaleModal({
   const [unit, setUnit] = useState<"cylinder" | "kg">("cylinder");
   const [quantity, setQuantity] = useState("");
 
+  // § Board Rate manual entry — required, never pre-filled/defaulted from
+  // any resolved system-wide rate (see routers/shops.py::_apply_shop_sale,
+  // which no longer calls resolve_board_rate at all). The user types this
+  // fresh every time a sale is recorded.
+  const [boardRatePerKg, setBoardRatePerKg] = useState("");
+
+  // § Selling Price override — optional; when filled, replaces the FINAL
+  // TOTAL AMOUNT outright (post board-rate calculation) — never a
+  // per-cylinder rate the user has to reverse-engineer. Never pre-filled;
+  // the live board-rate-computed total is shown as the field's placeholder
+  // (see the "leave blank to use..." hint) so the user always sees what
+  // they're overriding without the field itself holding that value.
+  const [manualTotalAmount, setManualTotalAmount] = useState("");
+
+  // § GST on Shop Sale — optional, default off, same convention as Unified
+  // Sale's own gstEnabled/gstRate.
+  const [gstEnabled, setGstEnabled] = useState(false);
+  const [gstRate, setGstRate] = useState("");
+
   const [paymentType, setPaymentType] = useState<"cash" | "credit">("cash");
   const [supplyCustomerId, setSupplyCustomerId] = useState("");
 
@@ -91,10 +115,13 @@ export default function RecordShopSaleModal({
   // defaulting to 0/fully-credit when left untouched).
   const [amountReceived, setAmountReceived] = useState("");
 
-  // Settlement routing state — Home Expense is a free-text description
-  // (e.g. "fuel", "tea"), NOT a Category dropdown. The amount stays as-is.
+  // Settlement routing state — Home Expense is category-based (§ Home
+  // Expense category reversion), same ExpenseCategory list the main
+  // Expenses page uses, including the system "Salary" category (which
+  // requires picking an Employee — § Employee Salary Tracking).
   const [homeExpenseAmount, setHomeExpenseAmount] = useState("");
-  const [homeExpenseDescription, setHomeExpenseDescription] = useState("");
+  const [homeExpenseCategoryId, setHomeExpenseCategoryId] = useState("");
+  const [homeExpenseEmployeeId, setHomeExpenseEmployeeId] = useState("");
   const [ownerDrawingsAmount, setOwnerDrawingsAmount] = useState("");
   const [destinationType, setDestinationType] = useState<DestinationType>("account");
   const [targetPlantId, setTargetPlantId] = useState("");
@@ -133,6 +160,14 @@ export default function RecordShopSaleModal({
     });
   }, []);
 
+  useEffect(() => {
+    api.expenseCategories.list().then((c) => setExpenseCategories(c.filter((x) => x.active === "active" || x.is_system)));
+  }, []);
+
+  useEffect(() => {
+    api.employees.list().then(setEmployees);
+  }, []);
+
   /* -------------------------------------------------------------
      SELECTED PRODUCT & PRICE CALCULATION
   ------------------------------------------------------------- */
@@ -141,15 +176,49 @@ export default function RecordShopSaleModal({
   const priceRow = liveStockProducts.find((p) => p.product_id === productId);
 
   const qty = parseFloat(quantity);
+  const typedBoardRate = parseFloat(boardRatePerKg);
+  const typedManualTotal = parseFloat(manualTotalAmount);
+  const hasManualOverride = !isNaN(typedManualTotal) && typedManualTotal > 0;
 
-  const perUnitRate = priceRow
-    ? unit === "kg"
-      ? priceRow.board_rate_per_kg
-      : priceRow.sale_rate_per_cylinder
-    : null;
+  // § Board Rate manual entry — priceRow is read here ONLY for saleable_kg
+  // (a product-weight fact, unaffected by this change — still comes from
+  // _compute_stock_summary's own untouched resolve_board_rate call);
+  // priceRow.sale_rate_per_cylinder/board_rate_per_kg (the auto-resolved
+  // reference rate) are deliberately never used to price this sale.
+  const saleableKg = priceRow ? parseFloat(priceRow.saleable_kg) : null;
+  const cylindersEquivalent = unit === "kg" && saleableKg ? qty / saleableKg : qty;
 
-  const saleAmount =
-    perUnitRate != null && qty > 0 ? qty * parseFloat(perUnitRate) : null;
+  // perUnitRate/saleRatePerCylinder are ALWAYS board-rate-derived — the
+  // audit trail of what the board-rate math would have produced. Mirrors
+  // routers/shops.py::_apply_shop_sale exactly: the § Selling Price
+  // override below replaces the final TOTAL AMOUNT outright, never this
+  // per-cylinder figure.
+  const perUnitRate =
+    saleableKg != null && !isNaN(typedBoardRate) && typedBoardRate > 0
+      ? unit === "kg"
+        ? typedBoardRate // Rs/kg, shown directly
+        : typedBoardRate * saleableKg // Rs/cylinder
+      : null;
+
+  const saleRatePerCylinder =
+    saleableKg != null && !isNaN(typedBoardRate) && typedBoardRate > 0
+      ? typedBoardRate * saleableKg
+      : null;
+
+  const boardRateComputedAmount =
+    saleRatePerCylinder != null && qty > 0 ? cylindersEquivalent * saleRatePerCylinder : null;
+
+  // § Selling Price override — replaces the final total outright when
+  // present (never the per-cylinder rate above), same as
+  // routers/shops.py::_apply_shop_sale's manual_total_amount handling.
+  const saleAmount = hasManualOverride ? typedManualTotal : boardRateComputedAmount;
+
+  // § GST on Shop Sale — saleAmount stays GST-exclusive (matches
+  // total_amount server-side); grandTotal is what's actually owed/
+  // collected from here on, mirroring unified-sale/page.tsx exactly.
+  const effectiveGstRate = gstEnabled ? parseFloat(gstRate) || 0 : 0;
+  const gstAmount = saleAmount != null && effectiveGstRate > 0 ? (saleAmount * effectiveGstRate) / 100 : 0;
+  const grandTotal = saleAmount != null ? saleAmount + gstAmount : null;
 
   // Amount Received is only ever editable once a real Supply Customer is
   // named — Walk-in (no customer) always collects the full amount, on
@@ -165,29 +234,31 @@ export default function RecordShopSaleModal({
       setAmountReceived("");
       return;
     }
-    setAmountReceived(paymentType === "cash" && saleAmount != null ? String(saleAmount) : "");
+    setAmountReceived(paymentType === "cash" && grandTotal != null ? String(grandTotal) : "");
     // Only reset on an actual mode switch (customer or payment type
-    // changing) — never on saleAmount changing, which would otherwise wipe
-    // out a manually-typed partial amount every time quantity is edited.
+    // changing) — never on saleAmount/grandTotal changing, which would
+    // otherwise wipe out a manually-typed partial amount every time
+    // quantity is edited.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supplyCustomerId, paymentType, formMode]);
 
-  // Effective amount collected now (for Walk-in, it equals total
-  // saleAmount — there's no one to owe the rest to, on either payment
-  // type; for Payment Only, amountReceived IS the whole transaction, not a
-  // partial-payment-against-a-sale amount). A blank/0 amountReceived when
-  // a customer IS named simply means "fully unpaid" — no separate
-  // checkbox needed to distinguish that from "not collecting anything" (§5).
+  // Effective amount collected now (for Walk-in, it equals the GST-
+  // inclusive grandTotal — there's no one to owe the rest to, on either
+  // payment type; for Payment Only, amountReceived IS the whole
+  // transaction, not a partial-payment-against-a-sale amount). A blank/0
+  // amountReceived when a customer IS named simply means "fully unpaid" —
+  // no separate checkbox needed to distinguish that from "not collecting
+  // anything" (§5).
   const effectiveCollectedAmount =
     formMode === "payment_only"
       ? parseFloat(amountReceived) || 0
       : !supplyCustomerId
-      ? saleAmount || 0
+      ? grandTotal || 0
       : parseFloat(amountReceived) || 0;
 
   const balanceDue =
-    formMode === "record_sale" && saleAmount != null && !!supplyCustomerId
-      ? saleAmount - effectiveCollectedAmount
+    formMode === "record_sale" && grandTotal != null && !!supplyCustomerId
+      ? grandTotal - effectiveCollectedAmount
       : null;
 
   /* -------------------------------------------------------------
@@ -204,13 +275,24 @@ export default function RecordShopSaleModal({
      VALIDATION
   ------------------------------------------------------------- */
 
+  const homeExpenseNeedsEmployee =
+    parseFloat(homeExpenseAmount) > 0 &&
+    isSalaryCategorySelected(expenseCategories, homeExpenseCategoryId) &&
+    !homeExpenseEmployeeId;
+
   const canSubmit =
-    formMode === "payment_only"
+    !homeExpenseNeedsEmployee &&
+    (formMode === "payment_only"
       ? !!supplyCustomerId && !!date && parseFloat(amountReceived) > 0
       : !!productId &&
         !!date &&
         parseFloat(quantity) > 0 &&
-        (paymentType === "cash" || !!supplyCustomerId);
+        // § Board Rate manual entry — required for a Record Sale (never
+        // for Payment Only, which has no product/pricing at all).
+        typedBoardRate > 0 &&
+        // § GST on Shop Sale — a checked box needs an actual rate.
+        (!gstEnabled || parseFloat(gstRate) > 0) &&
+        (paymentType === "cash" || !!supplyCustomerId));
 
   /* -------------------------------------------------------------
      SUBMIT
@@ -241,7 +323,8 @@ export default function RecordShopSaleModal({
           entered_by: user.name,
           destination_type: destinationType,
           home_expense_amount: parseFloat(homeExpenseAmount) || 0,
-          home_expense_description: homeExpenseDescription.trim() || undefined,
+          home_expense_category_id: homeExpenseCategoryId || undefined,
+          home_expense_employee_id: homeExpenseEmployeeId || undefined,
           owner_drawings_amount: parseFloat(ownerDrawingsAmount) || 0,
         };
         if (destinationType === "plant") {
@@ -259,6 +342,10 @@ export default function RecordShopSaleModal({
         product_id: productId,
         quantity: parseFloat(quantity),
         unit,
+        board_rate_per_kg: typedBoardRate,
+        manual_total_amount: hasManualOverride ? typedManualTotal : undefined,
+        gst_enabled: gstEnabled,
+        gst_rate: gstEnabled ? effectiveGstRate : undefined,
         payment_type: paymentType,
         supply_customer_id: supplyCustomerId || undefined,
         notes: notes || undefined,
@@ -278,7 +365,8 @@ export default function RecordShopSaleModal({
       if (effectiveCollectedAmount > 0) {
         payload.destination_type = destinationType;
         payload.home_expense_amount = parseFloat(homeExpenseAmount) || 0;
-        payload.home_expense_description = homeExpenseDescription.trim() || undefined;
+        payload.home_expense_category_id = homeExpenseCategoryId || undefined;
+        payload.home_expense_employee_id = homeExpenseEmployeeId || undefined;
         payload.owner_drawings_amount = parseFloat(ownerDrawingsAmount) || 0;
 
         if (destinationType === "plant") {
@@ -431,8 +519,12 @@ export default function RecordShopSaleModal({
                       shopContext={shopContext}
                       homeExpenseAmount={homeExpenseAmount}
                       onHomeExpenseAmountChange={setHomeExpenseAmount}
-                      homeExpenseDescription={homeExpenseDescription}
-                      onHomeExpenseDescriptionChange={setHomeExpenseDescription}
+                      expenseCategories={expenseCategories}
+                      homeExpenseCatId={homeExpenseCategoryId}
+                      onHomeExpenseCatIdChange={setHomeExpenseCategoryId}
+                      employees={employees}
+                      homeExpenseEmployeeId={homeExpenseEmployeeId}
+                      onHomeExpenseEmployeeIdChange={setHomeExpenseEmployeeId}
                       ownerDrawingsAmount={ownerDrawingsAmount}
                       onOwnerDrawingsAmountChange={setOwnerDrawingsAmount}
                       destinationType={destinationType}
@@ -526,6 +618,52 @@ export default function RecordShopSaleModal({
                   />
                 </Field>
               </div>
+
+              {/* § Board Rate manual entry — required, no pre-fill/default
+                  (never resolved from any system-wide rate — see
+                  routers/shops.py::_apply_shop_sale). The user types this
+                  fresh on every sale. */}
+              <div className="mt-5">
+                <Field label={t("modals.boardRatePerKgLabel")}>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={boardRatePerKg}
+                    onChange={(e) => setBoardRatePerKg(e.target.value)}
+                    placeholder={t("modals.boardRatePerKgPlaceholder")}
+                    className={`${inputClass} h-12`}
+                  />
+                </Field>
+                <p className="mt-1.5 font-body text-[11px] text-slate-500">
+                  {t("modals.boardRatePerKgRequiredHint")}
+                </p>
+              </div>
+
+              {/* § GST on Shop Sale — optional, applies to this sale's
+                  total_amount; frozen server-side at creation, same
+                  convention as Unified Sale's own GST section. */}
+              <div className="mt-5 border-t border-slate-200 pt-5">
+                <Field label={t("unifiedSale.gstSectionTitle")}>
+                  <div className="flex items-center gap-3">
+                    <label className="flex items-center gap-1.5 font-body text-[13px] text-ink cursor-pointer">
+                      <input type="checkbox" checked={gstEnabled} onChange={(e) => setGstEnabled(e.target.checked)} />
+                      {t("unifiedSale.applyGst")}
+                    </label>
+                    {gstEnabled && (
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={gstRate}
+                        onChange={(e) => setGstRate(e.target.value)}
+                        placeholder="Rate %"
+                        className={`${inputClass} w-24`}
+                      />
+                    )}
+                  </div>
+                </Field>
+              </div>
             </section>
 
             {/* SALE AMOUNT PROMINENT DISPLAY */}
@@ -547,18 +685,56 @@ export default function RecordShopSaleModal({
                           ? t("modals.kgUnit")
                           : t("modals.cylinderOrMore")}
                         {perUnitRate != null && <> × {pkr(perUnitRate)}</>}
+                        {boardRateComputedAmount != null && <> = {pkr(boardRateComputedAmount)}</>}
                       </p>
                     )}
                   </div>
 
                   <div className="sm:text-right">
                     <p className="font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
-                      {t("modals.totalLabel")}
+                      {gstEnabled && effectiveGstRate > 0 ? t("unifiedSale.grandTotal") : t("modals.totalLabel")}
                     </p>
                     <p className="mt-1 font-display text-3xl font-bold text-brand-green sm:text-4xl">
-                      {saleAmount != null ? pkr(saleAmount) : "—"}
+                      {grandTotal != null ? pkr(grandTotal) : "—"}
                     </p>
+                    {gstEnabled && effectiveGstRate > 0 && saleAmount != null && (
+                      <p className="mt-1 font-mono text-[11px] text-slate-500">
+                        {t("modals.totalLabel")} {pkr(saleAmount)} + GST @ {gstRate}% ({pkr(gstAmount)})
+                      </p>
+                    )}
+                    {hasManualOverride && (
+                      <p className="mt-1 font-mono text-[11px] text-amber-600">
+                        {t("modals.manualRateOverrideBadge")}
+                      </p>
+                    )}
                   </div>
+                </div>
+
+                {/* § Selling Price override — optional, replaces the final
+                    total amount outright (never the per-cylinder rate
+                    above). Never pre-filled; the board-rate-computed
+                    amount is shown as the placeholder so the user always
+                    sees what they're overriding without it being typed in
+                    for them. */}
+                <div className="border-t border-teal/20 px-6 py-5">
+                  <Field label={t("modals.manualTotalAmountLabel")}>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={manualTotalAmount}
+                      onChange={(e) => setManualTotalAmount(e.target.value)}
+                      placeholder={
+                        boardRateComputedAmount != null
+                          ? t("modals.manualTotalAmountPlaceholderWithDefault", { amount: pkr(boardRateComputedAmount) })
+                          : t("modals.manualTotalAmountPlaceholder")
+                      }
+                      className={`${inputClass} h-12`}
+                    />
+                  </Field>
+                  <p className="mt-1.5 font-body text-[11px] text-slate-500">
+                    {t("modals.manualTotalAmountHint")}
+                  </p>
                 </div>
               </section>
             )}
@@ -628,8 +804,12 @@ export default function RecordShopSaleModal({
                   shopContext={shopContext}
                   homeExpenseAmount={homeExpenseAmount}
                   onHomeExpenseAmountChange={setHomeExpenseAmount}
-                  homeExpenseDescription={homeExpenseDescription}
-                  onHomeExpenseDescriptionChange={setHomeExpenseDescription}
+                  expenseCategories={expenseCategories}
+                  homeExpenseCatId={homeExpenseCategoryId}
+                  onHomeExpenseCatIdChange={setHomeExpenseCategoryId}
+                  employees={employees}
+                  homeExpenseEmployeeId={homeExpenseEmployeeId}
+                  onHomeExpenseEmployeeIdChange={setHomeExpenseEmployeeId}
                   ownerDrawingsAmount={ownerDrawingsAmount}
                   onOwnerDrawingsAmountChange={setOwnerDrawingsAmount}
                   destinationType={destinationType}
@@ -687,8 +867,12 @@ export default function RecordShopSaleModal({
                       shopContext={shopContext}
                       homeExpenseAmount={homeExpenseAmount}
                       onHomeExpenseAmountChange={setHomeExpenseAmount}
-                      homeExpenseDescription={homeExpenseDescription}
-                      onHomeExpenseDescriptionChange={setHomeExpenseDescription}
+                      expenseCategories={expenseCategories}
+                      homeExpenseCatId={homeExpenseCategoryId}
+                      onHomeExpenseCatIdChange={setHomeExpenseCategoryId}
+                      employees={employees}
+                      homeExpenseEmployeeId={homeExpenseEmployeeId}
+                      onHomeExpenseEmployeeIdChange={setHomeExpenseEmployeeId}
                       ownerDrawingsAmount={ownerDrawingsAmount}
                       onOwnerDrawingsAmountChange={setOwnerDrawingsAmount}
                       destinationType={destinationType}
@@ -786,13 +970,13 @@ export default function RecordShopSaleModal({
                   {t("modals.completeSaleDetailsToContinue")}
                 </p>
               )
-            ) : saleAmount != null ? (
+            ) : grandTotal != null ? (
               <>
                 <p className="font-mono text-[9px] font-semibold uppercase tracking-wider text-slate-400">
                   {t("modals.saleTotal")}
                 </p>
                 <p className="mt-0.5 font-display text-lg font-bold text-slate-800">
-                  {pkr(saleAmount)}
+                  {pkr(grandTotal)}
                 </p>
               </>
             ) : (

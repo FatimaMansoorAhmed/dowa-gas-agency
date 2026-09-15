@@ -5,7 +5,28 @@ import { useTranslation } from "react-i18next";
 import { Th, Td, Eyebrow, BalanceTag, Button } from "./ui";
 import { api } from "@/lib/api";
 import { pkr, fmtTime, resolveAccountLabel } from "@/lib/format";
-import type { Company, PaymentAccount, ShopSupplyCustomer, ShopSupplyCustomerLedgerOut, ShopSupplyCustomerLedgerRow } from "@/lib/types";
+import type { Company, PaymentAccount, ShopSupplyCustomer, ShopSupplyCustomerLedgerOut, ShopSupplyCustomerLedgerRow, ExpenseCategory, Employee } from "@/lib/types";
+
+// § Employee Salary Tracking — resolves settlement_home_expense_category_id/
+// settlement_home_expense_employee_id into readable names, same convention
+// as app/shops/[id]/page.tsx's resolveHomeExpenseLabel; falls back to the
+// raw settlement_home_expense_description for historical rows.
+function resolveHomeExpenseLabel(
+  row: ShopSupplyCustomerLedgerRow,
+  categories: ExpenseCategory[],
+  employees: Employee[],
+  t: (key: string, options?: Record<string, any>) => string
+): string {
+  const catId = row.settlement_home_expense_category_id;
+  if (catId) {
+    const cat = categories.find((c) => c.id === catId);
+    const empId = row.settlement_home_expense_employee_id;
+    const emp = empId ? employees.find((e) => e.id === empId) : undefined;
+    const catName = cat?.name || t("shopDetail.homeExpense");
+    return emp ? `${catName} · ${emp.name}` : catName;
+  }
+  return row.settlement_home_expense_description || t("shopDetail.homeExpense");
+}
 
 // Settlement Routing breakdown for a Payment Only collection (§ Payment
 // Only mode) — mirrors app/shops/[id]/page.tsx's renderShopSaleSettlement
@@ -29,19 +50,21 @@ function resolveRoutedLabel(
 }
 
 function SettlementBreakdown({
-  row, companies, accounts, t,
+  row, companies, accounts, t, categories = [], employees = [],
 }: {
   row: ShopSupplyCustomerLedgerRow;
   companies: Company[];
   accounts: PaymentAccount[];
   t: (key: string, options?: Record<string, any>) => string;
+  categories?: ExpenseCategory[];
+  employees?: Employee[];
 }) {
   const homeExpenseAmount = Number(row.settlement_home_expense_amount || "0");
   const ownerDrawingsAmount = Number(row.settlement_owner_drawings_amount || "0");
   const netSettlementAmount = parseFloat(row.payment_amount) - homeExpenseAmount - ownerDrawingsAmount;
   const parts: Array<{ label: string; value: string }> = [];
   if (homeExpenseAmount > 0) {
-    parts.push({ label: row.settlement_home_expense_description || t("shopDetail.homeExpense"), value: pkr(homeExpenseAmount) });
+    parts.push({ label: resolveHomeExpenseLabel(row, categories, employees, t), value: pkr(homeExpenseAmount) });
   }
   if (ownerDrawingsAmount > 0) {
     parts.push({ label: t("shopDetail.ownerDrawings"), value: pkr(ownerDrawingsAmount) });
@@ -92,10 +115,14 @@ export default function SupplyCustomerLedgerModal({
   // a "routed to" plant/account label, same as the Shop Detail page.
   const [companies, setCompanies] = useState<Company[]>([]);
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
+  const [categories, setCategories] = useState<ExpenseCategory[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
 
   useEffect(() => {
     api.companies.list().then(setCompanies).catch(() => {});
     api.paymentAccounts.list().then(setAccounts).catch(() => {});
+    api.expenseCategories.list().then(setCategories).catch(() => {});
+    api.employees.list().then(setEmployees).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -316,6 +343,8 @@ export default function SupplyCustomerLedgerModal({
                             <Th>{t("customerLedger.colId")}</Th>
                             <Th>{t("customerLedger.colDescription")}</Th>
                             <Th right>{t("customerLedger.colRate")}</Th>
+                            <Th right>{t("shopDetail.colBoardRateKg")}</Th>
+                            <Th right>{t("customerLedger.colGst")}</Th>
                             <Th right>{t("modals.colRemainingAmount")}</Th>
                             <Th right>{t("customerLedger.colPayment")}</Th>
                             <Th>{t("shopDetail.colSettlementBreakdown")}</Th>
@@ -329,18 +358,33 @@ export default function SupplyCustomerLedgerModal({
                               <Td mono>{r.display_id}</Td>
                               <Td>{r.description}</Td>
                               <Td right mono color="#8E8E93">{r.rate ? pkr(r.rate) : "—"}</Td>
+                              {/* § Board Rate column — always per-KG
+                                  (board_rate_per_kg_used), unlike `rate`
+                                  above which is unit-relative (a cylinder-
+                                  unit row's rate is sale_rate_per_cylinder,
+                                  not a rate/kg at all). */}
+                              <Td right mono color="#8E8E93">{r.board_rate_per_kg ? `${pkr(r.board_rate_per_kg)}/kg` : "—"}</Td>
+                              <Td right>
+                                {r.gst_rate && parseFloat(r.gst_rate) > 0 ? (
+                                  <span title={`${t("customerLedger.colGst")}: ${r.gst_rate}%`}>
+                                    {r.gst_rate}% · {pkr(r.gst_amount || "0")}
+                                  </span>
+                                ) : (
+                                  "—"
+                                )}
+                              </Td>
                               <Td right mono>{parseFloat(r.sale_amount) ? pkr(r.sale_amount) : "—"}</Td>
                               <Td right mono color="#1E8A5F">{parseFloat(r.payment_amount) ? pkr(r.payment_amount) : "—"}</Td>
                               <Td>
                                 {r.kind === "payment"
-                                  ? <SettlementBreakdown row={r} companies={companies} accounts={accounts} t={t} />
+                                  ? <SettlementBreakdown row={r} companies={companies} accounts={accounts} t={t} categories={categories} employees={employees} />
                                   : <span className="text-slate-400">—</span>}
                               </Td>
                               <Td right mono bold>{pkr(r.running_balance)}</Td>
                             </tr>
                           ))}
                           {!ledger.rows.length && (
-                            <tr><td colSpan={8} className="text-steel font-body text-[13px] py-6 text-center">{t("modals.noTransactionsYetForCustomer")}</td></tr>
+                            <tr><td colSpan={10} className="text-steel font-body text-[13px] py-6 text-center">{t("modals.noTransactionsYetForCustomer")}</td></tr>
                           )}
                         </tbody>
                       </table>

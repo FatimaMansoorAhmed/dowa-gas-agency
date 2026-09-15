@@ -8,7 +8,8 @@ import SettlementDestinationFields, { SpecialAccount } from "./SettlementDestina
 import { api, apiErrorMessage } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { todayLocalInput, pkr } from "@/lib/format";
-import type { ShopSupplyCustomer, PaymentAccount, Company, DestinationType } from "@/lib/types";
+import { isSalaryCategorySelected } from "./SettlementDestinationFields";
+import type { ShopSupplyCustomer, PaymentAccount, Company, DestinationType, ExpenseCategory, Employee } from "@/lib/types";
 
 /** Record a Supply Customer's payment to the shop (§25) — collects against
  * a credit ShopSale's receivable, increases Shop Cash (§ Shop Cash Money
@@ -39,11 +40,14 @@ export default function RecordSupplyCustomerPaymentModal({
 
   const [companies, setCompanies] = useState<Company[]>([]);
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
+  const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
 
   // Settlement Routing (§ Payment Only mode) — identical field set/defaults
   // to RecordShopSaleModal's payment_only tab.
   const [homeExpenseAmount, setHomeExpenseAmount] = useState("");
-  const [homeExpenseDescription, setHomeExpenseDescription] = useState("");
+  const [homeExpenseCategoryId, setHomeExpenseCategoryId] = useState("");
+  const [homeExpenseEmployeeId, setHomeExpenseEmployeeId] = useState("");
   const [ownerDrawingsAmount, setOwnerDrawingsAmount] = useState("");
   const [destinationType, setDestinationType] = useState<DestinationType>("account");
   const [targetPlantId, setTargetPlantId] = useState("");
@@ -55,9 +59,15 @@ export default function RecordSupplyCustomerPaymentModal({
 
   useEffect(() => { api.paymentAccounts.list().then((a) => setAccounts(a.filter((x) => x.active === "active"))); }, []);
   useEffect(() => { api.companies.list().then(setCompanies); }, []);
+  useEffect(() => { api.expenseCategories.list().then((c) => setExpenseCategories(c.filter((x) => x.active === "active" || x.is_system))); }, []);
+  useEffect(() => { api.employees.list().then(setEmployees); }, []);
 
   const effectiveAmount = parseFloat(amount) || 0;
-  const canSubmit = effectiveAmount > 0 && !!date;
+  const homeExpenseNeedsEmployee =
+    parseFloat(homeExpenseAmount) > 0 &&
+    isSalaryCategorySelected(expenseCategories, homeExpenseCategoryId) &&
+    !homeExpenseEmployeeId;
+  const canSubmit = effectiveAmount > 0 && !!date && !homeExpenseNeedsEmployee;
 
   const resolveAccountId = (): string | undefined => {
     if (destinationType !== "account") return undefined;
@@ -85,7 +95,8 @@ export default function RecordSupplyCustomerPaymentModal({
         entered_by: user.name,
         destination_type: destinationType,
         home_expense_amount: parseFloat(homeExpenseAmount) || 0,
-        home_expense_description: homeExpenseDescription.trim() || undefined,
+        home_expense_category_id: homeExpenseCategoryId || undefined,
+        home_expense_employee_id: homeExpenseEmployeeId || undefined,
         owner_drawings_amount: parseFloat(ownerDrawingsAmount) || 0,
       };
       if (destinationType === "plant") {
@@ -142,8 +153,12 @@ export default function RecordSupplyCustomerPaymentModal({
                 shopContext={shopContext}
                 homeExpenseAmount={homeExpenseAmount}
                 onHomeExpenseAmountChange={setHomeExpenseAmount}
-                homeExpenseDescription={homeExpenseDescription}
-                onHomeExpenseDescriptionChange={setHomeExpenseDescription}
+                expenseCategories={expenseCategories}
+                homeExpenseCatId={homeExpenseCategoryId}
+                onHomeExpenseCatIdChange={setHomeExpenseCategoryId}
+                employees={employees}
+                homeExpenseEmployeeId={homeExpenseEmployeeId}
+                onHomeExpenseEmployeeIdChange={setHomeExpenseEmployeeId}
                 ownerDrawingsAmount={ownerDrawingsAmount}
                 onOwnerDrawingsAmountChange={setOwnerDrawingsAmount}
                 destinationType={destinationType}

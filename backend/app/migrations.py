@@ -270,6 +270,42 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     # Executive Dashboard). False for every existing company — none were
     # hidden before this feature existed.
     ("companies", "hidden_from_rate_dashboard", "BOOLEAN NOT NULL DEFAULT false"),
+    # Employee Salary Tracking (§ Employee Salary Tracking) — Expense/
+    # ShopExpenseLine.employee_id required only when category_id is the
+    # system "Salary" category (enforced at the router); null for every
+    # existing row and every non-Salary category going forward.
+    ("expenses", "employee_id", "GUID"),
+    ("shop_expense_lines", "employee_id", "GUID"),
+    # System-provided category (currently only "Salary", seeded below) —
+    # false for every existing category, since none were system-provided
+    # before this feature existed.
+    ("expense_categories", "is_system", "BOOLEAN NOT NULL DEFAULT false"),
+    # § Home Expense category reversion — replaces the free-text
+    # settlement_home_expense_description going forward (that column is
+    # kept, never dropped, for historical rows). Null for every existing
+    # row, which all predate this reversion.
+    ("shop_sales", "settlement_home_expense_category_id", "GUID"),
+    ("shop_sales", "settlement_home_expense_employee_id", "GUID"),
+    ("shop_cash_transfers", "settlement_home_expense_category_id", "GUID"),
+    ("shop_cash_transfers", "settlement_home_expense_employee_id", "GUID"),
+    ("shop_customer_payments", "settlement_home_expense_category_id", "GUID"),
+    ("shop_customer_payments", "settlement_home_expense_employee_id", "GUID"),
+    # § Manual Selling Rate override — false for every existing row (none
+    # of them could have used an override before this feature existed).
+    ("shop_sales", "manual_rate_override", "BOOLEAN NOT NULL DEFAULT false"),
+    # § GST on Shop Sale — same pattern as sales.gst_enabled/grand_total
+    # above: grand_total added nullable, backfilled to equal total_amount
+    # for every pre-existing row below.
+    ("shop_sales", "gst_enabled", "BOOLEAN NOT NULL DEFAULT false"),
+    ("shop_sales", "gst_rate", "NUMERIC(5, 2)"),
+    ("shop_sales", "gst_amount", "NUMERIC(14, 2) NOT NULL DEFAULT 0"),
+    ("shop_sales", "grand_total", "NUMERIC(14, 2)"),
+    # § Add Filled Cylinder Stock — one-time-only. False for every existing
+    # shop; a shop that already used this feature before the restriction
+    # existed is NOT retroactively locked out (would be indistinguishable
+    # from a shop that never used it, and unfairly blocking a legitimate
+    # future correction for pre-existing shops isn't the intent here).
+    ("customers", "initial_stock_added", "BOOLEAN NOT NULL DEFAULT false"),
 ]
 
 
@@ -721,3 +757,29 @@ def run_startup_migrations(engine: Engine) -> None:
             conn.execute(text("""
                 UPDATE unified_sale_batches SET grand_total = total_selling_amount WHERE grand_total IS NULL
             """))
+
+        # Same backfill for Shop Sales — every existing row predates GST on
+        # Shop Sale and was, by construction, GST-free.
+        if "shop_sales" in existing_tables:
+            conn.execute(text("""
+                UPDATE shop_sales SET grand_total = total_amount WHERE grand_total IS NULL
+            """))
+
+        # Employee Salary Tracking (§ Employee Salary Tracking) — seed the
+        # one system-provided category exactly once. If a category literally
+        # named "Salary" already exists (a user made one before this feature
+        # existed), promote that same row to is_system rather than fail on
+        # the name's UNIQUE constraint or create a confusing duplicate —
+        # its existing id/history stays exactly as it was, only is_system
+        # flips to true.
+        if "expense_categories" in existing_tables:
+            existing_salary = conn.execute(
+                text("SELECT id FROM expense_categories WHERE name = 'Salary'")
+            ).fetchone()
+            if existing_salary:
+                conn.execute(text("UPDATE expense_categories SET is_system = true WHERE id = :id"), {"id": existing_salary[0]})
+            else:
+                conn.execute(text("""
+                    INSERT INTO expense_categories (id, name, description, active, is_system)
+                    VALUES (:id, 'Salary', 'Employee salary payments — system-provided, cannot be deactivated', 'active', true)
+                """), {"id": str(_uuid.uuid4())})

@@ -32,27 +32,25 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from app import schemas
 
 # ============================================================================
-# PLACEHOLDER — replace with real business details before this goes live.
-# Every field below is dummy/placeholder text, not a verified real value.
-# GST Regn No / NTN are deliberately left as an explicit "[TO BE ADDED]"
+# This is the ONE place these fields live; every render function below reads
+# from here (both the full _header_block and the compact shop-sale-invoice
+# header), so a future correction is a one-line edit per field, not a hunt
+# through the file. GST Regn No is left as an explicit "[TO BE ADDED]"
 # marker rather than a fabricated-but-plausible-looking number — a fake tax
-# ID printed on a real invoice is worse than an obviously blank one. This is
-# the ONE place these fields live; every render function below reads from
-# here, so swapping in real values later is a one-line edit per field, not a
-# hunt through the file.
+# ID printed on a real invoice is worse than an obviously blank one.
 # ============================================================================
 BUSINESS = {
     "name": "DOWA Gas Agency",
     "tagline": "Agency · Karachi",
     "address_lines": [
-        "[Address line 1 — TO BE ADDED]",
-        "[Address line 2 — TO BE ADDED]",
-        "Karachi, Pakistan",
+        "M II E 1031/C, 1032/A Main Road Sher Shah,",
+        "Khan Paracha Chowk,",
+        "Karachi South, Lyari Town",
     ],
-    "phone": "Phone: [TO BE ADDED]",
+    "phone": "Phone: 0333-2240852",
     "email": "Email: [TO BE ADDED]",
     "gst_regn_no": "GST Regn No: [TO BE ADDED]",
-    "ntn": "NTN: [TO BE ADDED]",
+    "ntn": "NTN: 2741131-1",
 }
 
 PAGE_WIDTH = A4[0] - 28 * mm  # usable width after 14mm left/right margins
@@ -195,6 +193,7 @@ def _styles():
         "compact_table_cell": ParagraphStyle("CompactTableCell", parent=styles["Normal"], fontSize=7.5, leading=8.2, textColor=colors.HexColor("#1A2B33")),
         "compact_table_header": ParagraphStyle("CompactTableHeader", parent=styles["Normal"], fontSize=7.5, leading=8.2, fontName="Helvetica-Bold", textColor=colors.white),
         "compact_footer": ParagraphStyle("CompactFooter", parent=styles["Normal"], fontSize=6.5, alignment=TA_CENTER, textColor=colors.grey),
+        "compact_reconciliation_note": ParagraphStyle("CompactReconciliationNote", parent=styles["Normal"], fontSize=6.8, leading=9, textColor=colors.HexColor("#475569")),
     }
 
 
@@ -771,6 +770,44 @@ def _compact_summary_row(s, metrics: list[tuple[str, str, str]], total_width) ->
     return t
 
 
+def _cash_reconciliation_note(
+    s, cash: "schemas.ShopCashSummary", cash_inflows_total: Decimal, shop_cash_deductions: Decimal, total_width,
+) -> Table:
+    """§ Cash Metrics Reconciliation Visibility — two lines directly under
+    the summary row: (1) the nested breakdown of "Total Cash Inflows (All
+    Sources)" into its component sources, so that tile visibly rolls up
+    from "Collected on Shop Sales" + debt recoveries/top-ups (+ transfers
+    in, when nonzero) rather than needing to be taken on faith; (2) the
+    full reconciliation formula plugged with this exact statement's real
+    numbers, so Closing Cash is never left for the reader to verify by
+    hand. Every term is already computed by shop_cash_summary/the caller —
+    this never introduces a new calculation, only makes the existing one
+    visible."""
+    breakdown_parts = [
+        f"Collected on Shop Sales {_fmt_amount(cash.cash_retail_sales)}",
+        f"Debt Recoveries/Top-ups {_fmt_amount(cash.supply_customer_collections)}",
+    ]
+    if cash.transfers_in:
+        breakdown_parts.append(f"Account Transfers In {_fmt_amount(cash.transfers_in)}")
+    breakdown_line = (
+        f"<b>Total Cash Inflows</b> = " + " + ".join(breakdown_parts) + f" = {_fmt_amount(cash_inflows_total)}"
+    )
+    formula_line = (
+        f"<b>Closing Cash</b> = Opening ({_fmt_amount(cash.opening_cash)}) + Total Cash Inflows "
+        f"({_fmt_amount(cash_inflows_total)}) - Shop Cash Deductions ({_fmt_amount(shop_cash_deductions)}) "
+        f"= {_fmt_amount(cash.closing_cash)}"
+    )
+    t = Table([[Paragraph(breakdown_line, s["compact_reconciliation_note"])],
+               [Paragraph(formula_line, s["compact_reconciliation_note"])]], colWidths=[total_width])
+    t.setStyle(TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+    ]))
+    return t
+
+
 # § Customer-facing field selection — deliberately narrower than the
 # Customer Ledger screen (frontend/app/customer-ledger/page.tsx), which
 # still shows ID/Description on screen for staff. Those two are internal/
@@ -1143,6 +1180,17 @@ def _shop_statement_rate_cell(r: "schemas.ShopTransactionRow") -> str:
     return "-"
 
 
+def _shop_statement_gst_cell(r: "schemas.ShopTransactionRow") -> str:
+    """§ Shop Statement PDF GST columns — mirrors _statement_gst_cell (the
+    Customer Statement's own GST column) exactly: rate% and amount
+    together, or a dash when no GST was applied. Only ever populated for
+    kind=="shop_sale" (see get_shop_detail); Amount above is already
+    grand_total-inclusive, this just breaks out how much of it was tax."""
+    if r.gst_rate and r.gst_amount:
+        return f"{_fmt_amount(r.gst_rate)}% / {_fmt_amount(r.gst_amount)}"
+    return "-"
+
+
 # § Remove Internal Information — no ID/Description column, same principle
 # already established for Customer/Plant Statement above (a display_id
 # like "SHSALE-000042" and a sentence like "Shop Sale — 45.4 KG Cylinder ×
@@ -1150,9 +1198,12 @@ def _shop_statement_rate_cell(r: "schemas.ShopTransactionRow") -> str:
 # internal/audit language; Type + Customer + Cylinder Type + Quantity +
 # Rate + Paid below carry the same facts as structured, customer-facing
 # fields instead). Customer added per its own design pass (§ Customer
-# Information) — still sums to 277mm.
-_SHOP_STATEMENT_COL_WIDTHS = [18 * mm, 18 * mm, 32 * mm, 22 * mm, 16 * mm, 20 * mm, 36 * mm, 36 * mm, 79 * mm]
-_SHOP_STATEMENT_HEADERS = ["Date", "Type", "Customer", "Cylinder Type", "Quantity", "Rate", "Amount", "Paid", "Dowa Balance"]
+# Information); GST added per § Shop Statement PDF GST columns, in the
+# same Rate→GST→Amount position as the Customer Statement's own Rate→GST→
+# Sale ordering — still sums to 277mm (shaved from Customer/Cylinder Type/
+# Quantity/Rate/Amount/Paid to make room, Balance untouched).
+_SHOP_STATEMENT_COL_WIDTHS = [18 * mm, 18 * mm, 26 * mm, 18 * mm, 14 * mm, 18 * mm, 20 * mm, 33 * mm, 33 * mm, 79 * mm]
+_SHOP_STATEMENT_HEADERS = ["Date", "Type", "Customer", "Cylinder Type", "Quantity", "Rate", "GST", "Amount", "Paid", "Dowa Balance"]
 
 
 def _shop_statement_row_cells(s, r: "schemas.ShopTransactionRow", balance) -> list:
@@ -1173,6 +1224,11 @@ def _shop_statement_row_cells(s, r: "schemas.ShopTransactionRow", balance) -> li
     cylinder_cell = _shop_statement_cylinder_type_cell(r.cylinder_weight)
     quantity_cell = _fmt_qty_clean(r.quantity)
     rate_cell = _shop_statement_rate_cell(r)
+    # § Shop Statement PDF GST columns — naturally "-" for every non-
+    # shop_sale kind (gst_rate/gst_amount are only ever populated for
+    # kind=="shop_sale" — see get_shop_detail), so no per-kind branching
+    # needed here unlike the other cells below.
+    gst_cell = _shop_statement_gst_cell(r)
     bold = ParagraphStyle("CompactShopBalCell", parent=s["compact_table_cell"], fontName="Helvetica-Bold")
 
     if r.kind == "shop_sale":
@@ -1218,6 +1274,7 @@ def _shop_statement_row_cells(s, r: "schemas.ShopTransactionRow", balance) -> li
         Paragraph(cylinder_cell, s["compact_table_cell"]),
         Paragraph(quantity_cell, s["compact_table_cell"]),
         Paragraph(rate_cell, s["compact_table_cell"]),
+        Paragraph(gst_cell, s["compact_table_cell"]),
         Paragraph(amount_cell, s["compact_table_cell"]),
         Paragraph(paid_cell, s["compact_table_cell"]),
         Paragraph(balance_cell, balance_style),
@@ -1225,19 +1282,20 @@ def _shop_statement_row_cells(s, r: "schemas.ShopTransactionRow", balance) -> li
 
 
 def _shop_statement_opening_row_cells(s, opening_balance) -> list:
-    # The 7 dashes are placeholders only — render_shop_statement_pdf SPANs
-    # columns 0-7 over this row so only the "Dowa Payable (Opening)" label
+    # The 8 dashes are placeholders only — render_shop_statement_pdf SPANs
+    # columns 0-8 over this row so only the "Dowa Payable (Opening)" label
     # (cell 0) actually renders, never sitting under the Date column as
     # though it were one (§ Opening Balance row presentation). Kept here so
-    # the row still has 9 cells, matching every other row's shape. Same
-    # "Dowa Payable" naming as the summary tiles above (§ Shop Statement —
-    # Dowa Payable vs Shop Cash) — this row only ever concerns the Dowa
-    # Balance column, never Shop Cash.
+    # the row still has 10 cells, matching every other row's shape (§ Shop
+    # Statement PDF GST columns added a 10th). Same "Dowa Payable" naming
+    # as the summary tiles above (§ Shop Statement — Dowa Payable vs Shop
+    # Cash) — this row only ever concerns the Dowa Balance column, never
+    # Shop Cash.
     dash = Paragraph("-", s["compact_table_cell"])
     bold = ParagraphStyle("CompactShopOpeningRow", parent=s["compact_table_cell"], fontName="Helvetica-Bold")
     return [
         Paragraph("Dowa Payable (Opening)", bold),
-        dash, dash, dash, dash, dash, dash, dash,
+        dash, dash, dash, dash, dash, dash, dash, dash,
         Paragraph(_fmt_amount(opening_balance), bold),
     ]
 
@@ -1312,37 +1370,55 @@ def render_shop_statement_pdf(
     # pdf/render_company_statement_pdf already do for their own summary.rows.
     data_rows = list(reversed(transactions))
     total_shop_sales = sum((t.amount or Decimal("0") for t in transactions if t.kind == "shop_sale"), Decimal("0"))
-    # § Summary — "Total Paid" above stays scoped to the Dowa payable
-    # (ledger_summary.total_payments = standalone Payment rows only, same
-    # figure the Customer Statement uses); a retail customer's amount_
-    # received collected inline on a Shop Sale is a different concept (§
-    # Meaning of Balance) and must never be folded into that figure. Given
-    # its own clearly-separate metric here instead, so nothing collected
-    # at the point of sale is silently missing from the statement overall.
-    total_shop_sale_collections = sum(
-        (t.amount_received or Decimal("0") for t in transactions if t.kind == "shop_sale"), Decimal("0")
-    )
 
     # § Shop Statement — Dowa Payable vs Shop Cash: "Opening/Closing
     # Balance" renamed to "Dowa Payable (Opening/Closing)" — a customer
     # mistook this for one broken running total spanning the whole
     # statement when Customer Payment rows didn't move it, since nothing
     # on the page said this figure was scoped to the Dowa payable only.
-    # The 3 new Shop Cash tiles are the shop's own retail-cash story,
-    # computed independently (shop_cash_summary, § docstring above) —
-    # never derived from or combined with the Dowa Payable figures.
-    shop_cash_collected = shop_cash_summary.cash_retail_sales + shop_cash_summary.supply_customer_collections
+    # The Shop Cash tiles are the shop's own retail-cash story, computed
+    # independently (shop_cash_summary, § docstring above) — never derived
+    # from or combined with the Dowa Payable figures.
+    #
+    # § Cash Metrics Reconciliation Visibility — "Shop Cash (Collected)"
+    # renamed "Total Cash Inflows (All Sources)" and now includes
+    # transfers_in (previously silently excluded from this tile despite
+    # being a real Shop Cash inflow, which meant Opening + Collected -
+    # Deductions could fall short of Closing whenever a transfer-in
+    # happened, even though closing_cash itself was always correct). Also,
+    # "Collected on Shop Sales" is now shop_cash_summary.cash_retail_sales
+    # (Shop-Cash-scoped) rather than the old all-destination sum over
+    # `transactions` — the two used to measure different things (a Shop
+    # Sale routed to Office Cash counted in the old figure but never in
+    # Shop Cash), which meant "Collected on Shop Sales" was NOT actually a
+    # subset of "Shop Cash (Collected)" despite reading like one. Now it
+    # is, exactly: cash_inflows_total = cash_retail_sales +
+    # supply_customer_collections + transfers_in, term-for-term.
+    cash_inflows_total = (
+        shop_cash_summary.cash_retail_sales + shop_cash_summary.supply_customer_collections
+        + shop_cash_summary.transfers_in
+    )
+    # Opening + Total Cash Inflows - Deductions = Closing, exactly — every
+    # term here is already computed by shop_cash_summary itself, never a
+    # new calculation (§ Shop Cash reconciliation gap).
+    shop_cash_deductions = (
+        shop_cash_summary.expenses + shop_cash_summary.owner_withdrawals
+        + shop_cash_summary.dowa_payments + shop_cash_summary.transfers_out
+        + shop_cash_summary.cash_transfers_out
+    )
     story.append(_compact_summary_row(s, [
         ("Dowa Payable (Opening)", _fmt_amount(ledger_summary.opening_balance), "#0B2138"),
         ("Total Loads", _fmt_amount(ledger_summary.total_sales), "#0B2138"),
         ("Total Paid to Dowa", _fmt_amount(ledger_summary.total_payments), "#1E8A5F"),
         ("Dowa Payable (Closing)", _fmt_amount(ledger_summary.closing_balance), "#0B2138"),
         ("Total Shop Sales", _fmt_amount(total_shop_sales), "#9333EA"),
-        ("Collected on Shop Sales", _fmt_amount(total_shop_sale_collections), "#1E8A5F"),
         ("Shop Cash (Opening)", _fmt_amount(shop_cash_summary.opening_cash), "#0B2138"),
-        ("Shop Cash (Collected)", _fmt_amount(shop_cash_collected), "#1E8A5F"),
+        ("Total Cash Inflows (All Sources)", _fmt_amount(cash_inflows_total), "#1E8A5F"),
+        ("Shop Cash Deductions", _fmt_amount(shop_cash_deductions), "#9B4A4A"),
         ("Shop Cash (Closing)", _fmt_amount(shop_cash_summary.closing_cash), "#0B2138"),
     ], usable_width))
+    story.append(Spacer(1, 0.8 * mm))
+    story.append(_cash_reconciliation_note(s, shop_cash_summary, cash_inflows_total, shop_cash_deductions, usable_width))
     story.append(Spacer(1, 1 * mm))
 
     # Balance merge — Load/Payment read customer_monthly_ledger's own
@@ -1372,14 +1448,14 @@ def render_shop_statement_pdf(
         table = _statement_table_chunk(s, header_cells, body_rows, _SHOP_STATEMENT_COL_WIDTHS)
         if i == 0:
             # Opening Balance row (§ Opening Balance row presentation) —
-            # merges Date..Paid (columns 0-7, table row 1 since row 0 is
+            # merges Date..Paid (columns 0-8, table row 1 since row 0 is
             # the header) into one left-aligned "Opening Balance" label so
             # it never reads as though sitting in the Date column; Balance
-            # (column 8) keeps its own real value. Applied to this Table
+            # (column 9) keeps its own real value. Applied to this Table
             # instance only, after _statement_table_chunk builds it — never
             # touches that shared function or Customer/Plant Statement.
             table.setStyle(TableStyle([
-                ("SPAN", (0, 1), (7, 1)),
+                ("SPAN", (0, 1), (8, 1)),
                 ("ALIGN", (0, 1), (0, 1), "LEFT"),
             ]))
         story.append(table)
@@ -1411,8 +1487,11 @@ def render_shop_statement_pdf(
 
 _SUPPLY_CUSTOMER_TYPE_LABELS = {"sale": "Sale", "payment": "Payment"}
 
-_SUPPLY_CUSTOMER_STATEMENT_COL_WIDTHS = [20 * mm, 20 * mm, 26 * mm, 18 * mm, 24 * mm, 40 * mm, 40 * mm, 89 * mm]
-_SUPPLY_CUSTOMER_STATEMENT_HEADERS = ["Date", "Type", "Cylinder Type", "Quantity", "Rate", "Amount", "Paid", "Balance"]
+# § Shop Customer Ledger GST columns — GST inserted between Rate and
+# Amount, mirroring the Shop Statement's own GST column insertion
+# (_SHOP_STATEMENT_COL_WIDTHS); still sums to 277mm.
+_SUPPLY_CUSTOMER_STATEMENT_COL_WIDTHS = [20 * mm, 18 * mm, 24 * mm, 16 * mm, 18 * mm, 16 * mm, 32 * mm, 32 * mm, 101 * mm]
+_SUPPLY_CUSTOMER_STATEMENT_HEADERS = ["Date", "Type", "Cylinder Type", "Quantity", "Rate", "GST", "Amount", "Paid", "Balance"]
 
 
 def _supply_customer_statement_quantity_cell(r: "schemas.ShopSupplyCustomerLedgerRow") -> str:
@@ -1440,10 +1519,11 @@ def _supply_customer_statement_row_cells(s, r: "schemas.ShopSupplyCustomerLedger
         # regardless of unit, same convention as the Shop Statement's own
         # Rate fix (§ Rate is currently wrong).
         rate_cell = _fmt_amount(r.board_rate_per_kg) if r.board_rate_per_kg else "-"
+        gst_cell = _shop_statement_gst_cell(r)
         amount_cell = _fmt_amount(r.gross_amount) if r.gross_amount is not None else "-"
         paid_cell = _fmt_amount(r.payment_amount) if r.payment_amount is not None else "-"
-    else:  # payment — no product/quantity/rate/gross-amount concept at all
-        cylinder_cell = quantity_cell = rate_cell = amount_cell = "-"
+    else:  # payment — no product/quantity/rate/gst/gross-amount concept at all
+        cylinder_cell = quantity_cell = rate_cell = gst_cell = amount_cell = "-"
         paid_cell = _fmt_amount(r.payment_amount) if r.payment_amount is not None else "-"
     return [
         Paragraph(r.date.strftime("%Y-%m-%d"), s["compact_table_cell"]),
@@ -1451,6 +1531,7 @@ def _supply_customer_statement_row_cells(s, r: "schemas.ShopSupplyCustomerLedger
         Paragraph(cylinder_cell, s["compact_table_cell"]),
         Paragraph(quantity_cell, s["compact_table_cell"]),
         Paragraph(rate_cell, s["compact_table_cell"]),
+        Paragraph(gst_cell, s["compact_table_cell"]),
         Paragraph(amount_cell, s["compact_table_cell"]),
         Paragraph(paid_cell, s["compact_table_cell"]),
         Paragraph(_fmt_amount(r.running_balance), bold),
@@ -1462,7 +1543,7 @@ def _supply_customer_statement_opening_row_cells(s, opening_balance) -> list:
     bold = ParagraphStyle("CompactSupplyCustOpeningRow", parent=s["compact_table_cell"], fontName="Helvetica-Bold")
     return [
         Paragraph("Opening Balance", bold),
-        dash, dash, dash, dash, dash, dash,
+        dash, dash, dash, dash, dash, dash, dash,
         Paragraph(_fmt_amount(opening_balance), bold),
     ]
 
@@ -1524,7 +1605,7 @@ def render_supply_customer_statement_pdf(
         table = _statement_table_chunk(s, header_cells, body_rows, _SUPPLY_CUSTOMER_STATEMENT_COL_WIDTHS)
         if i == 0:
             table.setStyle(TableStyle([
-                ("SPAN", (0, 1), (6, 1)),
+                ("SPAN", (0, 1), (7, 1)),
                 ("ALIGN", (0, 1), (0, 1), "LEFT"),
             ]))
         story.append(table)

@@ -69,6 +69,8 @@ import type {
   ShopStockBatch,
   Company,
   PaymentAccount,
+  ExpenseCategory,
+  Employee,
 } from "@/lib/types";
 
   function currentMonth() {
@@ -101,6 +103,31 @@ import type {
     return labels[kind] ?? kind;
   }
 
+  // § Full Cylinders + Remaining KG display split — purely a display
+  // transform (never touches the underlying fractional-cylinder number
+  // used anywhere else): closingStock is always in cylinder-equivalent
+  // units (see models.ShopStockBatch/_compute_stock_summary), so it splits
+  // cleanly into a whole-cylinder count plus a KG remainder using THIS
+  // product's own saleable_kg — never a hardcoded weight, since different
+  // products (11.8kg vs 45.4kg cylinders) have different saleable_kg.
+  function splitCylinderStock(closingStock: number, saleableKg: number): { full: number; remainderKg: number } {
+    // Tiny epsilon guard against float dust (e.g. 34.00000000004 should
+    // read as exactly 34 full cylinders, not 33 + a near-zero remainder).
+    const full = Math.floor(closingStock + 1e-6);
+    const remainderKg = Math.max(0, (closingStock - full) * saleableKg);
+    return { full, remainderKg };
+  }
+
+  function formatSplitCylinderStock(
+    closingStock: number,
+    saleableKg: number,
+    t: (key: string, options?: Record<string, any>) => string
+  ): string {
+    const { full, remainderKg } = splitCylinderStock(closingStock, saleableKg);
+    if (remainderKg < 0.005) return t("shopDetail.fullCylindersOnly", { count: full });
+    return t("shopDetail.fullCylindersPlusKgRemaining", { count: full, kg: remainderKg.toFixed(2) });
+  }
+
   // Where a Shop Sale's collected amount was routed (§ Settlement Routing) —
   // mirrors unified-sale/page.tsx's getDestinationLabel/resolvePaymentAccountLabel
   // rather than re-implementing it: a "plant" destination resolves the plant's
@@ -128,11 +155,36 @@ function resolveShopSaleRoutedLabel(
     return t("payments.accountSettlementBadge");
   }
 
+// § Employee Salary Tracking — the Home Expense chip's label used to be
+// the raw free-text settlement_home_expense_description; Home Expense is
+// category-based again (§ Home Expense category reversion), so this
+// resolves the category's name (plus the employee's, when "Salary")
+// instead. settlement_home_expense_description is kept only as a fallback
+// for historical rows created while the free-text version was live.
+function resolveHomeExpenseLabel(
+  row: ShopTransactionRow | ShopBusinessLedgerRow,
+  categories: ExpenseCategory[],
+  employees: Employee[],
+  t: (key: string, options?: Record<string, any>) => string
+): string {
+  const catId = (row as any).settlement_home_expense_category_id as string | null | undefined;
+  if (catId) {
+    const cat = categories.find((c) => c.id === catId);
+    const empId = (row as any).settlement_home_expense_employee_id as string | null | undefined;
+    const emp = empId ? employees.find((e) => e.id === empId) : undefined;
+    const catName = cat?.name || t("shopDetail.homeExpense");
+    return emp ? `${catName} · ${emp.name}` : catName;
+  }
+  return row.settlement_home_expense_description || t("shopDetail.homeExpense");
+}
+
 function renderShopSaleSettlementBreakdown(
   row: ShopTransactionRow | ShopBusinessLedgerRow,
   companies: Company[],
   accounts: PaymentAccount[],
-  t: (key: string, options?: Record<string, any>) => string
+  t: (key: string, options?: Record<string, any>) => string,
+  categories: ExpenseCategory[] = [],
+  employees: Employee[] = []
 ) {
   const homeExpenseAmount = Number(row.settlement_home_expense_amount || "0");
   const ownerDrawingsAmount = Number(row.settlement_owner_drawings_amount || "0");
@@ -160,7 +212,7 @@ function renderShopSaleSettlementBreakdown(
 
   if (homeExpenseAmount > 0) {
     parts.push({
-      label: row.settlement_home_expense_description || t("shopDetail.homeExpense"),
+      label: resolveHomeExpenseLabel(row, categories, employees, t),
       value: pkr(homeExpenseAmount),
     });
   }
@@ -204,12 +256,14 @@ function renderShopSaleSettlementBreakdown(
  * Rendered via a portal to document.body so it's never clipped by the
  * table's own overflow-x-auto ancestor. */
 function SettlementBreakdownCell({
-  row, companies, accounts, t,
+  row, companies, accounts, t, categories = [], employees = [],
 }: {
   row: ShopBusinessLedgerRow;
   companies: Company[];
   accounts: PaymentAccount[];
   t: (key: string, options?: Record<string, any>) => string;
+  categories?: ExpenseCategory[];
+  employees?: Employee[];
 }) {
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
@@ -222,7 +276,7 @@ function SettlementBreakdownCell({
 
   const parts: Array<{ label: string; value: string }> = [];
   if (homeExpenseAmount > 0) {
-    parts.push({ label: row.settlement_home_expense_description || t("shopDetail.homeExpense"), value: pkr(homeExpenseAmount) });
+    parts.push({ label: resolveHomeExpenseLabel(row, categories, employees, t), value: pkr(homeExpenseAmount) });
   }
   if (ownerDrawingsAmount > 0) {
     parts.push({ label: t("shopDetail.ownerDrawings"), value: pkr(ownerDrawingsAmount) });
@@ -311,6 +365,8 @@ function TransactionHistoryModal({
   correctLoading,
   companies,
   accounts,
+  categories = [],
+  employees = [],
 }: {
   shopId: string;
   shopName: string;
@@ -322,6 +378,8 @@ function TransactionHistoryModal({
   correctLoading: string | null;
   companies: Company[];
   accounts: PaymentAccount[];
+  categories?: ExpenseCategory[];
+  employees?: Employee[];
 }) {
     const { t } = useTranslation();
     const [year, mo] = month.split("-");
@@ -520,6 +578,10 @@ function TransactionHistoryModal({
                   </th>
 
                   <th className="border-r border-slate-200 px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                    {t("customerLedger.colGst")}
+                  </th>
+
+                  <th className="border-r border-slate-200 px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                     {t("unifiedSale.colAmount")}
                   </th>
 
@@ -605,7 +667,28 @@ function TransactionHistoryModal({
                       </td>
 
                       <td className="border-r border-slate-100 px-4 py-3 text-right font-mono text-xs text-slate-600">
-                        {row.board_rate_per_kg ?? row.load_rate_per_kg ?? "—"}
+                        {/* § Board Rate column — already present here
+                            (board_rate_per_kg for a Shop Sale, load_rate_per_kg
+                            for a Load), just polished to match every other
+                            currency cell's pkr() formatting. */}
+                        {row.board_rate_per_kg
+                          ? `${pkr(row.board_rate_per_kg)}/kg`
+                          : row.load_rate_per_kg
+                          ? `${pkr(row.load_rate_per_kg)}/kg`
+                          : "—"}
+                      </td>
+
+                      <td className="border-r border-slate-100 px-4 py-3 text-right font-mono text-xs text-slate-600">
+                        {/* § GST visibility gap — same rate% / amount
+                            presentation as the Customer Ledger's own GST
+                            column; only ever populated for kind=="shop_sale". */}
+                        {row.gst_rate && parseFloat(row.gst_rate) > 0 ? (
+                          <span title={`${t("customerLedger.colGst")}: ${row.gst_rate}%`}>
+                            {row.gst_rate}% · {pkr(row.gst_amount || "0")}
+                          </span>
+                        ) : (
+                          "—"
+                        )}
                       </td>
 
                       <td className="border-r border-slate-100 px-4 py-3 text-right font-mono text-xs font-semibold text-slate-700">
@@ -638,7 +721,7 @@ function TransactionHistoryModal({
 
                        <td className="border-r border-slate-100 px-4 py-3">
                          {row.kind === "shop_sale" || row.kind === "customer_payment"
-                           ? renderShopSaleSettlementBreakdown(row, companies, accounts, t)
+                           ? renderShopSaleSettlementBreakdown(row, companies, accounts, t, categories, employees)
                            : <span className="text-slate-400">—</span>}
                        </td>
 
@@ -704,7 +787,7 @@ function TransactionHistoryModal({
                 {!transactions.length && (
                   <tr>
                     <td
-                      colSpan={13}
+                      colSpan={14}
                       className="py-16 text-center"
                     >
                       <div className="flex flex-col items-center">
@@ -827,6 +910,11 @@ function TransactionHistoryModal({
     // same "Routed To" info the plant side already gets.
     const [companies, setCompanies] = useState<Company[]>([]);
     const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
+    // § Employee Salary Tracking — resolve settlement_home_expense_category_id/
+    // settlement_home_expense_employee_id into readable names, same pattern
+    // as companies/accounts above.
+    const [expenseCategories, setExpenseCategories] = useState<ExpenseCategory[]>([]);
+    const [employees, setEmployees] = useState<Employee[]>([]);
 
     const load = () => {
       setLoading(true);
@@ -835,8 +923,10 @@ function TransactionHistoryModal({
         api.shops.detail(shopId, { date, month }),
         api.companies.list(),
         api.paymentAccounts.list(),
+        api.expenseCategories.list(),
+        api.employees.list(),
       ])
-        .then(([d, c, a]) => { setDetail(d); setCompanies(c); setAccounts(a); })
+        .then(([d, c, a, cats, emps]) => { setDetail(d); setCompanies(c); setAccounts(a); setExpenseCategories(cats); setEmployees(emps); })
         .finally(() => setLoading(false));
 
       api.shops.customers.list(shopId).then(setSupplyCustomers);
@@ -930,6 +1020,26 @@ function TransactionHistoryModal({
     if (!detail) return null;
 
     const s = detail.stock;
+
+    // § Cash Metrics Reconciliation Visibility — Total Cash Inflows (All
+    // Sources) intentionally includes transfers_in alongside the two
+    // sales/collections terms so this figure is the true complete inflow
+    // side of the reconciliation formula below; Shop Cash Deductions
+    // mirrors the exact same 5 terms the Shop Statement PDF's tile uses
+    // (render_shop_statement_pdf's shop_cash_deductions). Together these
+    // satisfy Closing Cash = Opening Cash + Total Cash Inflows - Shop Cash
+    // Deductions EXACTLY, matching _compute_cash_summary_range's own
+    // closing_cash formula term-for-term — never a separate approximation.
+    const cashInflowsTotal =
+      parseFloat(detail.cash.cash_retail_sales) +
+      parseFloat(detail.cash.supply_customer_collections) +
+      parseFloat(detail.cash.transfers_in);
+    const cashDeductionsTotal =
+      parseFloat(detail.cash.expenses) +
+      parseFloat(detail.cash.owner_withdrawals) +
+      parseFloat(detail.cash.dowa_payments) +
+      parseFloat(detail.cash.transfers_out) +
+      parseFloat(detail.cash.cash_transfers_out);
 
     const allCorrections = [
       ...detail.corrections.map((c) => ({
@@ -1048,9 +1158,12 @@ function TransactionHistoryModal({
                 <Button
                   variant="outline"
                   onClick={() => setShowAddStock(true)}
+                  disabled={detail.customer.initial_stock_added}
                 >
                   <PackagePlus size={14} />
-                  {t("shopDetail.addFilledStock")}
+                  {detail.customer.initial_stock_added
+                    ? t("shopDetail.addFilledStockUsed")
+                    : t("shopDetail.addFilledStock")}
                 </Button>
 
                 <Button
@@ -1164,12 +1277,33 @@ function TransactionHistoryModal({
                         {t("shopDetail.closingStockInventory")}
                       </div>
 
-                      <div className="mt-2 font-display text-3xl font-bold text-slate-900">
-                        {s.total_closing_stock}
-                        <span className="ml-2 text-sm font-normal text-slate-400">
-                          {t("shopDetail.units")}
-                        </span>
-                      </div>
+                      {/* § Full Cylinders + Remaining KG display split —
+                          only meaningful when the shop carries exactly one
+                          product: different products can have different
+                          saleable_kg (e.g. 11.8kg vs 45.4kg cylinders), so a
+                          cross-product SUM (s.total_closing_stock) can't be
+                          split into "X full cylinders" without pretending
+                          they're all the same physical size. A multi-
+                          product shop keeps the raw fractional total here,
+                          unchanged — the per-product breakdown below (Stock
+                          & Sale Pricing table) always gets the split, since
+                          each row is already scoped to one product. */}
+                      {s.products.length === 1 ? (
+                        <div className="mt-2 font-display text-2xl font-bold text-slate-900">
+                          {formatSplitCylinderStock(
+                            parseFloat(s.total_closing_stock),
+                            parseFloat(s.products[0].saleable_kg),
+                            t
+                          )}
+                        </div>
+                      ) : (
+                        <div className="mt-2 font-display text-3xl font-bold text-slate-900">
+                          {s.total_closing_stock}
+                          <span className="ml-2 text-sm font-normal text-slate-400">
+                            {t("shopDetail.units")}
+                          </span>
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-600">
@@ -1276,14 +1410,15 @@ function TransactionHistoryModal({
               </div>
 
 
-              {/* Flat, evenly-sized tiles — same visual weight as Purchases'
-                  5-stat row (Opening/Total Purchases/Total Payments/Total
-                  Ton/Current Payable), just one uniform style throughout
-                  instead of per-metric background colors. Owner Withdrawals
-                  kept as its own tile rather than folded into Expenses —
-                  the expense-vs-owner-drawdown distinction stays visible at
-                  a glance, not just in the ledger detail below. */}
-              <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+              {/* 4 main tiles (Opening / Total Cash Inflows / Shop Cash
+                  Deductions / Closing) — Total Cash Inflows and Shop Cash
+                  Deductions each nest their own component breakdown inside
+                  the same card (§ Cash Metrics Reconciliation Visibility),
+                  replacing the old flat 6-tile row where "Cash Sales (+)"
+                  and "Collections (+)" sat at the same visual level as
+                  "Opening"/"Closing" with no indication one rolled up into
+                  a combined inflow figure. */}
+              <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4">
 
                 <div className="rounded-xl border border-slate-200 bg-white p-4">
                   <div className="flex items-center justify-between">
@@ -1306,42 +1441,79 @@ function TransactionHistoryModal({
 
                 <div className="rounded-xl border border-slate-200 bg-white p-4">
                   <span className="block text-xs font-medium text-slate-500">
-                    {t("shopDetail.cashSalesPlus")}
+                    {t("shopDetail.totalCashInflows")}
                   </span>
 
                   <span className="mt-1 block font-mono text-lg font-bold text-brand-green">
-                    +{pkr(detail.cash.cash_retail_sales)}
+                    +{pkr(cashInflowsTotal)}
                   </span>
+
+                  <span className="mt-1 block text-[10px] leading-snug text-slate-400">
+                    {t("shopDetail.totalCashInflowsCaption")}
+                  </span>
+
+                  <div className="mt-2 space-y-1 border-t border-slate-100 pt-2">
+                    <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                      <span>↳ {t("shopDetail.collectedOnShopSales")}</span>
+                      <span className="font-mono shrink-0">+{pkr(detail.cash.cash_retail_sales)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                      <span>↳ {t("shopDetail.debtRecoveriesTopUps")}</span>
+                      <span className="font-mono shrink-0">+{pkr(detail.cash.supply_customer_collections)}</span>
+                    </div>
+                    {detail.cash.transfers_in !== "0" && (
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                        <span>↳ {t("shopDetail.accountTransfersIn")}</span>
+                        <span className="font-mono shrink-0">+{pkr(detail.cash.transfers_in)}</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div className="rounded-xl border border-slate-200 bg-white p-4">
                   <span className="block text-xs font-medium text-slate-500">
-                    {t("shopDetail.collectionsPlus")}
-                  </span>
-
-                  <span className="mt-1 block font-mono text-lg font-bold text-brand-green">
-                    +{pkr(detail.cash.supply_customer_collections)}
-                  </span>
-                </div>
-
-                <div className="rounded-xl border border-slate-200 bg-white p-4">
-                  <span className="block text-xs font-medium text-slate-500">
-                    {t("shopDetail.expensesMinus")}
+                    {t("shopDetail.shopCashDeductions")}
                   </span>
 
                   <span className="mt-1 block font-mono text-lg font-bold text-brand-red">
-                    -{pkr(detail.cash.expenses)}
-                  </span>
-                </div>
-
-                <div className="rounded-xl border border-slate-200 bg-white p-4">
-                  <span className="block text-xs font-medium text-slate-500">
-                    {t("shopDetail.withdrawalsMinus")}
+                    -{pkr(cashDeductionsTotal)}
                   </span>
 
-                  <span className="mt-1 block font-mono text-lg font-bold text-brand-red">
-                    -{pkr(detail.cash.owner_withdrawals)}
-                  </span>
+                  <div className="mt-2 space-y-1 border-t border-slate-100 pt-2">
+                    {detail.cash.expenses !== "0" && (
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                        <span>↳ {t("shopDetail.deductionExpenses")}</span>
+                        <span className="font-mono shrink-0">-{pkr(detail.cash.expenses)}</span>
+                      </div>
+                    )}
+                    {detail.cash.owner_withdrawals !== "0" && (
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                        <span>↳ {t("shopDetail.deductionOwnerWithdrawals")}</span>
+                        <span className="font-mono shrink-0">-{pkr(detail.cash.owner_withdrawals)}</span>
+                      </div>
+                    )}
+                    {detail.cash.dowa_payments !== "0" && (
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                        <span>↳ {t("shopDetail.paymentToDowa")}</span>
+                        <span className="font-mono shrink-0">-{pkr(detail.cash.dowa_payments)}</span>
+                      </div>
+                    )}
+                    {detail.cash.transfers_out !== "0" && (
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                        <span>↳ {t("shopDetail.deductionTransfersOut")}</span>
+                        <span className="font-mono shrink-0">-{pkr(detail.cash.transfers_out)}</span>
+                      </div>
+                    )}
+                    {detail.cash.cash_transfers_out !== "0" && (
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                        <span>↳ {t("shopDetail.cashTransferOut")}</span>
+                        <span className="font-mono shrink-0">-{pkr(detail.cash.cash_transfers_out)}</span>
+                      </div>
+                    )}
+                    {cashDeductionsTotal === 0 && (
+                      <div className="text-[11px] text-slate-400">—</div>
+                    )}
+                  </div>
                 </div>
 
                 <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -1356,61 +1528,37 @@ function TransactionHistoryModal({
 
               </div>
 
+              {/* Reconciliation Visibility — the same formula the Shop
+                  Statement PDF's summary row caption now shows, plugged
+                  with this exact business date's real numbers, so the math
+                  is never left for the reader to verify by hand. */}
+              <div className="mt-3 rounded-lg border border-slate-100 bg-slate-50 px-4 py-2 font-mono text-xs text-slate-600">
+                {t("shopDetail.reconciliationFormulaLabel")}: {pkr(detail.cash.opening_cash)} + {pkr(cashInflowsTotal)} − {pkr(cashDeductionsTotal)} = {pkr(detail.cash.closing_cash)}
+              </div>
 
-              {(detail.cash.dowa_payments !== "0" ||
-                detail.cash.transfers_in !== "0" ||
-                detail.cash.transfers_out !== "0" ||
-                detail.cash.cash_transfers_out !== "0" ||
-                detail.cash.settlement_home_expense_total !== "0" ||
+              {(detail.cash.settlement_home_expense_total !== "0" ||
                 detail.cash.settlement_owner_drawings_total !== "0") && (
-                <div className="mt-5 flex flex-wrap gap-2 border-t border-slate-100 pt-4">
-
-                  {detail.cash.dowa_payments !== "0" && (
-                    <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-800">
-                      {t("shopDetail.paymentsToDowaLine", { amount: pkr(detail.cash.dowa_payments) })}
-                    </span>
-                  )}
-
-                  {detail.cash.transfers_in !== "0" && (
-                    <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-800">
-                      {t("shopDetail.transfersInLine", { amount: pkr(detail.cash.transfers_in) })}
-                    </span>
-                  )}
-
-                  {detail.cash.transfers_out !== "0" && (
-                    <span className="inline-flex items-center rounded-full border border-purple-200 bg-purple-50 px-3 py-1.5 text-xs font-medium text-purple-800">
-                      {t("shopDetail.transfersOutLine", { amount: pkr(detail.cash.transfers_out) })}
-                    </span>
-                  )}
-
-                  {detail.cash.cash_transfers_out !== "0" && (
-                    <span className="inline-flex items-center rounded-full border border-orange-200 bg-orange-50 px-3 py-1.5 text-xs font-medium text-orange-800">
-                      {t("shopDetail.cashTransfersOutLine", { amount: pkr(detail.cash.cash_transfers_out) })}
-                    </span>
-                  )}
+                <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-4">
 
                   {/* Sale/Transfer Deductions — purely informational (never
                       part of closing_cash above): Home Expense/Owner
                       Drawings bypassed via a Shop Sale's or Shop Cash
                       Transfer's settlement routing this period. Neutral
-                      gray, deliberately distinct from the colored pills
-                      above, which are all real Shop Cash flows. */}
-                  {(detail.cash.settlement_home_expense_total !== "0" ||
-                    detail.cash.settlement_owner_drawings_total !== "0") && (
-                    <span className="inline-flex items-center rounded-full border border-slate-300 bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700">
-                      {t("shopDetail.saleTransferDeductions")}:{" "}
-                      {[
-                        detail.cash.settlement_home_expense_total !== "0"
-                          ? `${pkr(detail.cash.settlement_home_expense_total)} (${t("shopDetail.homeExpense")})`
-                          : null,
-                        detail.cash.settlement_owner_drawings_total !== "0"
-                          ? `${pkr(detail.cash.settlement_owner_drawings_total)} (${t("shopDetail.ownerDrawings")})`
-                          : null,
-                      ]
-                        .filter(Boolean)
-                        .join(" + ")}
-                    </span>
-                  )}
+                      gray, deliberately distinct from the reconciled
+                      figures above, which are all real Shop Cash flows. */}
+                  <span className="inline-flex items-center rounded-full border border-slate-300 bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700">
+                    {t("shopDetail.saleTransferDeductions")}:{" "}
+                    {[
+                      detail.cash.settlement_home_expense_total !== "0"
+                        ? `${pkr(detail.cash.settlement_home_expense_total)} (${t("shopDetail.homeExpense")})`
+                        : null,
+                      detail.cash.settlement_owner_drawings_total !== "0"
+                        ? `${pkr(detail.cash.settlement_owner_drawings_total)} (${t("shopDetail.ownerDrawings")})`
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" + ")}
+                  </span>
 
                 </div>
               )}
@@ -1456,6 +1604,10 @@ function TransactionHistoryModal({
                         </th>
 
                         <th className="px-5 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                          {t("shopDetail.colClosingStock")}
+                        </th>
+
+                        <th className="px-5 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                           {t("shopDetail.colBoardRateKg")}
                         </th>
 
@@ -1492,6 +1644,10 @@ function TransactionHistoryModal({
 
                           <td className="px-5 py-4 font-semibold text-slate-800">
                             {p.product_name}
+                          </td>
+
+                          <td className="px-5 py-4 text-right font-mono text-xs font-semibold text-slate-700">
+                            {formatSplitCylinderStock(parseFloat(p.closing_stock), parseFloat(p.saleable_kg), t)}
                           </td>
 
                           <td className="px-5 py-4 text-right font-mono text-xs text-slate-600">
@@ -1624,6 +1780,10 @@ function TransactionHistoryModal({
                           {t("unifiedSale.colAmount")}
                         </th>
 
+                        <th className="border-r border-slate-200 px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                          {t("customerLedger.colGst")}
+                        </th>
+
 <th className="border-r border-slate-200 px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                            {t("shopDetail.colCashImpact")}
                          </th>
@@ -1702,6 +1862,20 @@ function TransactionHistoryModal({
                               {pkr(r.amount)}
                             </td>
 
+                            <td className="border-r border-slate-100 px-4 py-3 text-right font-mono text-xs text-slate-600">
+                              {/* § GST visibility gap — same rate% / amount
+                                  presentation as the Customer Ledger's own
+                                  GST column; only ever populated for kind
+                                  in ("cash_sale", "credit_sale"). */}
+                              {r.gst_rate && parseFloat(r.gst_rate) > 0 ? (
+                                <span title={`${t("customerLedger.colGst")}: ${r.gst_rate}%`}>
+                                  {r.gst_rate}% · {pkr(r.gst_amount || "0")}
+                                </span>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+
                             <td className="border-r border-slate-100 px-4 py-3 text-right">
 
                               <span
@@ -1728,7 +1902,7 @@ function TransactionHistoryModal({
                             </td>
 
                             <td className="px-4 py-3">
-                              <SettlementBreakdownCell row={r} companies={companies} accounts={accounts} t={t} />
+                              <SettlementBreakdownCell row={r} companies={companies} accounts={accounts} t={t} categories={expenseCategories} employees={employees} />
                             </td>
 
                             <td className="px-4 py-3 font-mono text-xs text-slate-500">
@@ -2165,6 +2339,8 @@ function TransactionHistoryModal({
     correctLoading={correctLoading}
     companies={companies}
     accounts={accounts}
+    categories={expenseCategories}
+    employees={employees}
   />
 )}
 

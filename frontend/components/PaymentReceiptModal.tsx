@@ -70,7 +70,12 @@ export default function PaymentReceiptModal({ isOpen, onClose, onSuccess, defaul
         setCustomers(cList);
         setCompanies(compList);
         setAccounts(accList);
-        setExpenseCategories(catList);
+        // § Employee Salary Tracking — "Salary" requires an Employee, which
+        // this flow (customer-side money) has no picker for; excluded here
+        // rather than left selectable-but-broken (see RecordShopSaleModal/
+        // ShopCashTransferModal/RecordSupplyCustomerPaymentModal for where
+        // Salary IS wired end-to-end).
+        setExpenseCategories(catList.filter((c) => !(c.is_system && c.name === "Salary")));
       } catch (e) {
         setError(e instanceof Error ? e.message : t("modals.failedLoadFormData"));
       }

@@ -115,6 +115,7 @@ import type {
   ShopSupplyCustomer, ShopSupplyCustomerLedgerOut, ShopCustomerPayment, ShopExpenseTransaction, ShopBusinessLedgerOut,
   ShopCashTransfer, ShopCashTransferCreate,
   AccountTransferRecord, User, UserAccessAuditRow,
+  Employee, EmployeeLedgerSummary,
 } from "./types";
 
 export const api = {
@@ -336,7 +337,19 @@ export const api = {
     create: (payload: {
       date: string; category_id: string; amount: number; account_id: string; method?: string;
       description?: string; vendor?: string; reference_no?: string; entered_by: string;
+      employee_id?: string;
     }) => request<Expense>("/expenses", { method: "POST", body: JSON.stringify(payload) }),
+  },
+  // § Employee Salary Tracking
+  employees: {
+    list: () => request<Employee[]>("/employees"),
+    create: (payload: { name: string; monthly_salary: number; entered_by: string }) =>
+      request<Employee>("/employees", { method: "POST", body: JSON.stringify(payload) }),
+    get: (id: string) => request<Employee>(`/employees/${id}`),
+    update: (id: string, payload: { monthly_salary?: number; status?: "active" | "inactive" }) =>
+      request<Employee>(`/employees/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+    ledger: (id: string, month: string) =>
+      request<EmployeeLedgerSummary>(`/employees/${id}/ledger?month=${month}`),
   },
   ledger: {
     customerMonth: (customerId: string, month: string) =>
@@ -668,6 +681,17 @@ export const api = {
     getSale: (saleId: string) => request<ShopSale>(`/shops/sales/${saleId}`),
     createSale: (shopId: string, payload: {
       date: string; product_id: string; quantity: number; unit?: "cylinder" | "kg";
+      // § Board Rate manual entry — required, no system-wide auto-resolve;
+      // the user types this every time (see routers/shops.py::_apply_shop_sale).
+      board_rate_per_kg: number;
+      // § Selling Price override — optional; when set, REPLACES the final
+      // total_amount outright (post board-rate calculation), NOT
+      // sale_rate_per_cylinder — that stays board-rate-derived as the
+      // audit trail of what the calculation would have produced.
+      manual_total_amount?: number;
+      // § GST on Shop Sale — optional, default off (same convention as
+      // Sale/Unified Sale's own gst_enabled/gst_rate).
+      gst_enabled?: boolean; gst_rate?: number;
       supply_customer_id?: string; payment_type?: "cash" | "credit";
       // Inline Settlement (§2) — omitted means "fully paid" for cash,
       // "fully credit" (0) for credit; a credit sale may set any amount
@@ -679,6 +703,9 @@ export const api = {
       request<ShopSale>(`/shops/sales/${saleId}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
     correctSale: (saleId: string, payload: {
       date: string; product_id: string; quantity: number; unit?: "cylinder" | "kg";
+      board_rate_per_kg: number;
+      manual_total_amount?: number;
+      gst_enabled?: boolean; gst_rate?: number;
       supply_customer_id?: string; payment_type?: "cash" | "credit";
       amount_received?: number; destination_account_id?: string;
       notes?: string; entered_by: string;
@@ -716,6 +743,7 @@ export const api = {
         // ShopSale/ShopCashTransfer. Presence of destination_type selects
         // this path over the legacy account_id path above.
         home_expense_amount?: number; home_expense_description?: string;
+        home_expense_category_id?: string; home_expense_employee_id?: string;
         owner_drawings_amount?: number;
         destination_type?: DestinationType; target_plant_id?: string;
         settlement_account_id?: string;
@@ -728,7 +756,7 @@ export const api = {
         request<ShopExpenseTransaction[]>(`/shops/${shopId}/expenses${month ? `?month=${month}` : ""}`),
       create: (shopId: string, payload: {
         date: string;
-        lines: { category_id?: string; line_type: "expense" | "owner_withdrawal"; amount: number; description?: string }[];
+        lines: { category_id?: string; line_type: "expense" | "owner_withdrawal"; amount: number; description?: string; employee_id?: string }[];
         account_id?: string; payment_source?: string; notes?: string; entered_by: string;
         // § Shop Expense/Withdrawal Attribution — pass whichever context
         // the calling form actually has (a known supply customer and/or
