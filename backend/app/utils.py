@@ -460,6 +460,9 @@ def reverse_payment_receipt(db: Session, payment) -> None:
             account.current_balance = account.current_balance - payment.net_settlement_amount
             db.add(account)
 
+    # § Salary payments are never clawed back — see apply_salary_expense_
+    # if_needed's docstring further below in this file. Cancelling here
+    # only flips status, never touches Employee.current_balance.
     for exp in db.query(models.Expense).filter(
         models.Expense.source_payment_id == payment.id, models.Expense.status == "active"
     ).all():
@@ -508,7 +511,26 @@ def apply_salary_expense_if_needed(db: Session, category_id, employee_id, amount
     caller is expected to have already validated "Employee is required
     when category is Salary" against its own payload before creating the
     Expense/ShopExpenseLine row — the check here is defense-in-depth, not
-    the only place it's enforced."""
+    the only place it's enforced.
+
+    § Salary payments are never clawed back (deliberate, permanent design
+    — confirmed, do not "fix"). This is the ONLY place in the codebase
+    that ever moves Employee.current_balance for a Salary-category
+    expense — there is no reversal counterpart, by design. Once a salary
+    payment posts, it stays posted even if the parent transaction it rode
+    in on (Shop Sale, Shop Cash Transfer, Shop Customer Payment, Unified
+    Sale, or a standalone Expense) is later cancelled or corrected —
+    every one of those reversal paths cancels the Expense row's `status`
+    but must NEVER also add the amount back onto the employee's balance.
+    This mirrors real-world payroll: once an employee has been paid, an
+    unrelated transaction getting cancelled doesn't claw the salary back.
+    Every OTHER settlement destination (plant settlement, Dowa account
+    credit, non-Salary Home Expense categories, Owner Drawings) keeps
+    reversing normally on cancel/correction — Salary is the one deliberate
+    exception. See routers/shops.py::_reverse_shop_sale_settlement and
+    routers/unified_sale.py::cancel_unified_sale/correct_unified_sale_
+    settlement, both of which cancel the Expense row only, never touching
+    Employee.current_balance."""
     if not is_salary_category(db, category_id):
         return
     from fastapi import HTTPException

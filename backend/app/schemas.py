@@ -1792,6 +1792,29 @@ class UnifiedSaleItem(BaseModel):
     selling_rate: Decimal   # per cylinder, what Dowa charges the customer
 
 
+class UnifiedSaleHomeExpenseLineIn(BaseModel):
+    """One categorized Home Expense line within a Unified Sale's settlement
+    (§ Multi-line Categorized Home Expense) — mirrors
+    ShopSaleHomeExpenseLineIn. See UnifiedSaleSettlement.home_expense_lines."""
+    category_id: UUID
+    amount: Decimal
+    # Required whenever category_id is the system "Salary" category (§
+    # Employee Salary Tracking), enforced in routers/unified_sale.py.
+    employee_id: Optional[UUID] = None
+    description: Optional[str] = None
+
+
+class UnifiedSaleHomeExpenseLineOut(BaseModel):
+    """Mirrors UnifiedSaleHomeExpenseLineIn — raw category_id/employee_id,
+    not resolved names, same convention as ShopSaleHomeExpenseLineOut."""
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    category_id: UUID
+    employee_id: Optional[UUID] = None
+    amount: Decimal
+    description: Optional[str] = None
+
+
 class UnifiedSaleSettlement(BaseModel):
     """Settled money is split exactly three ways: home_expense_amount and
     owner_drawings_amount are entered directly (both bypass every Dowa
@@ -1810,6 +1833,13 @@ class UnifiedSaleSettlement(BaseModel):
     total_credit_received: Decimal = Decimal("0")
     home_expense_amount: Decimal = Decimal("0")
     home_expense_category_id: Optional[UUID] = None  # required if home_expense_amount > 0
+    # § Multi-line Categorized Home Expense — when provided (non-empty),
+    # REPLACES the single home_expense_amount/category_id fields above
+    # entirely: one UnifiedSaleHomeExpenseLine + one pending Expense row
+    # per entry, summed for the settlement net-amount math. Those scalar
+    # fields stay only for historical rows and are ignored server-side
+    # whenever this list is non-empty (see routers/unified_sale.py).
+    home_expense_lines: Optional[list[UnifiedSaleHomeExpenseLineIn]] = None
     owner_drawings_amount: Decimal = Decimal("0")
     destination_type: Literal["plant", "account"] = "plant"
     target_plant_id: Optional[UUID] = None
@@ -1863,6 +1893,11 @@ class UnifiedSaleSettlementCorrect(BaseModel):
     creation, an already-approved settlement may already have one)."""
     home_expense_amount: Decimal = Decimal("0")
     home_expense_category_id: Optional[UUID] = None
+    # § Multi-line Categorized Home Expense — same replace-the-scalars
+    # convention as UnifiedSaleSettlement.home_expense_lines, applied to a
+    # correction: when non-empty, the corrected settlement's Home Expense
+    # side becomes these categorized lines instead of the single amount.
+    home_expense_lines: Optional[list[UnifiedSaleHomeExpenseLineIn]] = None
     owner_drawings_amount: Decimal = Decimal("0")
     destination_type: Literal["plant", "account"] = "plant"
     target_plant_id: Optional[UUID] = None
@@ -1993,10 +2028,18 @@ class UnifiedSaleOut(BaseModel):
     sales: list[SaleOut] = []
     purchases: list[PurchaseOut] = []
     plant_payment: Optional[CompanyPaymentOut] = None
+    # Legacy single-Expense field — populated with the first Expense row
+    # for backward compat (still correct for a single-line/legacy
+    # settlement, which always has exactly 0 or 1). A multi-line
+    # settlement's full picture is home_expense_lines below.
     expense: Optional[ExpenseOut] = None
     owner_drawing: Optional[OwnerDrawingsOut] = None
-    
-    
+    # § Multi-line Categorized Home Expense — structured record, mirrors
+    # ShopSaleOut.home_expense_lines. Empty for a legacy single-amount
+    # settlement (see UnifiedSaleSettlement.home_expense_lines).
+    home_expense_lines: list[UnifiedSaleHomeExpenseLineOut] = []
+
+
 # ---------- Cylinder Tracking ----------
 # Cylinder entry create request model
 class CylinderTransactionCreate(BaseModel):
@@ -2119,6 +2162,11 @@ class ReportableTransactionOut(BaseModel):
     entered_by: str
     approval_info: Optional[str] = None
     status: str
+    # § Daily Report clean columns — see ReportableTransaction's identical
+    # fields (app/reporting/types.py) for why these exist.
+    cylinder_weight: Optional[Decimal] = None
+    quantity: Optional[Decimal] = None
+    unit: Optional[str] = None
 
 
 class ReportSectionOut(BaseModel):

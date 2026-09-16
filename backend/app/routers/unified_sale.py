@@ -11,7 +11,10 @@ from app import models, schemas
 from app.deps import require_active_user, require_csrf
 from app.reporting.invoice_pdf import render_unified_sale_invoice_pdf
 from app.timezone import KARACHI_TZ
-from app.utils import next_display_id, resolve_account_or_bucket, compute_gst, resync_unified_sale_batch_totals
+from app.utils import (
+    next_display_id, resolve_account_or_bucket, compute_gst, resync_unified_sale_batch_totals,
+    is_salary_category, apply_salary_expense_if_needed,
+)
 from app.routers.payments import _reverse_payment
 
 router = APIRouter(prefix="/sales", tags=["unified-sale"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
@@ -51,6 +54,19 @@ def _resolve_destination(db: Session, settlement: schemas.UnifiedSaleSettlement,
     return destination_type, None, str(settlement.account_id)
 
 
+def _home_expense_total(s: schemas.UnifiedSaleSettlement) -> Decimal:
+    """§ Multi-line Categorized Home Expense — when home_expense_lines is
+    given (non-empty), it REPLACES the legacy single home_expense_amount
+    entirely for this settlement's math; every downstream calc (bypass_sum,
+    net_plant_payment, batch.home_expense_amount) uses this instead of
+    s.home_expense_amount directly, so both paths share the exact same
+    math from here on (mirrors routers/shops.py's home_expense_total)."""
+    lines = s.home_expense_lines or []
+    if lines:
+        return sum((l.amount for l in lines), Decimal("0"))
+    return s.home_expense_amount
+
+
 def _validate_and_load(db: Session, payload: schemas.UnifiedSaleCreate):
     """Shared by create and edit — validates every referenced entity and the
     settlement rule up front, before anything is written. Settled money is
@@ -82,20 +98,33 @@ def _validate_and_load(db: Session, payload: schemas.UnifiedSaleCreate):
             products_by_id[item.product_id] = product
 
     s = payload.settlement
-    bypass_sum = s.home_expense_amount + s.owner_drawings_amount
+    home_expense_lines = s.home_expense_lines or []
+    use_home_expense_lines = bool(home_expense_lines)
+    home_expense_total = _home_expense_total(s)
+
+    bypass_sum = home_expense_total + s.owner_drawings_amount
     if bypass_sum > s.total_credit_received + EPSILON:
         raise HTTPException(
             400,
-            f"Home expense ({s.home_expense_amount}) + owner drawings ({s.owner_drawings_amount}) "
+            f"Home expense ({home_expense_total}) + owner drawings ({s.owner_drawings_amount}) "
             f"= {bypass_sum} exceeds total credit received ({s.total_credit_received}) — "
             f"nothing would be left to settle with the plant.",
         )
-    if s.home_expense_amount > 0 and not s.home_expense_category_id:
-        raise HTTPException(400, "home_expense_category_id is required when home_expense_amount > 0")
 
-    if s.home_expense_category_id:
-        if not db.query(models.ExpenseCategory).get(s.home_expense_category_id):
-            raise HTTPException(404, "Expense category not found")
+    if use_home_expense_lines:
+        for line in home_expense_lines:
+            if line.amount > 0 and not db.query(models.ExpenseCategory).get(line.category_id):
+                raise HTTPException(404, "Expense category not found")
+            # Employee Salary Tracking (§ Employee Salary Tracking) — same
+            # check as ShopSaleCreate's home_expense_lines handling.
+            if line.amount > 0 and is_salary_category(db, line.category_id) and not line.employee_id:
+                raise HTTPException(400, "Employee is required when a Home Expense line's category is Salary")
+    else:
+        if s.home_expense_amount > 0 and not s.home_expense_category_id:
+            raise HTTPException(400, "home_expense_category_id is required when home_expense_amount > 0")
+        if s.home_expense_category_id:
+            if not db.query(models.ExpenseCategory).get(s.home_expense_category_id):
+                raise HTTPException(404, "Expense category not found")
 
     destination_type, target_plant_id, account_id = _resolve_destination(db, s, payload.plant_id)
 
@@ -165,7 +194,11 @@ def _create_pending_children(db: Session, payload: schemas.UnifiedSaleCreate, ba
         db.flush()
         purchases_created.append(purchase)
 
-    net_plant_payment = s.total_credit_received - s.home_expense_amount - s.owner_drawings_amount
+    home_expense_lines = s.home_expense_lines or []
+    use_home_expense_lines = bool(home_expense_lines)
+    home_expense_total = _home_expense_total(s)
+
+    net_plant_payment = s.total_credit_received - home_expense_total - s.owner_drawings_amount
 
     plant_payment = None
     if net_plant_payment > 0 and batch.destination_type == "plant":
@@ -179,8 +212,41 @@ def _create_pending_children(db: Session, payload: schemas.UnifiedSaleCreate, ba
         db.add(plant_payment)
         db.flush()
 
-    expense = None
-    if s.home_expense_amount > 0:
+    # § Multi-line Categorized Home Expense — one UnifiedSaleHomeExpenseLine
+    # + one pending Expense row per entry, mirroring routers/shops.py's
+    # single-amount-vs-lines branch. Both the structured line and its
+    # matching Expense are created now (status="pending" on the Expense,
+    # same as the legacy single-amount path below) — neither posts any
+    # balance until _do_approve_payment activates the Expense. Salary
+    # balance reduction (apply_salary_expense_if_needed) is deliberately
+    # NOT called here — unlike Shop Sale (single-phase, posts immediately),
+    # a Unified Sale's settlement doesn't actually happen until approval,
+    # so that call lives in _do_approve_payment instead.
+    expenses_created = []
+    if use_home_expense_lines:
+        for line in home_expense_lines:
+            if line.amount <= 0:
+                continue
+            db.add(models.UnifiedSaleHomeExpenseLine(
+                unified_sale_id=batch.id, category_id=line.category_id,
+                employee_id=line.employee_id, amount=line.amount,
+                description=line.description,
+            ))
+            expense = models.Expense(
+                display_id=next_display_id(db, models.Expense, "EXP", width=6),
+                date=payload.date, category_id=line.category_id, amount=line.amount,
+                account_id=None, method="cash",
+                description=line.description or f"Auto-created from Unified Sale {batch.display_id}",
+                status="pending", entered_by=entered_by, unified_sale_id=batch.id,
+                employee_id=line.employee_id,
+            )
+            db.add(expense)
+            # Flush before the NEXT iteration's next_display_id call — same
+            # duplicate-display_id race already found and fixed for Shop
+            # Sale's multi-line loop (see routers/shops.py).
+            db.flush()
+            expenses_created.append(expense)
+    elif s.home_expense_amount > 0:
         expense = models.Expense(
             display_id=next_display_id(db, models.Expense, "EXP", width=6),
             date=payload.date, category_id=s.home_expense_category_id, amount=s.home_expense_amount,
@@ -189,6 +255,7 @@ def _create_pending_children(db: Session, payload: schemas.UnifiedSaleCreate, ba
         )
         db.add(expense)
         db.flush()
+        expenses_created.append(expense)
 
     owner_drawing = None
     if s.owner_drawings_amount > 0:
@@ -201,10 +268,15 @@ def _create_pending_children(db: Session, payload: schemas.UnifiedSaleCreate, ba
         db.add(owner_drawing)
         db.flush()
 
-    return sales_created, purchases_created, plant_payment, expense, owner_drawing
+    return sales_created, purchases_created, plant_payment, expenses_created, owner_drawing
 
 
-def _batch_to_out(batch, sales, purchases, plant_payment, expense, owner_drawing) -> schemas.UnifiedSaleOut:
+def _batch_to_out(db: Session, batch, sales, purchases, plant_payment, expenses, owner_drawing) -> schemas.UnifiedSaleOut:
+    home_expense_lines = (
+        db.query(models.UnifiedSaleHomeExpenseLine)
+        .filter(models.UnifiedSaleHomeExpenseLine.unified_sale_id == batch.id)
+        .all()
+    )
     return schemas.UnifiedSaleOut(
         id=batch.id, display_id=batch.display_id, date=batch.date,
         customer_id=batch.customer_id, company_id=batch.company_id,
@@ -226,23 +298,28 @@ def _batch_to_out(batch, sales, purchases, plant_payment, expense, owner_drawing
         sales=[schemas.SaleOut.model_validate(x) for x in sales],
         purchases=[schemas.PurchaseOut.model_validate(x) for x in purchases],
         plant_payment=schemas.CompanyPaymentOut.model_validate(plant_payment) if plant_payment else None,
-        expense=schemas.ExpenseOut.model_validate(expense) if expense else None,
+        expense=schemas.ExpenseOut.model_validate(expenses[0]) if expenses else None,
         owner_drawing=schemas.OwnerDrawingsOut.model_validate(owner_drawing) if owner_drawing else None,
+        home_expense_lines=[schemas.UnifiedSaleHomeExpenseLineOut.model_validate(x) for x in home_expense_lines],
     )
 
 
 def _load_children(db: Session, batch_id):
-    """plant_payment/expense/owner_drawing: excludes "cancelled" (not just
+    """plant_payment/expenses/owner_drawing: excludes "cancelled" (not just
     "active") because approve_unified_sale_payment needs to find the still-
-    "pending" one to activate — but MUST exclude cancelled, and order by
-    newest first, because correct_unified_sale_settlement (§ Bug Fix —
-    Correction Modal Routing) cancels the old one and posts a fresh row
-    with the SAME unified_sale_id rather than mutating it in place (an
-    uncorrupted audit trail — see models.UnifiedSaleBatch.
-    settlement_corrected_by). Without this, a corrected batch would have
-    two rows sharing one unified_sale_id and a bare .first() could return
-    either — the same landmine _batch_cylinder_totals already had to guard
-    against for Sale corrections (see routers/ledger.py)."""
+    "pending" one(s) to activate — but MUST exclude cancelled, because
+    correct_unified_sale_settlement (§ Bug Fix — Correction Modal Routing)
+    cancels the old ones and posts fresh rows with the SAME unified_sale_id
+    rather than mutating them in place (an uncorrupted audit trail — see
+    models.UnifiedSaleBatch.settlement_corrected_by). plant_payment/
+    owner_drawing stay single-row (.first(), newest first) — a batch never
+    has more than one of either — but expenses is a LIST (§ Multi-line
+    Categorized Home Expense): a batch can have zero, one (legacy
+    single-amount), or many (multi-line) active Expense rows at once, and
+    summing/activating via .all() here — never .first() — is required for
+    a multi-line settlement's math to stay correct, the same bug class
+    already found and fixed for Shop Sale (see routers/shops.py::
+    _reverse_shop_sale_settlement)."""
     sales = db.query(models.Sale).filter(models.Sale.unified_sale_id == batch_id).order_by(models.Sale.created_at).all()
     purchases = db.query(models.Purchase).filter(models.Purchase.unified_sale_id == batch_id).order_by(models.Purchase.created_at).all()
     plant_payment = (
@@ -250,17 +327,17 @@ def _load_children(db: Session, batch_id):
         .filter(models.CompanyPayment.unified_sale_id == batch_id, models.CompanyPayment.status != "cancelled")
         .order_by(models.CompanyPayment.created_at.desc()).first()
     )
-    expense = (
+    expenses = (
         db.query(models.Expense)
         .filter(models.Expense.unified_sale_id == batch_id, models.Expense.status != "cancelled")
-        .order_by(models.Expense.created_at.desc()).first()
+        .order_by(models.Expense.created_at).all()
     )
     owner_drawing = (
         db.query(models.OwnerDrawings)
         .filter(models.OwnerDrawings.unified_sale_id == batch_id, models.OwnerDrawings.status != "cancelled")
         .order_by(models.OwnerDrawings.created_at.desc()).first()
     )
-    return sales, purchases, plant_payment, expense, owner_drawing
+    return sales, purchases, plant_payment, expenses, owner_drawing
 
 
 @router.get("/unified", response_model=list[schemas.UnifiedSaleBatchOut])
@@ -315,8 +392,8 @@ def get_unified_sale(unified_sale_id: UUID, db: Session = Depends(get_db)):
     batch = db.query(models.UnifiedSaleBatch).get(unified_sale_id)
     if not batch:
         raise HTTPException(404, "Unified sale not found")
-    sales, purchases, payment, expense, owner_drawing = _load_children(db, batch.id)
-    return _batch_to_out(batch, sales, purchases, payment, expense, owner_drawing)
+    sales, purchases, payment, expenses, owner_drawing = _load_children(db, batch.id)
+    return _batch_to_out(db, batch, sales, purchases, payment, expenses, owner_drawing)
 
 
 @router.get("/unified/{unified_sale_id}/invoice")
@@ -358,8 +435,9 @@ def create_unified_sale(
         total_selling_amount = sum((item.quantity * item.selling_rate for item in payload.items), Decimal("0")) + payload.delivery_charges
         total_purchase_amount = sum((item.quantity * item.purchase_rate for item in payload.items), Decimal("0"))
         s = payload.settlement
+        home_expense_total = _home_expense_total(s)
 
-        net_plant_payment = s.total_credit_received - s.home_expense_amount - s.owner_drawings_amount
+        net_plant_payment = s.total_credit_received - home_expense_total - s.owner_drawings_amount
 
         # GST on Sale, extended to Unified Sale (§ GST on Sale) — computed
         # once here from total_selling_amount and frozen on the batch;
@@ -379,7 +457,7 @@ def create_unified_sale(
             delivery_charges=payload.delivery_charges,
             total_credit_received=s.total_credit_received,
             net_plant_payment=net_plant_payment,
-            home_expense_amount=s.home_expense_amount,
+            home_expense_amount=home_expense_total,
             owner_drawings_amount=s.owner_drawings_amount,
             destination_type=destination_type,
             target_plant_id=target_plant_id,
@@ -400,7 +478,7 @@ def create_unified_sale(
         db.add(batch)
         db.flush()
 
-        sales, purchases, payment, expense, owner_drawing = _create_pending_children(db, payload, batch, products_by_id, current_user.name)
+        sales, purchases, payment, expenses, owner_drawing = _create_pending_children(db, payload, batch, products_by_id, current_user.name)
         db.commit()
 
     except HTTPException:
@@ -411,7 +489,7 @@ def create_unified_sale(
         raise HTTPException(500, f"Unified sale failed, nothing was saved: {e}")
 
     db.refresh(batch)
-    return _batch_to_out(batch, sales, purchases, payment, expense, owner_drawing)
+    return _batch_to_out(db, batch, sales, purchases, payment, expenses, owner_drawing)
 
 
 @router.put("/unified/{unified_sale_id}", response_model=schemas.UnifiedSaleOut)
@@ -429,15 +507,19 @@ def edit_unified_sale(
     customer, company, products_by_id, destination_type, target_plant_id, account_id = _validate_and_load(db, payload)
 
     try:
-        for model in (models.Sale, models.Purchase, models.CompanyPayment, models.Expense, models.OwnerDrawings):
+        for model in (
+            models.Sale, models.Purchase, models.CompanyPayment, models.Expense, models.OwnerDrawings,
+            models.UnifiedSaleHomeExpenseLine,
+        ):
             db.query(model).filter(model.unified_sale_id == batch.id).delete()
         db.flush()
 
         total_selling_amount = sum((item.quantity * item.selling_rate for item in payload.items), Decimal("0")) + payload.delivery_charges
         total_purchase_amount = sum((item.quantity * item.purchase_rate for item in payload.items), Decimal("0"))
         s = payload.settlement
+        home_expense_total = _home_expense_total(s)
 
-        net_plant_payment = s.total_credit_received - s.home_expense_amount - s.owner_drawings_amount
+        net_plant_payment = s.total_credit_received - home_expense_total - s.owner_drawings_amount
 
         # GST on Sale, extended to Unified Sale (§ GST on Sale) — recomputed
         # from this edit's own total_selling_amount/gst_rate, same as every
@@ -454,7 +536,7 @@ def edit_unified_sale(
         batch.delivery_charges = payload.delivery_charges
         batch.total_credit_received = s.total_credit_received
         batch.net_plant_payment = net_plant_payment
-        batch.home_expense_amount = s.home_expense_amount
+        batch.home_expense_amount = home_expense_total
         batch.owner_drawings_amount = s.owner_drawings_amount
         batch.destination_type = destination_type
         batch.target_plant_id = target_plant_id
@@ -470,7 +552,7 @@ def edit_unified_sale(
         db.add(batch)
         db.flush()
 
-        sales, purchases, payment, expense, owner_drawing = _create_pending_children(db, payload, batch, products_by_id, current_user.name)
+        sales, purchases, payment, expenses, owner_drawing = _create_pending_children(db, payload, batch, products_by_id, current_user.name)
         db.commit()
     except HTTPException:
         db.rollback()
@@ -480,7 +562,7 @@ def edit_unified_sale(
         raise HTTPException(500, f"Edit failed, nothing was changed: {e}")
 
     db.refresh(batch)
-    return _batch_to_out(batch, sales, purchases, payment, expense, owner_drawing)
+    return _batch_to_out(db, batch, sales, purchases, payment, expenses, owner_drawing)
 
 
 def _do_approve_sale(db: Session, batch: models.UnifiedSaleBatch, sales, purchases, by: str) -> None:
@@ -607,7 +689,7 @@ def _do_approve_sale(db: Session, batch: models.UnifiedSaleBatch, sales, purchas
     db.add(batch)
 
 
-def _do_approve_payment(db: Session, batch: models.UnifiedSaleBatch, payment, expense, owner_drawing, by: str, reference: Optional[str]) -> None:
+def _do_approve_payment(db: Session, batch: models.UnifiedSaleBatch, payment, expenses, owner_drawing, by: str, reference: Optional[str]) -> None:
     """Body of the plant payment/settlement approval — settlement routing,
     CompanyPayment/Expense/OwnerDrawings child rows. No commit/rollback —
     see _do_approve_sale."""
@@ -650,9 +732,23 @@ def _do_approve_payment(db: Session, batch: models.UnifiedSaleBatch, payment, ex
     if payment:
         payment.status = "active"
         db.add(payment)
-    if expense:
+    # § Multi-line Categorized Home Expense — activate EVERY pending
+    # Expense row (0, 1, or N — see _load_children), not just one.
+    # apply_salary_expense_if_needed runs HERE, at approval, not at
+    # creation (_create_pending_children) — unlike Shop Sale's single-
+    # phase posting, a Unified Sale's settlement genuinely hasn't happened
+    # yet until this call, so the employee balance must not move earlier.
+    # § Salary payments are never clawed back (deliberate, permanent
+    # design — see utils.apply_salary_expense_if_needed's own docstring).
+    # Once this posts, cancel_unified_sale and correct_unified_sale_
+    # settlement both only ever cancel the Expense row's status — neither
+    # may add the amount back onto Employee.current_balance, even though
+    # every other settlement effect (plant/account routing, non-Salary
+    # Home Expense, Owner Drawings) does fully reverse on cancel/correct.
+    for expense in expenses:
         expense.status = "active"
         db.add(expense)
+        apply_salary_expense_if_needed(db, expense.category_id, expense.employee_id, expense.amount, by=by)
     if owner_drawing:
         owner_drawing.status = "active"
         db.add(owner_drawing)
@@ -697,12 +793,12 @@ def approve_unified_sale_sale(
     if not batch:
         raise HTTPException(404, "Unified sale not found")
 
-    sales, purchases, payment, expense, owner_drawing = _load_children(db, batch.id)
+    sales, purchases, payment, expenses, owner_drawing = _load_children(db, batch.id)
 
     try:
         _do_approve_sale(db, batch, sales, purchases, by)
         if _dec(batch.total_credit_received) <= 0 and batch.payment_status == "pending":
-            _do_approve_payment(db, batch, payment, expense, owner_drawing, by, None)
+            _do_approve_payment(db, batch, payment, expenses, owner_drawing, by, None)
         db.commit()
     except HTTPException:
         db.rollback()
@@ -712,7 +808,7 @@ def approve_unified_sale_sale(
         raise HTTPException(500, f"Sale approval failed, nothing was changed: {e}")
 
     db.refresh(batch)
-    return _batch_to_out(batch, sales, purchases, payment, expense, owner_drawing)
+    return _batch_to_out(db, batch, sales, purchases, payment, expenses, owner_drawing)
 
 
 @router.post("/unified/{unified_sale_id}/approve-payment", response_model=schemas.UnifiedSaleOut)
@@ -731,10 +827,10 @@ def approve_unified_sale_payment(
     if not batch:
         raise HTTPException(404, "Unified sale not found")
 
-    sales, purchases, payment, expense, owner_drawing = _load_children(db, batch.id)
+    sales, purchases, payment, expenses, owner_drawing = _load_children(db, batch.id)
 
     try:
-        _do_approve_payment(db, batch, payment, expense, owner_drawing, by, reference)
+        _do_approve_payment(db, batch, payment, expenses, owner_drawing, by, reference)
         db.commit()
     except HTTPException:
         db.rollback()
@@ -744,7 +840,7 @@ def approve_unified_sale_payment(
         raise HTTPException(500, f"Payment approval failed, nothing was changed: {e}")
 
     db.refresh(batch)
-    return _batch_to_out(batch, sales, purchases, payment, expense, owner_drawing)
+    return _batch_to_out(db, batch, sales, purchases, payment, expenses, owner_drawing)
 
 
 @router.post("/unified/{unified_sale_id}/approve", response_model=schemas.UnifiedSaleOut)
@@ -770,11 +866,11 @@ def approve_payment_only(
     if batch.company_id is not None:
         raise HTTPException(400, "This endpoint is for Payment-Only batches only — use approve-sale/approve-payment for a Full Sale")
 
-    sales, purchases, payment, expense, owner_drawing = _load_children(db, batch.id)
+    sales, purchases, payment, expenses, owner_drawing = _load_children(db, batch.id)
 
     try:
         _do_approve_sale(db, batch, sales, purchases, by)
-        _do_approve_payment(db, batch, payment, expense, owner_drawing, by, reference)
+        _do_approve_payment(db, batch, payment, expenses, owner_drawing, by, reference)
         db.commit()
     except HTTPException:
         db.rollback()
@@ -784,7 +880,7 @@ def approve_payment_only(
         raise HTTPException(500, f"Approval failed, nothing was changed: {e}")
 
     db.refresh(batch)
-    return _batch_to_out(batch, sales, purchases, payment, expense, owner_drawing)
+    return _batch_to_out(db, batch, sales, purchases, payment, expenses, owner_drawing)
 
 
 @router.patch("/unified/{unified_sale_id}/correct-settlement", response_model=schemas.UnifiedSaleOut)
@@ -818,22 +914,33 @@ def correct_unified_sale_settlement(
     if batch.payment_status != "approved":
         raise HTTPException(400, "Only an approved settlement can be corrected — edit the pending batch instead")
 
-    bypass_sum = payload.home_expense_amount + payload.owner_drawings_amount
+    home_expense_lines = payload.home_expense_lines or []
+    use_home_expense_lines = bool(home_expense_lines)
+    home_expense_total = _home_expense_total(payload)
+
+    bypass_sum = home_expense_total + payload.owner_drawings_amount
     if bypass_sum > _dec(batch.total_credit_received) + EPSILON:
         raise HTTPException(
             400,
-            f"Home expense ({payload.home_expense_amount}) + owner drawings ({payload.owner_drawings_amount}) "
+            f"Home expense ({home_expense_total}) + owner drawings ({payload.owner_drawings_amount}) "
             f"= {bypass_sum} exceeds total credit received ({batch.total_credit_received}) — "
             f"nothing would be left to settle.",
         )
-    if payload.home_expense_amount > 0 and not payload.home_expense_category_id:
-        raise HTTPException(400, "home_expense_category_id is required when home_expense_amount > 0")
-    if payload.home_expense_category_id and not db.query(models.ExpenseCategory).get(payload.home_expense_category_id):
-        raise HTTPException(404, "Expense category not found")
+    if use_home_expense_lines:
+        for line in home_expense_lines:
+            if line.amount > 0 and not db.query(models.ExpenseCategory).get(line.category_id):
+                raise HTTPException(404, "Expense category not found")
+            if line.amount > 0 and is_salary_category(db, line.category_id) and not line.employee_id:
+                raise HTTPException(400, "Employee is required when a Home Expense line's category is Salary")
+    else:
+        if payload.home_expense_amount > 0 and not payload.home_expense_category_id:
+            raise HTTPException(400, "home_expense_category_id is required when home_expense_amount > 0")
+        if payload.home_expense_category_id and not db.query(models.ExpenseCategory).get(payload.home_expense_category_id):
+            raise HTTPException(404, "Expense category not found")
 
     new_destination_type, new_target_plant_id, new_account_id = _resolve_destination(db, payload, batch.company_id)
 
-    sales, purchases, old_plant_payment, old_expense, old_owner_drawing = _load_children(db, batch.id)
+    sales, purchases, old_plant_payment, old_expenses, old_owner_drawing = _load_children(db, batch.id)
 
     try:
         # ---- Reverse exactly what the CURRENT (about-to-be-superseded)
@@ -856,13 +963,32 @@ def correct_unified_sale_settlement(
         # Cancel (never mutate) the old settlement children — an
         # uncorrupted audit trail, same convention as every other
         # correctable transaction in this app.
-        for child in (old_plant_payment, old_expense, old_owner_drawing):
+        #
+        # § Salary payments are never clawed back (deliberate, permanent
+        # design — see utils.apply_salary_expense_if_needed's docstring).
+        # Unlike old_plant_payment/old_owner_drawing above, cancelling a
+        # Salary-category old_expenses row here must NOT add its amount
+        # back onto Employee.current_balance — that balance was already
+        # genuinely reduced when the ORIGINAL settlement was approved
+        # (_do_approve_payment), and the correction below posts a brand
+        # new deduction for whatever the corrected lines specify, on top
+        # of it, not in place of it. Only plant/account routing and non-
+        # Salary bypass amounts reverse-then-repost; Salary is cumulative.
+        for child in (old_plant_payment, *old_expenses, old_owner_drawing):
             if child and child.status == "active":
                 child.status = "cancelled"
                 db.add(child)
 
+        # § Multi-line Categorized Home Expense — the structured lines
+        # describe the CURRENT composition only (no audit-trail status of
+        # their own, unlike Expense), so a correction replaces them
+        # outright rather than cancel+recreate.
+        db.query(models.UnifiedSaleHomeExpenseLine).filter(
+            models.UnifiedSaleHomeExpenseLine.unified_sale_id == batch.id
+        ).delete()
+
         # ---- Post the corrected settlement ----
-        new_net_plant_payment = _dec(batch.total_credit_received) - payload.home_expense_amount - payload.owner_drawings_amount
+        new_net_plant_payment = _dec(batch.total_credit_received) - home_expense_total - payload.owner_drawings_amount
 
         new_plant_payment = None
         if new_net_plant_payment > 0 and new_destination_type == "plant":
@@ -876,8 +1002,33 @@ def correct_unified_sale_settlement(
             db.add(new_plant_payment)
             db.flush()
 
-        new_expense = None
-        if payload.home_expense_amount > 0:
+        # § Multi-line Categorized Home Expense — already-approved batch,
+        # so (unlike _create_pending_children) these post as "active"
+        # immediately, same as new_plant_payment/new_owner_drawing above,
+        # including the salary balance reduction right away.
+        new_expenses = []
+        if use_home_expense_lines:
+            for line in home_expense_lines:
+                if line.amount <= 0:
+                    continue
+                db.add(models.UnifiedSaleHomeExpenseLine(
+                    unified_sale_id=batch.id, category_id=line.category_id,
+                    employee_id=line.employee_id, amount=line.amount,
+                    description=line.description,
+                ))
+                new_expense = models.Expense(
+                    display_id=next_display_id(db, models.Expense, "EXP", width=6),
+                    date=batch.date, category_id=line.category_id, amount=line.amount,
+                    account_id=None, method="cash",
+                    description=line.description or f"Settlement correction of Unified Sale {batch.display_id} — {payload.correction_reason}",
+                    status="active", entered_by=payload.corrected_by, unified_sale_id=batch.id,
+                    employee_id=line.employee_id,
+                )
+                db.add(new_expense)
+                db.flush()
+                apply_salary_expense_if_needed(db, line.category_id, line.employee_id, line.amount, by=payload.corrected_by)
+                new_expenses.append(new_expense)
+        elif payload.home_expense_amount > 0:
             new_expense = models.Expense(
                 display_id=next_display_id(db, models.Expense, "EXP", width=6),
                 date=batch.date, category_id=payload.home_expense_category_id, amount=payload.home_expense_amount,
@@ -887,6 +1038,7 @@ def correct_unified_sale_settlement(
             )
             db.add(new_expense)
             db.flush()
+            new_expenses.append(new_expense)
 
         new_owner_drawing = None
         if payload.owner_drawings_amount > 0:
@@ -911,7 +1063,7 @@ def correct_unified_sale_settlement(
                     new_target_company.current_balance = _dec(new_target_company.current_balance) - new_net_plant_payment
                     db.add(new_target_company)
 
-        batch.home_expense_amount = payload.home_expense_amount
+        batch.home_expense_amount = home_expense_total
         batch.owner_drawings_amount = payload.owner_drawings_amount
         batch.net_plant_payment = new_net_plant_payment
         batch.destination_type = new_destination_type
@@ -933,8 +1085,8 @@ def correct_unified_sale_settlement(
         raise HTTPException(500, f"Settlement correction failed, nothing was changed: {e}")
 
     db.refresh(batch)
-    sales, purchases, plant_payment, expense, owner_drawing = _load_children(db, batch.id)
-    return _batch_to_out(batch, sales, purchases, plant_payment, expense, owner_drawing)
+    sales, purchases, plant_payment, expenses, owner_drawing = _load_children(db, batch.id)
+    return _batch_to_out(db, batch, sales, purchases, plant_payment, expenses, owner_drawing)
 
 
 @router.patch("/unified/{unified_sale_id}/correct-amount", response_model=schemas.UnifiedSaleOut)
@@ -1104,8 +1256,8 @@ def correct_unified_sale_amount(
         raise HTTPException(500, f"Amount correction failed, nothing was changed: {e}")
 
     db.refresh(batch)
-    sales, purchases, plant_payment, expense, owner_drawing = _load_children(db, batch.id)
-    return _batch_to_out(batch, sales, purchases, plant_payment, expense, owner_drawing)
+    sales, purchases, plant_payment, expenses, owner_drawing = _load_children(db, batch.id)
+    return _batch_to_out(db, batch, sales, purchases, plant_payment, expenses, owner_drawing)
 
 
 @router.post("/unified/{unified_sale_id}/cancel", response_model=schemas.UnifiedSaleOut)
@@ -1123,7 +1275,7 @@ def cancel_unified_sale(
     if batch.sale_status != "pending" or batch.payment_status != "pending":
         raise HTTPException(400, "Cannot cancel — sale or payment has already been approved/cancelled")
 
-    sales, purchases, payment, expense, owner_drawing = _load_children(db, batch.id)
+    sales, purchases, payment, expenses, owner_drawing = _load_children(db, batch.id)
     try:
         for sale in sales:
             sale.status = "cancelled"
@@ -1134,7 +1286,18 @@ def cancel_unified_sale(
         if payment:
             payment.status = "cancelled"
             db.add(payment)
-        if expense:
+        # § Multi-line Categorized Home Expense — cancel EVERY pending
+        # Expense row, not just one (see _load_children). No Employee.
+        # current_balance reversal needed here even for a Salary-category
+        # line — cancel_unified_sale only runs while payment_status is
+        # still "pending" (guarded above), so these rows are still
+        # "pending" too and apply_salary_expense_if_needed was never
+        # called for them (see _do_approve_payment, where that happens).
+        # Nothing was ever posted, so there is nothing to reverse. Compare
+        # correct_unified_sale_settlement below, which DOES cancel already-
+        # ACTIVE Expense rows post-approval and, per § Salary payments are
+        # never clawed back, must not reverse the balance there either.
+        for expense in expenses:
             expense.status = "cancelled"
             db.add(expense)
         if owner_drawing:
@@ -1151,4 +1314,4 @@ def cancel_unified_sale(
         raise HTTPException(500, f"Cancel failed, nothing was changed: {e}")
 
     db.refresh(batch)
-    return _batch_to_out(batch, sales, purchases, payment, expense, owner_drawing)
+    return _batch_to_out(db, batch, sales, purchases, payment, expenses, owner_drawing)

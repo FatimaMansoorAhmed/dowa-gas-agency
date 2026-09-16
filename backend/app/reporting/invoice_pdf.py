@@ -35,9 +35,17 @@ from app import schemas
 # This is the ONE place these fields live; every render function below reads
 # from here (both the full _header_block and the compact shop-sale-invoice
 # header), so a future correction is a one-line edit per field, not a hunt
-# through the file. GST Regn No is left as an explicit "[TO BE ADDED]"
-# marker rather than a fabricated-but-plausible-looking number — a fake tax
-# ID printed on a real invoice is worse than an obviously blank one.
+# through the file.
+#
+# § GST Registration header line removed — this business is not GST-
+# registered, so a "GST Regn No" line has no real value to show and never
+# did (it sat as an explicit "[TO BE ADDED]" placeholder). Deliberately
+# NOT the same thing as the gst_enabled/gst_rate/gst_amount feature on
+# Sale/Unified Sale/Shop Sale (compute_gst, models.Sale.gst_*, etc.) —
+# that's a real, working, separate feature for a BUYER who wants GST
+# applied to their own transaction, completely untouched by this removal.
+# This BUSINESS dict is only ever about the seller's own fixed letterhead
+# facts, never about any one transaction's GST treatment.
 # ============================================================================
 BUSINESS = {
     "name": "DOWA Gas Agency",
@@ -48,8 +56,7 @@ BUSINESS = {
         "Karachi South, Lyari Town",
     ],
     "phone": "Phone: 0333-2240852",
-    "email": "Email: [TO BE ADDED]",
-    "gst_regn_no": "GST Regn No: [TO BE ADDED]",
+    "email": "Email: dowagas@gmail.com",
     "ntn": "NTN: 2741131-1",
 }
 
@@ -206,7 +213,7 @@ def _header_block(s):
         Paragraph(BUSINESS["name"].upper(), s["company_name"]),
         Paragraph(BUSINESS["tagline"], s["company_tagline"]),
     ]
-    right_lines = BUSINESS["address_lines"] + [BUSINESS["phone"], BUSINESS["email"], BUSINESS["gst_regn_no"], BUSINESS["ntn"]]
+    right_lines = BUSINESS["address_lines"] + [BUSINESS["phone"], BUSINESS["email"], BUSINESS["ntn"]]
     right = [Paragraph(line, s["address_right"]) for line in right_lines]
 
     t = Table([[logo, name_block, right]], colWidths=[22 * mm, 78 * mm, 82 * mm])
@@ -669,16 +676,17 @@ def _compact_header_block(s, total_width):
         Paragraph(BUSINESS["name"].upper(), s["compact_company_name"]),
         Paragraph(BUSINESS["tagline"], s["compact_company_tagline"]),
     ]
-    # Same 7 fields as _header_block (address×2, city, phone, email, GST,
-    # NTN — § Company Information, all kept, none removed), combined onto
-    # 4 lines instead of 7 (phone+email share a line, GST+NTN share a
-    # line) — the row-height bottleneck for the whole compact header, so
-    # this is where "compact, not removed" actually has to happen.
+    # Same 6 fields as _header_block (address×2, city, phone, email, NTN —
+    # § Company Information, all kept, none removed — § GST Registration
+    # header line removed, this business isn't GST-registered), combined
+    # onto 4 lines instead of 6 (phone+email share a line) — the row-
+    # height bottleneck for the whole compact header, so this is where
+    # "compact, not removed" actually has to happen.
     right_lines = [
         BUSINESS["address_lines"][0],
         f"{BUSINESS['address_lines'][1]}, {BUSINESS['address_lines'][2]}",
         f"{BUSINESS['phone']}  |  {BUSINESS['email']}",
-        f"{BUSINESS['gst_regn_no']}  |  {BUSINESS['ntn']}",
+        BUSINESS["ntn"],
     ]
     right = [Paragraph(line, s["compact_address_right"]) for line in right_lines]
 

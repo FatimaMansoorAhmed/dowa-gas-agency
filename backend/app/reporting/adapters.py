@@ -20,6 +20,55 @@ def _in_range(q, date_col, start: datetime, end: datetime):
     return q.filter(date_col >= start, date_col < end)
 
 
+# § Daily Report clean columns — payment method label map (audit finding,
+# a wider pre-existing bug, not Unified-Sale-specific): Payment.method/
+# CompanyPayment.method/ShopCustomerPayment.method are raw internal enum
+# values, not display strings — "bank_transfer", "direct_settlement" (any
+# 3-way plant settlement, Unified Sale or otherwise), "unified_sale_credit"
+# (money collected at a Unified Sale, before routing onward — see
+# routers/unified_sale.py's Payment child rows), and "owner_capital" (a
+# Direct Owner Capital re-investment settling a plant payable — see
+# routers/owner_capital.py) have all been leaking through verbatim in
+# every section that shows `.method`. Applied everywhere `.method` is
+# displayed, not just Unified-Sale-linked rows — the same raw string
+# leaks for a plain Payment Receipt or Cylinder Return settlement too.
+_METHOD_LABELS = {
+    "cash": "Cash",
+    "bank_transfer": "Bank Transfer",
+    "cheque": "Cheque",
+    "online": "Online Payment",
+    "other": "Other",
+    "direct_settlement": "Direct Settlement",
+    "unified_sale_credit": "Collected at Sale",
+    "owner_capital": "Owner Capital (Direct)",
+}
+
+
+def _method_label(method: str) -> str:
+    return _METHOD_LABELS.get(method, method.replace("_", " ").title())
+
+
+# § Daily Report clean columns — CylinderTransaction.transaction_type is a
+# raw internal enum (models.CylinderTransaction.transaction_type, schemas.
+# py's CylinderTransactionCreate: "SALE_RETURN | EMPTY_RECEIPT | EMPTY_SALE
+# | ADJUSTMENT") shown verbatim in the description today. No frontend form
+# ever sends anything but the schema default ("SALE_RETURN"), confirmed by
+# grep — so every real row currently reads literally "Cylinder SALE_RETURN
+# — out X / in Y". "Cylinder Exchange" for the default (what the feature
+# actually represents: filled cylinders delivered, empty ones returned);
+# the other three keys are defensive, for historical rows or a future form.
+_CYLINDER_TXN_TYPE_LABELS = {
+    "SALE_RETURN": "Cylinder Exchange",
+    "EMPTY_RECEIPT": "Empty Cylinders Received",
+    "EMPTY_SALE": "Empty Cylinder Sale",
+    "ADJUSTMENT": "Stock Adjustment",
+}
+
+
+def _cylinder_txn_type_label(transaction_type: str) -> str:
+    return _CYLINDER_TXN_TYPE_LABELS.get(transaction_type, transaction_type.replace("_", " ").title())
+
+
 def _fetch_sales(db: Session, start: datetime, end: datetime) -> list[ReportableTransaction]:
     """Sale.unified_sale_id is a real foreign key, not a marker for a
     separate transaction type — a Sale created via Unified Sale is still
@@ -107,6 +156,18 @@ def _fetch_sales(db: Session, start: datetime, end: datetime) -> list[Reportable
         line_amount = s.grand_total
         if s.unified_sale_id:
             batch = batches.get(s.unified_sale_id)
+            # § Customer-facing description (real gap fix — Daily Report
+            # Sales section) — this used to read "Sale — Batch USALE-000026:
+            # Sale Value Rs X, Collected Rs Y, Outstanding Rs Z (via Unified
+            # Sale)": a raw batch ID, the "Unified Sale" mechanism name, and
+            # restated Sale Value/Collected math that Amount (and, since the
+            # Cylinder Type/Quantity columns landed, quantity too) already
+            # shows as its own column — none of which means anything to
+            # someone just reading the report. Replaced with a plain line:
+            # who it was for, and the outstanding balance only when there
+            # genuinely is one. No batch reference, no "(via Unified Sale)"
+            # suffix, ever.
+            value_note = f" to {customer.name}" if customer else ""
             if batch:
                 batch_total_amount = batch_line_totals.get(s.unified_sale_id)
                 if batch.gst_enabled and batch_total_amount:
@@ -115,14 +176,10 @@ def _fetch_sales(db: Session, start: datetime, end: datetime) -> list[Reportable
                 # grand_total (incl. GST when present) — matches the
                 # customer ledger's GST-inclusive treatment (§ GST on Sale).
                 outstanding = batch.grand_total - batch.total_credit_received
-                value_note = (
-                    f" — Batch {batch.display_id}: Sale Value Rs {batch.grand_total}, "
-                    f"Collected Rs {batch.total_credit_received}, Outstanding Rs {outstanding}"
-                    if outstanding != 0 else ""
-                )
+                if outstanding != 0:
+                    value_note += f" — Rs {outstanding:,.2f} outstanding"
                 if batch.gst_enabled:
                     value_note += f" (GST {batch.gst_rate}%: Rs {batch.gst_amount})"
-            value_note += " (via Unified Sale)"
         elif s.emergency_transfer_shop_id:
             label = "Emergency Transfer"
             shop = customers.get(s.emergency_transfer_shop_id)
@@ -137,7 +194,11 @@ def _fetch_sales(db: Session, start: datetime, end: datetime) -> list[Reportable
             value_note += f" (GST {s.gst_rate}%: Rs {s.gst_amount})"
         out.append(ReportableTransaction(
             id=s.id, type="sale", date=s.date, display_id=s.display_id,
-            description=f"{label} × {s.quantity}{value_note}",
+            # § Daily Report clean columns — label + narrative note only;
+            # the quantity itself moved to its own structured field below
+            # (was "{label} × {s.quantity}", no product/cylinder-size
+            # context at all).
+            description=f"{label}{value_note}",
             # GST-inclusive (see line_amount above) — this is the day-book's
             # real invoiced/collectible value, matching the customer ledger
             # treatment (§ GST on Sale). Dashboard/P&L revenue figures are
@@ -146,6 +207,7 @@ def _fetch_sales(db: Session, start: datetime, end: datetime) -> list[Reportable
             amount=line_amount,
             customer=customer.name if customer else None, plant=plant.name if plant else None,
             reference=s.gate_pass_no or s.vehicle_no, entered_by=s.entered_by, status=s.status,
+            cylinder_weight=s.weight_per_cylinder, quantity=s.quantity, unit="cylinder",
         ))
     return out
 
@@ -192,7 +254,12 @@ def _fetch_delivery_charges(db: Session, start: datetime, end: datetime) -> list
         customer = customers.get(b.customer_id)
         out.append(ReportableTransaction(
             id=b.id, type="delivery_charge", date=first_line_date[b.id], display_id=b.display_id,
-            description=f"Delivery Charges — Batch {b.display_id} (via Unified Sale)",
+            # § Customer-facing description — the batch's own display_id is
+            # already the ID column's value (b.display_id above); repeating
+            # "Batch USALE-000026" here too was pure redundancy, and "(via
+            # Unified Sale)" is an internal mechanism name — neither means
+            # anything extra to a reader who can already see the ID column.
+            description=f"Delivery Charges to {customer.name}" if customer else "Delivery Charges",
             amount=b.delivery_charges,
             customer=customer.name if customer else None, plant=None,
             reference=b.vehicle_no or b.gate_pass_no, entered_by=b.entered_by, status=b.status,
@@ -216,10 +283,14 @@ def _fetch_purchases(db: Session, start: datetime, end: datetime) -> list[Report
         plant = plants.get(p.company_id)
         out.append(ReportableTransaction(
             id=p.id, type="purchase", date=p.date, display_id=p.display_id,
-            description=f"Purchase × {p.quantity}" + (" (via Unified Sale)" if p.unified_sale_id else ""),
+            # "(via Unified Sale)" was an internal mechanism name with no
+            # reader value — Plant is already its own column, nothing else
+            # to add here.
+            description="Purchase",
             amount=p.total_amount,
             plant=plant.name if plant else None, reference=p.gate_pass_no or p.vehicle_no,
             entered_by=p.entered_by, status=p.status,
+            cylinder_weight=p.weight_per_cylinder, quantity=p.quantity, unit="cylinder",
         ))
     return out
 
@@ -252,7 +323,10 @@ def _fetch_customer_payments(db: Session, start: datetime, end: datetime) -> lis
         customer = customers.get(p.customer_id)
         out.append(ReportableTransaction(
             id=p.id, type="customer_payment", date=p.date, display_id=p.display_id,
-            description=f"Payment · {p.method}" + (" (via Unified Sale)" if p.unified_sale_id else ""),
+            # "(via Unified Sale)" dropped — internal mechanism name, no
+            # reader value. _method_label handles the raw enum values that
+            # leaked through here too (e.g. "unified_sale_credit").
+            description=f"Payment · {_method_label(p.method)}",
             amount=p.amount,
             customer=customer.name if customer else None, reference=p.reference_no,
             entered_by=p.entered_by, status=p.status,
@@ -281,7 +355,10 @@ def _fetch_plant_payments(db: Session, start: datetime, end: datetime) -> list[R
         plant = plants.get(p.company_id)
         out.append(ReportableTransaction(
             id=p.id, type="plant_payment", date=p.date, display_id=p.display_id,
-            description=f"Plant Payment · {p.method}" + (" (via Unified Sale)" if p.unified_sale_id else ""),
+            # "(via Unified Sale)" dropped — internal mechanism name, no
+            # reader value. _method_label handles the raw enum values that
+            # leaked through here too ("direct_settlement", "owner_capital").
+            description=f"Plant Payment · {_method_label(p.method)}",
             amount=p.amount,
             plant=plant.name if plant else None, reference=p.reference_no,
             entered_by=p.entered_by, status=p.status,
@@ -300,7 +377,10 @@ def _fetch_owner_capital(db: Session, start: datetime, end: datetime) -> list[Re
         plant = plants.get(c.target_plant_id) if c.target_plant_id else None
         out.append(ReportableTransaction(
             id=c.id, type="owner_capital", date=c.date, display_id=c.display_id,
-            description=f"Owner Capital ({c.destination_type})", amount=c.amount,
+            # Minor polish — destination_type is only ever "plant"/"account"
+            # (plain, real words already, not backend jargon), just never
+            # capitalized for display until now.
+            description=f"Owner Capital ({c.destination_type.title()})", amount=c.amount,
             plant=plant.name if plant else None, entered_by=c.entered_by, status=c.status,
         ))
     return out
@@ -367,7 +447,7 @@ def _fetch_cylinder_activity(db: Session, start: datetime, end: datetime) -> lis
         customer = customers.get(t.customer_id)
         out.append(ReportableTransaction(
             id=t.id, type="cylinder_transaction", date=t.date, display_id=t.display_id,
-            description=f"Cylinder {t.transaction_type} — out {t.qty_out} / in {t.qty_in}",
+            description=f"{_cylinder_txn_type_label(t.transaction_type)} — out {t.qty_out} / in {t.qty_in}",
             customer=customer.name if customer else None, entered_by=t.entered_by, status=t.status,
         ))
     return out
@@ -410,19 +490,24 @@ def _fetch_empty_cylinder_sales(db: Session, start: datetime, end: datetime) -> 
         customer = customers.get(e.customer_id)
         out.append(ReportableTransaction(
             id=e.id, type="empty_cylinder_sale", date=e.date, display_id=e.display_id,
-            description=f"Empty Cylinders Sold ({e.cylinder_size} KG) × {e.quantity}",
+            description="Empty Cylinders Sold",
             amount=e.amount, customer=customer.name if customer else None,
             entered_by=e.entered_by, status=e.status,
+            cylinder_weight=e.cylinder_size, quantity=e.quantity, unit="cylinder",
         ))
     for r in sell_returns:
         customer = customers.get(r.customer_id)
         payment = payments.get(r.payment_id)
-        type_label = f" {r.cylinder_type.upper()}" if r.cylinder_type else ""
+        # Cylinder condition (STANDARD/DEFECTIVE/...), not a quantity/size
+        # detail — stays in the free-text description, doesn't belong in
+        # either structured column below.
+        type_label = f" ({r.cylinder_type.upper()})" if r.cylinder_type else ""
         out.append(ReportableTransaction(
             id=r.id, type="empty_cylinder_sale", date=r.date, display_id=r.display_id,
-            description=f"Empty Cylinders Sold ({r.cylinder_size} KG{type_label}) × {r.quantity}",
+            description=f"Empty Cylinders Sold{type_label}",
             amount=payment.amount if payment else None, customer=customer.name if customer else None,
             entered_by=r.entered_by, status=r.status,
+            cylinder_weight=r.cylinder_size, quantity=r.quantity, unit="cylinder",
         ))
     return out
 
@@ -466,8 +551,11 @@ def _fetch_shop_sales(db: Session, start: datetime, end: datetime) -> list[Repor
         )
         out.append(ReportableTransaction(
             id=s.id, type="shop_sale", date=s.date, display_id=s.display_id,
-            description=f"Shop Sale × {s.quantity}{value_note}", amount=received,
+            description=f"Shop Sale{value_note}", amount=received,
             customer=shop.name if shop else None, entered_by=s.entered_by, status=s.status,
+            cylinder_weight=s.cylinder_weight_used,
+            quantity=s.quantity_kg if s.unit == "kg" and s.quantity_kg is not None else s.quantity,
+            unit=s.unit,
         ))
     return out
 
@@ -491,7 +579,10 @@ def _fetch_shop_customer_payments(db: Session, start: datetime, end: datetime) -
         sc = supply_customers.get(p.supply_customer_id)
         out.append(ReportableTransaction(
             id=p.id, type="shop_customer_payment", date=p.date, display_id=p.display_id,
-            description=f"Payment from {sc.name if sc else 'Unknown'} · {p.method}" + (f" ({shop.name})" if shop else ""),
+            # _method_label — same raw-method leak as the plant-side
+            # payment sections (audit found this one too: a shop customer
+            # can pay by bank transfer, which showed as raw "bank_transfer").
+            description=f"Payment from {sc.name if sc else 'Unknown'} · {_method_label(p.method)}" + (f" ({shop.name})" if shop else ""),
             amount=p.amount, customer=sc.name if sc else None, entered_by=p.entered_by, status=p.status,
         ))
     return out
@@ -595,7 +686,17 @@ def _fetch_account_transfers(db: Session, start: datetime, end: datetime) -> lis
         from_acc = accounts.get(t.from_account_id)
         to_acc = accounts.get(t.to_account_id)
         out.append(ReportableTransaction(
-            id=t.id, type="account_transfer", date=t.date, display_id=f"XFER-{str(t.id)[:8]}",
+            # § Account Transfer fake ID (audit finding) — AccountTransfer
+            # genuinely has no real display_id (see this function's own
+            # docstring), so "XFER-{first 8 hex chars of the row's UUID}"
+            # was a manufactured ID that LOOKS like a real sequential
+            # reference (SALE-000123-style) but is actually meaningless
+            # noise — arguably worse than showing the raw UUID, since it
+            # reads as legitimate. "—" instead, same "not applicable"
+            # convention used everywhere else in this report (Cylinder
+            # Type/Quantity for a non-product row, GST for a non-GST row,
+            # ...) — never invent an ID that looks real but isn't.
+            id=t.id, type="account_transfer", date=t.date, display_id="—",
             description=(
                 f"Transfer: {from_acc.name if from_acc else 'Unknown'} → {to_acc.name if to_acc else 'Unknown'}"
                 + (f" — {t.notes}" if t.notes else "")

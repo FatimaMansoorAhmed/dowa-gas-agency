@@ -480,14 +480,27 @@ export type UnifiedSaleBatch = {
   created_at: string;
 };
 
+// § Multi-line Categorized Home Expense — mirrors ShopSaleHomeExpenseLine,
+// applied to Unified Sale's own settlement Home Expense field.
+export type UnifiedSaleHomeExpenseLine = {
+  id: string;
+  category_id: string;
+  employee_id: string | null;
+  amount: string;
+  description: string | null;
+};
+
 export type UnifiedSaleResult = UnifiedSaleBatch & {
   sales: Sale[];
   purchases: Purchase[];
   // Named to match the backend's UnifiedSaleOut.plant_payment — this is a
   // CompanyPayment (the 3-way settlement), never a customer Payment.
   plant_payment: CompanyPayment | null;
+  // Legacy single-Expense field — the first Expense row, for backward
+  // compat. A multi-line settlement's full picture is home_expense_lines.
   expense: Expense | null;
   owner_drawing: OwnerDrawing | null;
+  home_expense_lines: UnifiedSaleHomeExpenseLine[];
 };
 
 export type PaymentReceipt = {
@@ -585,6 +598,13 @@ export type ReportableTransaction = {
   id: string; type: string; date: string; display_id: string; description: string;
   amount: string | null; customer: string | null; plant: string | null;
   reference: string | null; entered_by: string; approval_info: string | null; status: string;
+  // § Daily Report clean columns — structured Cylinder Type/Quantity,
+  // promoted out of the free-text description (mirrors ShopTransactionRow's
+  // identical fields). null for a row with no real product/quantity
+  // concept (a Payment, Expense, OwnerDrawings, ...).
+  cylinder_weight: string | null;
+  quantity: string | null;
+  unit: "cylinder" | "kg" | null;
 };
 
 export type ReportSection = {

@@ -880,6 +880,15 @@ def _reverse_shop_sale_settlement(db: Session, sale: models.ShopSale) -> None:
                 account.current_balance = account.current_balance - net_amount
                 db.add(account)
 
+    # § Salary payments are never clawed back (deliberate, permanent
+    # design — see utils.apply_salary_expense_if_needed's own docstring
+    # for the full reasoning). Cancelling a Salary-category Expense here
+    # only flips its status — it must NEVER also add the amount back onto
+    # Employee.current_balance, even though every other bypass row above
+    # (account/plant settlement, non-Salary Home Expense, Owner Drawings)
+    # fully reverses. Do not "fix" this to also restore the employee's
+    # balance — that would incorrectly claw back a salary that was
+    # genuinely already paid.
     for exp in db.query(models.Expense).filter(
         models.Expense.source_shop_sale_id == sale.id, models.Expense.status == "active"
     ).all():
@@ -1054,6 +1063,9 @@ def _reverse_shop_cash_transfer(db: Session, transfer: models.ShopCashTransfer) 
                 account.current_balance = account.current_balance - net_amount
                 db.add(account)
 
+    # § Salary payments are never clawed back — see utils.apply_salary_
+    # expense_if_needed's docstring. Cancelling here only flips status,
+    # never touches Employee.current_balance.
     for exp in db.query(models.Expense).filter(
         models.Expense.source_shop_cash_transfer_id == transfer.id, models.Expense.status == "active"
     ).all():
@@ -2061,6 +2073,9 @@ def _reverse_customer_payment_settlement(db: Session, payment: models.ShopCustom
                 account.current_balance = account.current_balance - net_amount
                 db.add(account)
 
+    # § Salary payments are never clawed back — see utils.apply_salary_
+    # expense_if_needed's docstring. Cancelling here only flips status,
+    # never touches Employee.current_balance.
     for exp in db.query(models.Expense).filter(
         models.Expense.source_shop_customer_payment_id == payment.id, models.Expense.status == "active"
     ).all():

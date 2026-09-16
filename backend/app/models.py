@@ -742,6 +742,37 @@ class UnifiedSaleBatch(Base):
     target_plant = relationship("Company", foreign_keys=[target_plant_id])
 
 
+class UnifiedSaleHomeExpenseLine(Base):
+    """One categorized Home Expense line within a Unified Sale's settlement
+    (§ Multi-line Categorized Home Expense) — mirror of
+    ShopSaleHomeExpenseLine, applied to Unified Sale's own settlement Home
+    Expense field the same way. Each line also has its own matching
+    Expense row (account_id=None, same bypass pattern), created alongside
+    it — this table is the structured/categorized record, the Expense row
+    is what P&L/category totals read. Unlike ShopSaleHomeExpenseLine (whose
+    parent sale posts everything atomically at creation), a Unified Sale's
+    Expense rows are created "pending" and only become "active" when
+    /approve-payment runs (see routers/unified_sale.py) — this row itself
+    carries no status of its own, since it is descriptive metadata, not a
+    balance-affecting posting. Queried directly by unified_sale_id, the
+    same convention every other Unified Sale child (Sale/Purchase/
+    CompanyPayment/Expense/OwnerDrawings) already uses — no ORM
+    relationship on UnifiedSaleBatch itself."""
+    __tablename__ = "unified_sale_home_expense_lines"
+
+    id = Column(GUID(), primary_key=True, default=gen_uuid)
+    unified_sale_id = Column(GUID(), ForeignKey("unified_sale_batches.id"), nullable=False)
+    category_id = Column(GUID(), ForeignKey("expense_categories.id"), nullable=False)
+    # Required whenever category is the system "Salary" category (§ Employee
+    # Salary Tracking) — same convention as ShopSaleHomeExpenseLine.employee_id.
+    employee_id = Column(GUID(), ForeignKey("employees.id"), nullable=True)
+    amount = Column(Numeric(14, 2), nullable=False)
+    description = Column(String, nullable=True)
+
+    category = relationship("ExpenseCategory")
+    employee = relationship("Employee")
+
+
 class AuditLog(Base):
     """Every financial edit gets a row here — nothing is silently changed (§16, §31)."""
     __tablename__ = "audit_logs"

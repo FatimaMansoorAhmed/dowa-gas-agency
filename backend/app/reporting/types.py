@@ -23,6 +23,17 @@ class ReportableTransaction:
     plant: Optional[str] = None
     reference: Optional[str] = None
     approval_info: Optional[str] = None
+    # § Daily Report clean columns — structured Cylinder Type/Quantity,
+    # promoted out of the free-text `description` string (which used to be
+    # the only place a row's quantity showed up, e.g. "Sale × 2.0000" with
+    # no product/cylinder-size context at all). Mirrors the exact same
+    # fix already applied to the Shop Statement (ShopTransactionRow.
+    # cylinder_weight/quantity/unit) — None for a row with no real
+    # product/quantity concept (a Payment, Expense, OwnerDrawings, ...),
+    # rendered as "-" by the PDF, same convention as that statement uses.
+    cylinder_weight: Optional[Decimal] = None  # physical weight snapshot, e.g. 11.80/45.40
+    quantity: Optional[Decimal] = None
+    unit: Optional[str] = None  # "cylinder" | "kg" — only ever "kg" for a Shop Sale entered by KG
 
 
 @dataclass

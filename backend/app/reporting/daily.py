@@ -21,6 +21,7 @@ def _to_row_out(t) -> "schemas.ReportableTransactionOut":
         id=t.id, type=t.type, date=t.date, display_id=t.display_id, description=t.description,
         amount=t.amount, customer=t.customer, plant=t.plant, reference=t.reference,
         entered_by=t.entered_by, approval_info=t.approval_info, status=t.status,
+        cylinder_weight=t.cylinder_weight, quantity=t.quantity, unit=t.unit,
     )
 
 

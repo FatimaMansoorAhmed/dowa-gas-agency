@@ -478,6 +478,10 @@ export const api = {
         cash_account_id?: string;
         home_expense_amount: number;
         home_expense_category_id?: string;
+        // § Multi-line Categorized Home Expense — when non-empty, REPLACES
+        // home_expense_amount/home_expense_category_id above entirely for
+        // this settlement's math (see routers/unified_sale.py).
+        home_expense_lines?: { category_id: string; amount: number; employee_id?: string; description?: string }[];
         owner_drawings_amount: number;
         destination_type?: DestinationType;
         target_plant_id?: string;
@@ -520,9 +524,10 @@ export const api = {
           total_credit_received: number; 
           cash_received?: number; 
           cash_account_id?: string; 
-          home_expense_amount: number; 
-          home_expense_category_id?: string; 
-          owner_drawings_amount: number; 
+          home_expense_amount: number;
+          home_expense_category_id?: string;
+          home_expense_lines?: { category_id: string; amount: number; employee_id?: string; description?: string }[];
+          owner_drawings_amount: number;
           destination_type?: DestinationType;
           target_plant_id?: string;
           account_id?: string;
@@ -583,6 +588,7 @@ export const api = {
     correctSettlement: (id: string, payload: {
       home_expense_amount?: number;
       home_expense_category_id?: string;
+      home_expense_lines?: { category_id: string; amount: number; employee_id?: string; description?: string }[];
       owner_drawings_amount?: number;
       destination_type: DestinationType;
       target_plant_id?: string;

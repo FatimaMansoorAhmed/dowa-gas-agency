@@ -7,12 +7,13 @@ import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, 
 import NewPlantModal from "@/components/NewPlantModal";
 import AmountInput from "@/components/AmountInput";
 import CorrectTransactionModal, { CorrectableKind } from "@/components/CorrectTransactionModal";
+import HomeExpenseLinesEditor, { HomeExpenseLine, emptyHomeExpenseLine, homeExpenseLinesTotal, homeExpenseLinesValid, toHomeExpenseLinesPayload } from "@/components/HomeExpenseLinesEditor";
 import { api, apiErrorMessage } from "@/lib/api";
 import { pkr, fmtTime, todayLocalInput, toKarachiDateString, ACCOUNT_TYPE_LABELS, resolveAccountLabel, fmtNumber } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import { resolveRate, NO_PARTY_VALUE } from "@/lib/rates";
 import type {
-  Company, Customer, Product, ExpenseCategory, RateEntry, PaymentAccount, Party,
+  Company, Customer, Product, ExpenseCategory, RateEntry, PaymentAccount, Party, Employee,
   UnifiedSaleBatch, UnifiedSaleResult, DestinationType, AccountType,
   Sale, Payment, Purchase,
 } from "@/lib/types";
@@ -128,8 +129,6 @@ function UnifiedSaleBody() {
   const [paymentDateFilter, setPaymentDateFilter] = useState<DateFilter>(defaultDateFilter);
   const [correctTarget, setCorrectTarget] = useState<{ kind: CorrectableKind; transaction: Sale | Payment } | null>(null);
 
-  const [addingCategory, setAddingCategory] = useState(false);
-  const [newCategoryName, setNewCategoryName] = useState("");
   // Per-row draft for the settlement reference (bank transfer/cheque no.)
   // typed in just before approving that row's payment — keyed by batch id.
   const [paymentReferenceDrafts, setPaymentReferenceDrafts] = useState<Record<string, string>>({});
@@ -167,8 +166,12 @@ function UnifiedSaleBody() {
   const [totalCreditReceived, setTotalCreditReceived] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<"cash" | "bank_transfer" | "cheque" | "online">("cash");
 
-  const [homeExpenseAmount, setHomeExpenseAmount] = useState("");
-  const [homeExpenseCategoryId, setHomeExpenseCategoryId] = useState("");
+  // § Multi-line Categorized Home Expense — replaces the legacy single
+  // home_expense_amount/home_expense_category_id fields entirely for THIS
+  // form going forward (same convention as RecordShopSaleModal): always
+  // sent as home_expense_lines (even empty), never the scalar fields.
+  const [homeExpenseLines, setHomeExpenseLines] = useState<HomeExpenseLine[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
   const [ownerDrawingsAmount, setOwnerDrawingsAmount] = useState("");
 
   // Routing State
@@ -191,7 +194,7 @@ function UnifiedSaleBody() {
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
 
   const load = async () => {
-    const [c, cu, p, cat, acc, r, parties, ru, sales, payments, purchases] = await Promise.all([
+    const [c, cu, p, cat, acc, r, parties, ru, sales, payments, purchases, emp] = await Promise.all([
       api.companies.list(), api.customers.list(), api.products.list(),
       api.expenseCategories.list(), api.paymentAccounts.list(), api.rates.latest(),
       api.parties.list(),
@@ -201,6 +204,7 @@ function UnifiedSaleBody() {
       // approve/edit/cancel action that already calls this function), so
       // a Unified-Sale-approved Sale/Payment shows up here immediately.
       api.sales.list(), api.payments.list(), api.purchases.list(),
+      api.employees.list(),
     ]);
     // Active-only: an accidental duplicate product row (same weight_kg as
     // a real one, e.g. a stray "11.8 KG Cylinder2") must not show up as a
@@ -209,12 +213,11 @@ function UnifiedSaleBody() {
     // "stop working", since the calc keys off product118/product454's
     // specific id, which the duplicate never matched.
     setCompanies(c); setCustomers(cu); setProducts(p.filter((x) => x.active === "active"));
-    // § Employee Salary Tracking — "Salary" excluded here: this settlement
-    // section has no Employee picker, so leaving it selectable would be a
-    // dead end (backend requires an employee for Salary). See
-    // RecordShopSaleModal/ShopCashTransferModal/RecordSupplyCustomerPaymentModal
-    // for where Salary IS wired end-to-end.
-    setCategories(cat.filter((x) => !(x.is_system && x.name === "Salary")));
+    // § Employee Salary Tracking — Salary is now selectable (§ Multi-line
+    // Categorized Home Expense's HomeExpenseLinesEditor has its own
+    // Employee picker, same as RecordShopSaleModal).
+    setCategories(cat);
+    setEmployees(emp);
     setAccounts(acc); setRates(r); setParties(parties); setRecent(ru);
     setAllSales(sales); setAllPayments(payments); setAllPurchases(purchases);
   };
@@ -325,7 +328,7 @@ function UnifiedSaleBody() {
   const grandTotalWithGst = totalSelling + gstAmount;
 
   const totalCreditNum = parseFloat(totalCreditReceived) || 0;
-  const homeExpenseNum = parseFloat(homeExpenseAmount) || 0;
+  const homeExpenseNum = homeExpenseLinesTotal(homeExpenseLines);
   const ownerDrawingsNum = parseFloat(ownerDrawingsAmount) || 0;
   const bypassSum = homeExpenseNum + ownerDrawingsNum;
   const settlementValid = bypassSum <= totalCreditNum + EPSILON;
@@ -359,15 +362,6 @@ function UnifiedSaleBody() {
     ? parseFloat(targetPlant.current_balance) - netPlantPayment
     : null;
 
-  const handleAddCategory = async () => {
-    if (!newCategoryName.trim()) return;
-    const c = await api.expenseCategories.create(newCategoryName.trim());
-    setCategories((prev) => (prev.some((x) => x.id === c.id) ? prev : [...prev, c]));
-    setHomeExpenseCategoryId(c.id);
-    setNewCategoryName("");
-    setAddingCategory(false);
-  };
-
   // Vehicle No is only meaningful when cylinders are actually moving —
   // a pure settlement (no items, credit-only) never has a vehicle to
   // record, so it must not block submission. Always false in Payment Only
@@ -383,17 +377,19 @@ function UnifiedSaleBody() {
   const paymentOnlyDestinationValid =
     netPlantPayment <= 0 || destinationType !== "plant" || !!targetPlantId;
 
+  const homeExpenseLinesInvalid = !homeExpenseLinesValid(homeExpenseLines, categories);
+
   const canSubmit =
     formMode === "payment_only"
       ? !!customerId && !!date && totalCreditNum > 0 &&
         settlementValid &&
-        (homeExpenseNum <= 0 || !!homeExpenseCategoryId) &&
+        !homeExpenseLinesInvalid &&
         paymentOnlyDestinationValid
       : !!customerId && !!companyId && !!date &&
         (!vehicleRequired || !!vehicleNo.trim()) &&
         (activeItems.length > 0 || totalCreditNum > 0 || deliveryChargesNum > 0) &&
         settlementValid &&
-        (homeExpenseNum <= 0 || !!homeExpenseCategoryId) &&
+        !homeExpenseLinesInvalid &&
         (!gstEnabled || parseFloat(gstRate) > 0);
 
   const resetForm = () => {
@@ -402,7 +398,7 @@ function UnifiedSaleBody() {
     setDeliveryCharges("");
     setGstEnabled(false); setGstRate("");
     setTotalCreditReceived(""); setPaymentMethod("cash");
-    setHomeExpenseAmount(""); setHomeExpenseCategoryId(""); setOwnerDrawingsAmount("");
+    setHomeExpenseLines([]); setOwnerDrawingsAmount("");
     setGatePassNo(""); setVehicleNo(""); setNotes("");
     setCustomerId(""); setCustomerSearch(""); setCompanyId(""); setCompanySearch("");
     setDestinationType("plant"); setTargetPlantId(""); setAccountCategory("owner_home");
@@ -466,8 +462,20 @@ function UnifiedSaleBody() {
       setGstEnabled(!!full.gst_enabled);
       setGstRate(full.gst_rate ? String(full.gst_rate) : "");
       setTotalCreditReceived(String(full.total_credit_received));
-      setHomeExpenseAmount(String(full.home_expense_amount || ""));
-      setHomeExpenseCategoryId(full.expense?.category_id || "");
+      // § Multi-line Categorized Home Expense — load the structured lines
+      // for editing; a legacy single-amount batch (no lines) is loaded as
+      // one editable line, seeded from its category_id via the batch's
+      // first Expense row, so the multi-line editor can represent it too.
+      setHomeExpenseLines(
+        full.home_expense_lines.length > 0
+          ? full.home_expense_lines.map((l) => ({
+              category_id: l.category_id, employee_id: l.employee_id || "",
+              amount: String(l.amount), description: l.description || "",
+            }))
+          : full.home_expense_amount && Number(full.home_expense_amount) > 0
+          ? [{ category_id: full.expense?.category_id || "", employee_id: "", amount: String(full.home_expense_amount), description: "" }]
+          : []
+      );
       setOwnerDrawingsAmount(String(full.owner_drawings_amount || ""));
       setPaymentReference(full.payment_reference || "");
       setGatePassNo(full.sales[0]?.gate_pass_no || "");
@@ -627,8 +635,10 @@ function UnifiedSaleBody() {
           settlement: {
             total_credit_received: totalCreditNum,
             cash_received: 0,
-            home_expense_amount: homeExpenseNum,
-            home_expense_category_id: homeExpenseCategoryId || undefined,
+            home_expense_amount: 0,
+            // § Multi-line Categorized Home Expense — replaces the legacy
+            // scalar fields entirely for this form (see RecordShopSaleModal).
+            home_expense_lines: toHomeExpenseLinesPayload(homeExpenseLines),
             owner_drawings_amount: ownerDrawingsNum,
             destination_type: destinationType,
             target_plant_id: destinationType === "plant" ? targetPlantId : undefined,
@@ -660,8 +670,10 @@ function UnifiedSaleBody() {
         settlement: {
           total_credit_received: totalCreditNum,
           cash_received: 0,
-          home_expense_amount: homeExpenseNum,
-          home_expense_category_id: homeExpenseCategoryId || undefined,
+          home_expense_amount: 0,
+          // § Multi-line Categorized Home Expense — replaces the legacy
+          // scalar fields entirely for this form (see RecordShopSaleModal).
+          home_expense_lines: toHomeExpenseLinesPayload(homeExpenseLines),
           owner_drawings_amount: ownerDrawingsNum,
           destination_type: destinationType,
           target_plant_id: destinationType === "plant" ? (targetPlantId || companyId) : undefined,
@@ -1178,27 +1190,18 @@ function UnifiedSaleBody() {
                   </Field>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <Field label={t("unifiedSale.homeExpense")}>
-                    <AmountInput value={homeExpenseAmount} onChange={setHomeExpenseAmount} placeholder="0" className={inputClass} />
-                  </Field>
-                  <Field label={t("unifiedSale.expenseCategory")}>
-                    {!addingCategory ? (
-                      <div className="flex gap-1.5">
-                        <select value={homeExpenseCategoryId} onChange={(e) => setHomeExpenseCategoryId(e.target.value)} className={`${inputClass} flex-1`}>
-                          <option value="">{t("unifiedSale.selectCategory")}</option>
-                          {categories.filter((c) => c.active === "active").map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                        </select>
-                        <Button variant="outline" onClick={() => setAddingCategory(true)}><PlusCircle size={14} /></Button>
-                      </div>
-                    ) : (
-                      <div className="flex gap-1.5">
-                        <input autoFocus value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)} placeholder={t("unifiedSale.newCategoryPlaceholder")} className={`${inputClass} flex-1`} />
-                        <Button variant="teal" onClick={handleAddCategory}><Check size={14} /></Button>
-                        <Button variant="outline" onClick={() => { setAddingCategory(false); setNewCategoryName(""); }}><X size={14} /></Button>
-                      </div>
-                    )}
-                  </Field>
+                {/* § Multi-line Categorized Home Expense — repeatable
+                    category+amount rows, same component/pattern as
+                    RecordShopSaleModal's Deductions section. */}
+                <div>
+                  <div className="font-body text-[11px] text-steel mb-1.5">{t("unifiedSale.homeExpense")}</div>
+                  <HomeExpenseLinesEditor
+                    lines={homeExpenseLines}
+                    onChange={setHomeExpenseLines}
+                    categories={categories.filter((c) => c.active === "active")}
+                    onCategoriesChange={(next) => setCategories(next)}
+                    employees={employees}
+                  />
                 </div>
 
                 <Field label={t("unifiedSale.ownerDrawings")}>
@@ -1275,11 +1278,11 @@ function UnifiedSaleBody() {
                   />
                 </Field>
 
-                {(homeExpenseAmount || ownerDrawingsAmount || totalCreditReceived) && (
+                {(homeExpenseNum > 0 || ownerDrawingsAmount || totalCreditReceived) && (
                   <div className={`px-3 py-2.5 rounded-lg border flex items-center gap-2 ${settlementValid ? "bg-[#EAF5EF] border-[#C7E6D3]" : "bg-[#FBEAEA] border-[#EFC3C3]"}`}>
                     {settlementValid ? <CheckCircle2 size={15} className="text-brand-green flex-shrink-0" /> : <AlertTriangle size={15} className="text-brand-red flex-shrink-0" />}
                     <span className="font-body text-xs">
-                      {pkr(homeExpenseAmount || 0)} + {pkr(ownerDrawingsAmount || 0)} = <b>{pkr(bypassSum)}</b>
+                      {pkr(homeExpenseNum)} + {pkr(ownerDrawingsAmount || 0)} = <b>{pkr(bypassSum)}</b>
                       {" "}{settlementValid
                         ? <Trans
                             i18nKey="unifiedSale.settlementLeavesTo"

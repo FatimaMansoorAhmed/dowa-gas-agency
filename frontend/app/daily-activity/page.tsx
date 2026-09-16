@@ -9,7 +9,27 @@ import PrintButton from "@/components/PrintButton";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { pkr, fmtClock, todayLocalInput } from "@/lib/format";
-import type { DailyReportData } from "@/lib/types";
+import type { DailyReportData, ReportableTransaction } from "@/lib/types";
+
+/** § Daily Report clean columns — same Cylinder Type/Quantity cell
+ * conventions as the PDF (reporting/pdf.py's _shop_statement_cylinder_
+ * type_cell/_daily_quantity_cell, itself mirroring the Shop Statement's
+ * own columns) — "—" for a row with no real product/quantity concept. */
+function cylinderTypeCell(r: ReportableTransaction): string {
+  const w = parseFloat(r.cylinder_weight || "0");
+  if (!r.cylinder_weight || w === 0) return "—";
+  return `${parseFloat(r.cylinder_weight)} KG`;
+}
+
+function quantityCell(r: ReportableTransaction): string {
+  if (r.quantity == null) return "—";
+  const q = parseFloat(r.quantity);
+  if (!q) return "—";
+  // Trim trailing zeros (e.g. "2.0000" -> "2") but keep real decimals
+  // (e.g. a KG-based Shop Sale's fractional cylinder-equivalent).
+  const text = q.toFixed(4).replace(/\.?0+$/, "");
+  return r.unit === "kg" ? `${text} kg` : text;
+}
 
 /** Daily Activity (§3C, §5) — the on-screen/printable view of every
  * business/financial/operational transaction for one selected business
@@ -122,6 +142,8 @@ function DailyActivityBody() {
                     <tr>
                       <Th>{t("purchases.colTime")}</Th>
                       <Th>{t("customerLedger.colId")}</Th>
+                      <Th>{t("modals.cylinderType")}</Th>
+                      <Th>{t("shopDetail.colQuantity")}</Th>
                       <Th>{t("customerLedger.colDescription")}</Th>
                       <Th>{t("dailyActivity.colCustomerPlant")}</Th>
                       <Th>{t("dailyActivity.colReference")}</Th>
@@ -135,6 +157,8 @@ function DailyActivityBody() {
                       <tr key={r.id}>
                         <Td mono>{fmtClock(r.date)}</Td>
                         <Td mono>{r.display_id}</Td>
+                        <Td mono>{cylinderTypeCell(r)}</Td>
+                        <Td mono>{quantityCell(r)}</Td>
                         <Td>{r.description}</Td>
                         <Td>{r.customer || r.plant || "—"}</Td>
                         <Td mono>{r.reference || "—"}</Td>

@@ -46,7 +46,10 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_RIGHT
 
 from app import schemas
-from app.reporting.invoice_pdf import BUSINESS, _compact_header_block, _styles as _invoice_styles
+from app.reporting.invoice_pdf import (
+    BUSINESS, _compact_header_block, _styles as _invoice_styles,
+    _shop_statement_cylinder_type_cell, _fmt_qty_clean,
+)
 
 FONTS_DIR = os.path.join(os.path.dirname(__file__), "fonts")
 URDU_FONT = "NotoNaskhArabic"
@@ -198,6 +201,8 @@ _STRINGS_UR = {
     "generated_on_prefix": "تاریخ: ",
     "col_date": "تاریخ و وقت",
     "col_id": "آئی ڈی",
+    "col_cylinder_type": "سلنڈر کی قسم",
+    "col_quantity": "مقدار",
     "col_description": "تفصیل",
     "col_customer_plant": "گاہک یا پلانٹ",
     "col_reference": "حوالہ",
@@ -226,6 +231,8 @@ _STRINGS_EN = {
     "generated_on_prefix": " on ",
     "col_date": "Date/Time",
     "col_id": "ID",
+    "col_cylinder_type": "Cylinder Type",
+    "col_quantity": "Quantity",
     "col_description": "Description",
     "col_customer_plant": "Customer/Plant",
     "col_reference": "Reference",
@@ -239,6 +246,20 @@ def _fmt_amount(value) -> str:
     if value is None:
         return ""
     return f"{Decimal(value):,.2f}"
+
+
+def _daily_quantity_cell(r) -> str:
+    """§ Daily Report clean columns — Quantity column, mirrors the Shop
+    Statement's own Quantity column (invoice_pdf.py's
+    _supply_customer_statement_quantity_cell): a plain clean number, with
+    a "kg" suffix only for a unit="kg" row (a Shop Sale sold by KG rather
+    than by cylinder count). "-" for a row with no quantity concept."""
+    if r.quantity is None:
+        return "-"
+    text = _fmt_qty_clean(r.quantity)
+    if text == "-":
+        return "-"
+    return f"{text} kg" if r.unit == "kg" else text
 
 
 def _compact_tile_row(tiles: list[tuple], total_width) -> Table:
@@ -394,7 +415,9 @@ def render_daily_report_pdf(
     story.append(Spacer(1, 3 * mm))
 
     header = [
-        header_cell("col_date"), header_cell("col_id"), header_cell("col_description"), header_cell("col_customer_plant"),
+        header_cell("col_date"), header_cell("col_id"),
+        header_cell("col_cylinder_type"), header_cell("col_quantity"),
+        header_cell("col_description"), header_cell("col_customer_plant"),
         header_cell("col_reference"), header_cell("col_entered_by"), header_cell("col_status"), header_cell("col_amount"),
     ]
     for section in data.sections:
@@ -416,6 +439,12 @@ def render_daily_report_pdf(
             table_rows.append([
                 r.date.strftime("%H:%M"),
                 r.display_id,
+                # § Daily Report clean columns — structured Cylinder Type/
+                # Quantity, promoted out of the free-text description (same
+                # fix already applied to the Shop Statement) — "-" for a row
+                # with no real product/quantity concept (Payment, Expense, ...).
+                _shop_statement_cylinder_type_cell(r.cylinder_weight),
+                _daily_quantity_cell(r),
                 Paragraph(escape(r.description), cell_style),
                 r.customer or r.plant or "",
                 r.reference or "",
@@ -429,7 +458,11 @@ def render_daily_report_pdf(
         # the old plain grey header — landscape's extra width also goes
         # to wider Description/Customer-Plant columns instead of staying
         # cramped at the old portrait widths.
-        table = Table(table_rows, colWidths=[18 * mm, 24 * mm, 65 * mm, 40 * mm, 25 * mm, 26 * mm, 24 * mm, 25 * mm], repeatRows=1)
+        table = Table(
+            table_rows,
+            colWidths=[16 * mm, 20 * mm, 22 * mm, 18 * mm, 75 * mm, 38 * mm, 22 * mm, 22 * mm, 20 * mm, 24 * mm],
+            repeatRows=1,
+        )
         table.setStyle(TableStyle([
             ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
             ("FONTSIZE", (0, 0), (-1, -1), 8),
@@ -438,6 +471,10 @@ def render_daily_report_pdf(
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
             ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CBD5E1")),
             ("ALIGN", (-1, 0), (-1, -1), "RIGHT"),
+            # Cylinder Type/Quantity (§ Daily Report clean columns) — right-
+            # aligned like every other numeric-ish column, same convention
+            # the Shop Statement's own Cylinder Type/Quantity columns use.
+            ("ALIGN", (2, 1), (3, -1), "RIGHT"),
             ("ALIGN", (0, 0), (-1, 0), "RIGHT" if is_ur else "LEFT"),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
