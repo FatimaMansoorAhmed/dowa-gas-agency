@@ -4,7 +4,7 @@ import { Search, ChevronRight, X, AlertTriangle, Plus } from "lucide-react";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, Field, inputClass, Button, Th, Td, BalanceTag } from "@/components/ui";
 import AmountInput from "@/components/AmountInput";
-import { api } from "@/lib/api";
+import { api, apiErrorMessage } from "@/lib/api";
 import { pkr } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import type { Customer, PaymentAccount } from "@/lib/types";
@@ -17,6 +17,7 @@ function CustomerBody() {
   
   // Modal state for adding a customer
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
   const [form, setForm] = useState({
     name: "", mobile: "", shopName: "", address: "", openingBalance: "",
     cross118: "", pso118: "", cross454: "", pso454: "",
@@ -44,12 +45,18 @@ function CustomerBody() {
 
   const handleAdd = async () => {
     if (!form.name.trim() || !form.mobile.trim()) return;
-    await api.customers.create({
-      name: form.name.trim(), mobile: form.mobile.trim(), shop_name: form.shopName.trim() || undefined,
-      address: form.address.trim() || undefined, opening_balance: parseFloat(form.openingBalance) || 0,
-      empty_cylinders_118_cross: cross118Num, empty_cylinders_118_pso: pso118Num,
-      empty_cylinders_454_cross: cross454Num, empty_cylinders_454_pso: pso454Num,
-    });
+    setAddError(null);
+    try {
+      await api.customers.create({
+        name: form.name.trim(), mobile: form.mobile.trim(), shop_name: form.shopName.trim() || undefined,
+        address: form.address.trim() || undefined, opening_balance: parseFloat(form.openingBalance) || 0,
+        empty_cylinders_118_cross: cross118Num, empty_cylinders_118_pso: pso118Num,
+        empty_cylinders_454_cross: cross454Num, empty_cylinders_454_pso: pso454Num,
+      });
+    } catch (e) {
+      setAddError(apiErrorMessage(e, "Could not add customer."));
+      return;
+    }
     setForm({
       name: "", mobile: "", shopName: "", address: "", openingBalance: "",
       cross118: "", pso118: "", cross454: "", pso454: "",
@@ -84,7 +91,7 @@ function CustomerBody() {
         title="Add and manage customer accounts"
         caption="Balances follow the advance convention -- negative means the customer paid ahead, shown as Advance, not Balance Due. Payments recorded here use the same ledger as New Sale."
         action={
-          <Button variant="primary" onClick={() => setIsAddModalOpen(true)}>
+          <Button variant="primary" onClick={() => { setAddError(null); setIsAddModalOpen(true); }}>
             <Plus size={15} /> Add New Customer
           </Button>
         }
@@ -149,9 +156,15 @@ function CustomerBody() {
                 <X size={16} className="text-steel" />
               </button>
             </div>
+            {addError && (
+              <div className="mb-1 px-2.5 py-2 bg-[#FBEAEA] border border-[#F0C7C7] rounded-md font-body text-xs text-brand-red flex gap-1.5 items-start">
+                <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
+                <span>{addError}</span>
+              </div>
+            )}
             <div className="flex flex-col gap-3 mt-2">
-              <Field label="Customer Name"><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputClass} /></Field>
-              <Field label="Mobile Number"><input value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} placeholder="03XX-XXXXXXX" className={inputClass} /></Field>
+              <Field label="Customer Name"><input value={form.name} onChange={(e) => { setForm({ ...form, name: e.target.value }); setAddError(null); }} className={inputClass} /></Field>
+              <Field label="Mobile Number"><input value={form.mobile} onChange={(e) => { setForm({ ...form, mobile: e.target.value }); setAddError(null); }} placeholder="03XX-XXXXXXX" className={inputClass} /></Field>
               <Field label="Shop / Business Name (optional)"><input value={form.shopName} onChange={(e) => setForm({ ...form, shopName: e.target.value })} className={inputClass} /></Field>
               <Field label="Address (optional)"><input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className={inputClass} /></Field>
               <Field label="Opening Balance"><AmountInput value={form.openingBalance} onChange={(v) => setForm({ ...form, openingBalance: v })} placeholder="0" className={inputClass} /></Field>

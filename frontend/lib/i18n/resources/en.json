@@ -290,6 +290,8 @@
     "saleLoadPendingApproval": "Sale / Load — Pending Approval",
     "saleLoadPendingCaption": "Has the customer sale/load actually happened? Approving here posts the sale, cylinder movement, and customer/plant ledger — it never touches the plant payment.",
     "pendingCount": "{{count}} Pending",
+    "expandTable": "Expand Table / Full View",
+    "expandSearchPlaceholder": "Search ID, customer, plant, vehicle, gate pass, notes...",
     "colId": "ID",
     "colCustomer": "Customer",
     "col118": "11.8 KG",

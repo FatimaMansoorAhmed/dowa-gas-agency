@@ -207,6 +207,25 @@ def cancel_payment(payment_id: UUID, by: str = Query(...), db: Session = Depends
     payment.modified_by = by
     db.add(payment)
     db.flush()
+
+    # § Bug Fix — Unified Sale Payment Cancel Doesn't Reverse Settlement.
+    # _reverse_payment above only reverses the customer's own balance
+    # (payment.customer_id) — it has no idea this Payment is also the
+    # entire audit trail for a Unified Sale batch's settlement (plant/
+    # account routing + CompanyPayment/Expense/OwnerDrawings, all linked
+    # via unified_sale_id, never source_payment_id). Without this, that
+    # settlement stayed fully posted forever — the plant/account balance
+    # permanently short, the Expense row still "active" on the Expenses
+    # page — even though the customer's side looked fully undone. See
+    # routers/unified_sale.py::reverse_unified_sale_settlement for the
+    # real, reproduced bug this fixes and the Salary-never-reversed
+    # exception it preserves.
+    if payment.unified_sale_id:
+        from app.routers.unified_sale import reverse_unified_sale_settlement  # local import avoids a circular import
+        batch = db.query(models.UnifiedSaleBatch).get(payment.unified_sale_id)
+        if batch:
+            reverse_unified_sale_settlement(db, batch, by)
+
     # Keep a Unified-Sale-linked batch's stored Collected/Outstanding
     # figures (total_credit_received/net_plant_payment) in sync — same fix
     # correct_payment already applies below its own status change (§ Bug
@@ -214,7 +233,10 @@ def cancel_payment(payment_id: UUID, by: str = Query(...), db: Session = Depends
     # this payment's contribution left those two fields stale, exactly the
     # bug already found and fixed once for delivery_charges on USALE-000003.
     # A no-op for a payment with no unified_sale_id (resync_unified_sale_
-    # batch_totals returns immediately in that case).
+    # batch_totals returns immediately in that case). Runs AFTER the
+    # settlement reversal above, which already zeroed home_expense_amount/
+    # owner_drawings_amount — so this recomputes net_plant_payment as a
+    # clean 0 - 0 - 0, not a stale, nonsensical negative number.
     resync_unified_sale_batch_totals(db, payment.unified_sale_id)
 
     db.commit()

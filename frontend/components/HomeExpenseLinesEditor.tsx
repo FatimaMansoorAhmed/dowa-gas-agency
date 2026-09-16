@@ -97,9 +97,9 @@ export default function HomeExpenseLinesEditor({
       <button
         type="button"
         onClick={() => onChange([emptyHomeExpenseLine()])}
-        className="flex items-center gap-1 text-[12px] font-body text-teal bg-transparent border-none cursor-pointer w-fit"
+        className="flex items-center gap-1.5 text-[13px] font-semibold font-body text-teal bg-teal/10 hover:bg-teal/20 border border-teal/30 rounded-md px-3 py-2 cursor-pointer w-fit transition-colors"
       >
-        <Plus size={13} /> {t("modals.addALine")}
+        <Plus size={15} /> {t("modals.addALine")}
       </button>
     );
   }
@@ -185,9 +185,9 @@ export default function HomeExpenseLinesEditor({
         <button
           type="button"
           onClick={() => onChange([...lines, emptyHomeExpenseLine()])}
-          className="flex items-center gap-1 text-[12px] font-body text-teal bg-transparent border-none cursor-pointer w-fit"
+          className="flex items-center gap-1.5 text-[13px] font-semibold font-body text-teal bg-teal/10 hover:bg-teal/20 border border-teal/30 rounded-md px-3 py-2 cursor-pointer w-fit transition-colors"
         >
-          <Plus size={13} /> {t("modals.addLine")}
+          <Plus size={15} /> {t("modals.addLine")}
         </button>
         {hasFilledHomeExpenseLines(lines) && (
           <span className="font-mono text-[11px] text-steel">

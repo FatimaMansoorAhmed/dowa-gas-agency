@@ -675,11 +675,25 @@ def company_monthly_ledger(
     # never show up in the query above (it filters on company_id, the purchase
     # plant). They post only a payment here, never a purchase amount, since the
     # purchase amount was already posted to the original plant's payable.
+    #
+    # § Bug Fix — Payment-Only Settlement Missing From Plant Ledger.
+    # company_id IS NULL for every Payment-Only batch (§ Payment-Only
+    # Pending Approval — no purchase plant at all). `company_id !=
+    # company_id` is a three-valued-logic trap: SQL NULL != anything
+    # evaluates to NULL, which a WHERE clause treats as "not true", so a
+    # Payment-Only batch settled to this plant was silently excluded from
+    # BOTH this query (fails here) AND the one above (fails on company_id
+    # == company_id, also NULL). The settlement's real money movement
+    # (Company.current_balance, the CompanyPayment row) posted correctly
+    # all along — this bug only ever hid the explanatory ledger ROW, never
+    # the balance itself. `company_id.is_(None)` covers the Payment-Only
+    # case explicitly, alongside the pre-existing "different purchase
+    # plant" case.
     incoming_settlements = (
         db.query(models.UnifiedSaleBatch)
         .filter(
             models.UnifiedSaleBatch.target_plant_id == company_id,
-            models.UnifiedSaleBatch.company_id != company_id,
+            or_(models.UnifiedSaleBatch.company_id.is_(None), models.UnifiedSaleBatch.company_id != company_id),
             models.UnifiedSaleBatch.destination_type == "plant",
             models.UnifiedSaleBatch.payment_status == "approved",
         )
@@ -804,15 +818,24 @@ def company_monthly_ledger(
                 running_balance=running, qty_118=q118, qty_454=q454, vehicle_no=b.vehicle_no,
             ))
         else:
-            # Purchased from a different plant, settled to this one — payment only.
+            # Purchased from a different plant, settled to this one — payment
+            # only. b.company_id IS NULL for a Payment-Only batch (§ Payment-
+            # Only Pending Approval — no purchase plant at all, never an
+            # "unknown" one); that case reads as a direct settlement, never
+            # "purchased from ..." — see § Bug Fix — Payment-Only Settlement
+            # Missing From Plant Ledger above, which is what makes this
+            # branch reachable for a Payment-Only batch in the first place.
             b: models.UnifiedSaleBatch = e["obj"]
             running -= b.net_plant_payment
             total_payments += b.net_plant_payment
-            source_plant = all_companies.get(b.company_id)
-            source_name = source_plant.name if source_plant else "Unknown Plant"
+            source_plant = all_companies.get(b.company_id) if b.company_id else None
+            description = (
+                f"Unified Sale settlement received (purchased from {source_plant.name})" if source_plant
+                else "Unified Sale settlement received (Payment Only — no purchase)"
+            )
             rows.append(schemas.CompanyLedgerRow(
                 date=b.date, kind="unified_sale", ref_id=b.id, display_id=b.display_id,
-                description=f"Unified Sale settlement received (purchased from {source_name})",
+                description=description,
                 purchase_amount=Decimal("0"), payment_amount=b.net_plant_payment,
                 running_balance=running, qty_118=Decimal("0"), qty_454=Decimal("0"),
             ))

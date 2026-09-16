@@ -199,7 +199,7 @@ export default function Shell({ children }: { children: ReactNode }) {
           </div>
           <CylinderStripe />
         </div>
-        <div className="px-4 sm:px-6 lg:px-8 pt-7 pb-16 max-w-[1280px]">{children}</div>
+        <div className={`px-4 sm:px-6 lg:px-8 pt-7 pb-16 ${pathname?.startsWith("/unified-sale") ? "max-w-full" : "max-w-[1280px]"}`}>{children}</div>
       </div>
     </div>
   );

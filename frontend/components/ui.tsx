@@ -38,28 +38,32 @@ export function PageHeader({
   );
 }
 
-export function Th({ children, right = false, center = false }: { children: ReactNode; right?: boolean; center?: boolean }) {
+export function Th({ children, right = false, center = false, dense = false }: { children: ReactNode; right?: boolean; center?: boolean; dense?: boolean }) {
   return (
-    <th className={`font-mono text-[10.5px] tracking-wide uppercase text-steel px-2.5 py-2 border-b border-hairline font-medium whitespace-nowrap ${center ? "text-center" : right ? "text-right" : "text-left"}`}>
+    <th className={`font-mono ${dense ? "text-xs px-3 py-2" : "text-[10.5px] px-2.5 py-2"} tracking-wide uppercase text-steel border-b border-hairline font-medium whitespace-nowrap ${center ? "text-center" : right ? "text-right" : "text-left"}`}>
       {children}
     </th>
   );
 }
 
 export function Td({
-  children, right = false, center = false, mono = false, color, bold = false, colSpan, className = "", title,
+  children, right = false, center = false, mono = false, color, bold = false, colSpan, className = "", title, dense = false,
 }: {
   children: ReactNode; right?: boolean; center?: boolean; mono?: boolean; color?: string; bold?: boolean; colSpan?: number;
   // className: e.g. "max-w-[200px] truncate" for a long free-text column
   // (Reason/Description) that shouldn't force the table wider — pair with
   // `title` so the full text is still readable on hover.
   className?: string; title?: string;
+  // dense: tighter padding + smaller text for high-density tables (e.g.
+  // Unified Sale's pending-approval lists) — opt-in, default keeps every
+  // other table's existing sizing unchanged.
+  dense?: boolean;
 }) {
   return (
     <td
       colSpan={colSpan}
       title={title}
-      className={`text-[13px] px-2.5 py-2.5 border-b border-hairline whitespace-nowrap ${mono ? "font-mono" : "font-body"} ${center ? "text-center" : right ? "text-right" : "text-left"} ${bold ? "font-semibold" : "font-normal"} ${className}`}
+      className={`${dense ? "text-xs px-3 py-2" : "text-[13px] px-2.5 py-2.5"} border-b border-hairline whitespace-nowrap ${mono ? "font-mono" : "font-body"} ${center ? "text-center" : right ? "text-right" : "text-left"} ${bold ? "font-semibold" : "font-normal"} ${className}`}
       style={{ color: color || "#0B2138" }}
     >
       {children}

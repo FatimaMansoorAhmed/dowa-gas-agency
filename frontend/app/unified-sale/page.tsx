@@ -1,6 +1,6 @@
 "use client";
 import { Fragment, useEffect, useMemo, useState } from "react";
-import { PlusCircle, Check, X, AlertTriangle, CheckCircle2, Pencil, Ban, ThumbsUp, Building2, Wallet, ArrowRight, Printer } from "lucide-react";
+import { PlusCircle, Check, X, AlertTriangle, CheckCircle2, Pencil, Ban, ThumbsUp, Building2, Wallet, ArrowRight, Printer, Maximize2, Search } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Field, inputClass, Button, Th, Td } from "@/components/ui";
@@ -725,6 +725,27 @@ function UnifiedSaleBody() {
     [recent]
   );
 
+  // § Full-Screen Expand — Pending Approval tables. Reuses the same row
+  // renderers as the inline (dense) tables; the modal just gets more room
+  // plus a text search across the fields visible in that table.
+  const [expandSection, setExpandSection] = useState<null | "sale" | "payment">(null);
+  const [expandSearch, setExpandSearch] = useState("");
+  const matchesExpandSearch = (r: UnifiedSaleBatch, extra: (string | null | undefined)[]) => {
+    const q = expandSearch.trim().toLowerCase();
+    if (!q) return true;
+    const c = customers.find((x) => x.id === r.customer_id);
+    const plant = companies.find((x) => x.id === r.company_id);
+    return [r.display_id, c?.name, plant?.name, ...extra].some((v) => (v || "").toLowerCase().includes(q));
+  };
+  const expandedSaleRows = useMemo(
+    () => salePendingOrders.filter((r) => matchesExpandSearch(r, [r.gate_pass_no, r.vehicle_no, r.notes])),
+    [salePendingOrders, expandSearch, customers, companies]
+  );
+  const expandedPaymentRows = useMemo(
+    () => paymentPendingOrders.filter((r) => matchesExpandSearch(r, [r.notes, r.payment_reference])),
+    [paymentPendingOrders, expandSearch, customers, companies]
+  );
+
   // § Bug Fix — Approved Payments destination display. A Payment's own
   // account_id is only meaningful for a plain quick-pay row — for a
   // Unified-Sale/Payment-Receipt-sourced row that settled straight to a
@@ -814,6 +835,206 @@ function UnifiedSaleBody() {
     if (!p.sale_id) return null;
     const sale = allSales.find((s) => s.id === p.sale_id);
     return sale?.rate_per_cylinder ?? null;
+  };
+
+  // § Shared table head/row renderers — SECTION A (Sale/Load) and SECTION B
+  // (Plant Payment/Settlement) pending-approval tables. Used both inline
+  // (dense) and inside the Full-Screen Expand modal (roomier) so the two
+  // views never drift out of sync.
+  const saleTableHead = (dense: boolean) => (
+    <tr className="border-b border-hairline text-left">
+      <Th dense={dense}>{t("unifiedSale.colId")}</Th>
+      <Th dense={dense}>{t("unifiedSale.colDate")}</Th>
+      <Th dense={dense}>{t("unifiedSale.colCustomer")}</Th>
+      <Th dense={dense} right>{t("unifiedSale.col118")}</Th>
+      <Th dense={dense} right>{t("unifiedSale.col454")}</Th>
+      <Th dense={dense}>{t("unifiedSale.colPlant")}</Th>
+      <Th dense={dense} right>{t("unifiedSale.colSale")}</Th>
+      <Th dense={dense}>{t("unifiedSale.colGatePass")}</Th>
+      <Th dense={dense}>{t("unifiedSale.colVehicle")}</Th>
+      <Th dense={dense}>{t("unifiedSale.colNotes")}</Th>
+      <Th dense={dense} right>{t("unifiedSale.colActions")}</Th>
+    </tr>
+  );
+
+  const renderSaleRow = (r: UnifiedSaleBatch, dense: boolean) => {
+    const c = customers.find((x) => x.id === r.customer_id);
+    const plant = companies.find((x) => x.id === r.company_id);
+    const busy = actionBusyId === r.id;
+    const canEditOrCancel = r.payment_status === "pending";
+
+    return (
+      <tr key={r.id} className="hover:bg-paper/60 transition-colors">
+        <Td dense={dense} mono>
+          <button
+            type="button"
+            onClick={() => handleViewTransaction(r.id)}
+            className="text-teal hover:underline font-mono text-[11px] font-bold whitespace-nowrap"
+          >
+            {r.display_id}
+          </button>
+        </Td>
+        <Td dense={dense} mono color="#8E8E93">{fmtTime(r.date)}</Td>
+        <Td dense={dense} bold>
+          <div className="whitespace-nowrap" title={c?.name || "—"}>{c?.name || "—"}</div>
+        </Td>
+        <Td dense={dense} right mono bold>{Number(r.qty_11_8kg || 0)}</Td>
+        <Td dense={dense} right mono bold>{Number(r.qty_45_4kg || 0)}</Td>
+        <Td dense={dense}>
+          <span className="inline-flex items-center px-2 py-1 rounded-md bg-slate-100 text-slate-800 text-[11px] font-medium border border-slate-200 whitespace-nowrap">
+            {plant?.name || r.company_id || "—"}
+          </span>
+        </Td>
+        <Td dense={dense} right mono color="#0F8B8D">
+          <span className="whitespace-nowrap">{pkr(r.total_selling_amount)}</span>
+        </Td>
+        <Td dense={dense} mono color="#8E8E93">{r.gate_pass_no || "—"}</Td>
+        <Td dense={dense} mono color="#8E8E93">{r.vehicle_no || "—"}</Td>
+        <Td dense={dense} color="#8E8E93"><span className="whitespace-nowrap">{r.notes || "—"}</span></Td>
+        <Td dense={dense} right>
+          <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+            {canEditOrCancel && (
+              <button
+                type="button"
+                title={t("unifiedSale.editTransaction")}
+                disabled={busy}
+                onClick={() => handleEditTransaction(r)}
+                className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-steel hover:text-ink hover:bg-slate-200/60 border border-hairline transition-colors disabled:opacity-50"
+              >
+                <Pencil size={13} />
+              </button>
+            )}
+
+            <button
+              type="button"
+              title={t("unifiedSale.approveSale")}
+              disabled={busy}
+              onClick={() => handleApproveSale(r.id)}
+              className="h-8 shrink-0 inline-flex items-center justify-center gap-1 px-2.5 rounded-md bg-teal/10 hover:bg-teal/20 text-teal border border-teal/30 font-medium text-xs transition-colors disabled:opacity-50"
+            >
+              <CheckCircle2 size={13} />
+              <span>{t("unifiedSale.approveSale")}</span>
+            </button>
+
+            {canEditOrCancel && (
+              <button
+                type="button"
+                title={t("unifiedSale.cancelOrder")}
+                disabled={busy}
+                onClick={() => handleCancel(r.id)}
+                className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-brand-red hover:bg-red-50 border border-transparent hover:border-red-200 transition-colors disabled:opacity-50"
+              >
+                <Ban size={13} />
+              </button>
+            )}
+          </div>
+        </Td>
+      </tr>
+    );
+  };
+
+  const paymentTableHead = (dense: boolean) => (
+    <tr className="border-b border-hairline text-left">
+      <Th dense={dense}>{t("unifiedSale.colId")}</Th>
+      <Th dense={dense}>{t("unifiedSale.colDate")}</Th>
+      <Th dense={dense}>{t("unifiedSale.colPlant")}</Th>
+      <Th dense={dense}>{t("unifiedSale.colSale")}</Th>
+      <Th dense={dense} right>{t("unifiedSale.colSettled")}</Th>
+      <Th dense={dense}>{t("unifiedSale.colDestination")}</Th>
+      <Th dense={dense}>{t("unifiedSale.colReference")}</Th>
+      <Th dense={dense}>{t("unifiedSale.colNotes")}</Th>
+      <Th dense={dense} right>{t("unifiedSale.colActions")}</Th>
+    </tr>
+  );
+
+  const renderPaymentRow = (r: UnifiedSaleBatch, dense: boolean) => {
+    const c = customers.find((x) => x.id === r.customer_id);
+    const plant = companies.find((x) => x.id === r.company_id);
+    const busy = actionBusyId === r.id;
+    const canEditOrCancel = r.sale_status === "pending";
+    const paymentOnly = isPaymentOnlyBatch(r);
+    // Payment-Only never shows Edit (§ handleEditTransaction) —
+    // Cancel + re-enter only.
+    const canEdit = canEditOrCancel && !paymentOnly;
+    const netAmount = Number(r.net_plant_payment || 0) || Number(r.total_credit_received || 0);
+
+    return (
+      <tr key={r.id} className="hover:bg-paper/60 transition-colors">
+        <Td dense={dense} mono>
+          <button
+            type="button"
+            onClick={() => handleViewTransaction(r.id)}
+            className="text-teal hover:underline font-mono text-[11px] font-bold whitespace-nowrap"
+          >
+            {r.display_id}
+          </button>
+        </Td>
+        <Td dense={dense} mono color="#8E8E93">{fmtTime(r.date)}</Td>
+        <Td dense={dense}>
+          <span className="inline-flex items-center px-2 py-1 rounded-md bg-slate-100 text-slate-800 text-[11px] font-medium border border-slate-200 whitespace-nowrap">
+            {plant?.name || r.company_id || "—"}
+          </span>
+        </Td>
+        <Td dense={dense} bold>
+          <div className="whitespace-nowrap" title={c?.name || "—"}>{c?.name || "—"}</div>
+        </Td>
+        <Td dense={dense} right mono color="#1E8A5F" bold>
+          <span className="whitespace-nowrap">{pkr(netAmount)}</span>
+        </Td>
+        <Td dense={dense}>
+          <span className="whitespace-nowrap font-body text-xs text-slate-700 font-semibold">
+            {getDestinationLabel(r)}
+          </span>
+        </Td>
+        <Td dense={dense}>
+          <input
+            value={paymentReferenceDrafts[r.id] ?? (r.payment_reference || "")}
+            onChange={(e) => setPaymentReferenceDrafts((prev) => ({ ...prev, [r.id]: e.target.value }))}
+            placeholder={t("unifiedSale.referencePlaceholder")}
+            className="font-body text-xs px-2 py-1 rounded-md border border-hairline outline-none text-ink bg-white w-32 focus:border-teal"
+          />
+        </Td>
+        <Td dense={dense} color="#8E8E93"><span className="whitespace-nowrap">{r.notes || "—"}</span></Td>
+        <Td dense={dense} right>
+          <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+            {canEdit && (
+              <button
+                type="button"
+                title={t("unifiedSale.editTransaction")}
+                disabled={busy}
+                onClick={() => handleEditTransaction(r)}
+                className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-steel hover:text-ink hover:bg-slate-200/60 border border-hairline transition-colors disabled:opacity-50"
+              >
+                <Pencil size={13} />
+              </button>
+            )}
+
+            <button
+              type="button"
+              title={t("unifiedSale.approvePayment")}
+              disabled={busy}
+              onClick={() => (paymentOnly ? handleApprovePaymentOnly(r.id) : handleApprovePayment(r.id))}
+              className="h-8 shrink-0 inline-flex items-center justify-center gap-1 px-2.5 rounded-md bg-teal/10 hover:bg-teal/20 text-teal border border-teal/30 font-medium text-xs transition-colors disabled:opacity-50"
+            >
+              <CheckCircle2 size={13} />
+              <span>{t("unifiedSale.approvePayment")}</span>
+            </button>
+
+            {canEditOrCancel && (
+              <button
+                type="button"
+                title={t("unifiedSale.cancelOrder")}
+                disabled={busy}
+                onClick={() => handleCancel(r.id)}
+                className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-brand-red hover:bg-red-50 border border-transparent hover:border-red-200 transition-colors disabled:opacity-50"
+              >
+                <Ban size={13} />
+              </button>
+            )}
+          </div>
+        </Td>
+      </tr>
+    );
   };
 
   return (
@@ -1416,106 +1637,29 @@ function UnifiedSaleBody() {
                 <Eyebrow>{t("unifiedSale.saleLoadPendingApproval")}</Eyebrow>
                 <SectionCaption>{t("unifiedSale.saleLoadPendingCaption")}</SectionCaption>
               </div>
-              <span className="px-2.5 py-1 rounded-md bg-[#FFF6E0] text-[#8A6D00] font-mono text-xs font-semibold border border-[#FFE7A3]">
-                {t("unifiedSale.pendingCount", { count: salePendingOrders.length })}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-1 rounded-md bg-[#FFF6E0] text-[#8A6D00] font-mono text-xs font-semibold border border-[#FFE7A3]">
+                  {t("unifiedSale.pendingCount", { count: salePendingOrders.length })}
+                </span>
+                <button
+                  type="button"
+                  title={t("unifiedSale.expandTable")}
+                  onClick={() => { setExpandSearch(""); setExpandSection("sale"); }}
+                  className="h-7 w-7 inline-flex items-center justify-center rounded-md text-steel hover:text-ink hover:bg-slate-200/60 border border-hairline transition-colors"
+                >
+                  <Maximize2 size={13} />
+                </button>
+              </div>
             </div>
             <div className="overflow-x-auto mt-3 -mx-1 px-1">
-              <table className="w-full min-w-[1150px] border-collapse">
-                <thead>
-                  <tr className="border-b border-hairline text-left">
-                    <Th>{t("unifiedSale.colId")}</Th>
-                    <Th>{t("unifiedSale.colCustomer")}</Th>
-                    <Th right>{t("unifiedSale.col118")}</Th>
-                    <Th right>{t("unifiedSale.col454")}</Th>
-                    <Th>{t("unifiedSale.colPlant")}</Th>
-                    <Th right>{t("unifiedSale.colSale")}</Th>
-                    <Th>{t("unifiedSale.colGatePass")}</Th>
-                    <Th>{t("unifiedSale.colVehicle")}</Th>
-                    <Th>{t("unifiedSale.colNotes")}</Th>
-                    <Th right>{t("unifiedSale.colActions")}</Th>
-                  </tr>
-                </thead>
-
+              <table className="w-full min-w-[1250px] border-collapse">
+                <thead>{saleTableHead(true)}</thead>
                 <tbody className="divide-y divide-hairline">
-                  {salePendingOrders.map((r) => {
-                    const c = customers.find((x) => x.id === r.customer_id);
-                    const plant = companies.find((x) => x.id === r.company_id);
-                    const busy = actionBusyId === r.id;
-                    const canEditOrCancel = r.payment_status === "pending";
-
-                    return (
-                      <tr key={r.id} className="hover:bg-paper/60 transition-colors">
-                        <Td mono>
-                          <button
-                            type="button"
-                            onClick={() => handleViewTransaction(r.id)}
-                            className="text-teal hover:underline font-mono text-[11px] font-bold whitespace-nowrap"
-                          >
-                            {r.display_id}
-                          </button>
-                        </Td>
-                        <Td bold>
-                          <div className="whitespace-nowrap" title={c?.name || "—"}>{c?.name || "—"}</div>
-                        </Td>
-                        <Td right mono bold>{Number(r.qty_11_8kg || 0)}</Td>
-                        <Td right mono bold>{Number(r.qty_45_4kg || 0)}</Td>
-                        <Td>
-                          <span className="inline-flex items-center px-2 py-1 rounded-md bg-slate-100 text-slate-800 text-[11px] font-medium border border-slate-200 whitespace-nowrap">
-                            {plant?.name || r.company_id || "—"}
-                          </span>
-                        </Td>
-                        <Td right mono color="#0F8B8D">
-                          <span className="whitespace-nowrap">{pkr(r.total_selling_amount)}</span>
-                        </Td>
-                        <Td mono color="#8E8E93">{r.gate_pass_no || "—"}</Td>
-                        <Td mono color="#8E8E93">{r.vehicle_no || "—"}</Td>
-                        <Td color="#8E8E93"><span className="whitespace-nowrap">{r.notes || "—"}</span></Td>
-                        <Td right>
-                          <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
-                            {canEditOrCancel && (
-                              <button
-                                type="button"
-                                title={t("unifiedSale.editTransaction")}
-                                disabled={busy}
-                                onClick={() => handleEditTransaction(r)}
-                                className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-steel hover:text-ink hover:bg-slate-200/60 border border-hairline transition-colors disabled:opacity-50"
-                              >
-                                <Pencil size={13} />
-                              </button>
-                            )}
-
-                            <button
-                              type="button"
-                              title={t("unifiedSale.approveSale")}
-                              disabled={busy}
-                              onClick={() => handleApproveSale(r.id)}
-                              className="h-8 shrink-0 inline-flex items-center justify-center gap-1 px-2.5 rounded-md bg-teal/10 hover:bg-teal/20 text-teal border border-teal/30 font-medium text-xs transition-colors disabled:opacity-50"
-                            >
-                              <CheckCircle2 size={13} />
-                              <span>{t("unifiedSale.approveSale")}</span>
-                            </button>
-
-                            {canEditOrCancel && (
-                              <button
-                                type="button"
-                                title={t("unifiedSale.cancelOrder")}
-                                disabled={busy}
-                                onClick={() => handleCancel(r.id)}
-                                className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-brand-red hover:bg-red-50 border border-transparent hover:border-red-200 transition-colors disabled:opacity-50"
-                              >
-                                <Ban size={13} />
-                              </button>
-                            )}
-                          </div>
-                        </Td>
-                      </tr>
-                    );
-                  })}
+                  {salePendingOrders.map((r) => renderSaleRow(r, true))}
 
                   {!salePendingOrders.length && (
                     <tr>
-                      <td colSpan={10} className="text-steel font-body text-[13px] py-6 text-center">
+                      <td colSpan={11} className="text-steel font-body text-[13px] py-6 text-center">
                         {t("unifiedSale.noSalesAwaitingApproval")}
                       </td>
                     </tr>
@@ -1532,118 +1676,29 @@ function UnifiedSaleBody() {
                 <Eyebrow>{t("unifiedSale.plantPaymentSettlementPendingApproval")}</Eyebrow>
                 <SectionCaption>{t("unifiedSale.plantPaymentPendingCaption")}</SectionCaption>
               </div>
-              <span className="px-2.5 py-1 rounded-md bg-[#FFF6E0] text-[#8A6D00] font-mono text-xs font-semibold border border-[#FFE7A3]">
-                {t("unifiedSale.pendingCount", { count: paymentPendingOrders.length })}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-1 rounded-md bg-[#FFF6E0] text-[#8A6D00] font-mono text-xs font-semibold border border-[#FFE7A3]">
+                  {t("unifiedSale.pendingCount", { count: paymentPendingOrders.length })}
+                </span>
+                <button
+                  type="button"
+                  title={t("unifiedSale.expandTable")}
+                  onClick={() => { setExpandSearch(""); setExpandSection("payment"); }}
+                  className="h-7 w-7 inline-flex items-center justify-center rounded-md text-steel hover:text-ink hover:bg-slate-200/60 border border-hairline transition-colors"
+                >
+                  <Maximize2 size={13} />
+                </button>
+              </div>
             </div>
             <div className="overflow-x-auto mt-3 -mx-1 px-1">
-              <table className="w-full min-w-[1050px] border-collapse">
-                <thead>
-                  <tr className="border-b border-hairline text-left">
-                    <Th>{t("unifiedSale.colId")}</Th>
-                    <Th>{t("unifiedSale.colPlant")}</Th>
-                    <Th>{t("unifiedSale.colSale")}</Th>
-                    <Th right>{t("unifiedSale.colSettled")}</Th>
-                    <Th>{t("unifiedSale.colDestination")}</Th>
-                    <Th>{t("unifiedSale.colReference")}</Th>
-                    <Th>{t("unifiedSale.colNotes")}</Th>
-                    <Th right>{t("unifiedSale.colActions")}</Th>
-                  </tr>
-                </thead>
-
+              <table className="w-full min-w-[1150px] border-collapse">
+                <thead>{paymentTableHead(true)}</thead>
                 <tbody className="divide-y divide-hairline">
-                  {paymentPendingOrders.map((r) => {
-                    const c = customers.find((x) => x.id === r.customer_id);
-                    const plant = companies.find((x) => x.id === r.company_id);
-                    const busy = actionBusyId === r.id;
-                    const canEditOrCancel = r.sale_status === "pending";
-                    const paymentOnly = isPaymentOnlyBatch(r);
-                    // Payment-Only never shows Edit (§ handleEditTransaction) —
-                    // Cancel + re-enter only.
-                    const canEdit = canEditOrCancel && !paymentOnly;
-                    const netAmount = Number(r.net_plant_payment || 0) || Number(r.total_credit_received || 0);
-
-                    return (
-                      <tr key={r.id} className="hover:bg-paper/60 transition-colors">
-                        <Td mono>
-                          <button
-                            type="button"
-                            onClick={() => handleViewTransaction(r.id)}
-                            className="text-teal hover:underline font-mono text-[11px] font-bold whitespace-nowrap"
-                          >
-                            {r.display_id}
-                          </button>
-                        </Td>
-                        <Td>
-                          <span className="inline-flex items-center px-2 py-1 rounded-md bg-slate-100 text-slate-800 text-[11px] font-medium border border-slate-200 whitespace-nowrap">
-                            {plant?.name || r.company_id || "—"}
-                          </span>
-                        </Td>
-                        <Td bold>
-                          <div className="whitespace-nowrap" title={c?.name || "—"}>{c?.name || "—"}</div>
-                        </Td>
-                        <Td right mono color="#1E8A5F" bold>
-                          <span className="whitespace-nowrap">{pkr(netAmount)}</span>
-                        </Td>
-                        <Td>
-                          <span className="whitespace-nowrap font-body text-xs text-slate-700 font-semibold">
-                            {getDestinationLabel(r)}
-                          </span>
-                        </Td>
-                        <Td>
-                          <input
-                            value={paymentReferenceDrafts[r.id] ?? (r.payment_reference || "")}
-                            onChange={(e) => setPaymentReferenceDrafts((prev) => ({ ...prev, [r.id]: e.target.value }))}
-                            placeholder={t("unifiedSale.referencePlaceholder")}
-                            className="font-body text-xs px-2 py-1 rounded-md border border-hairline outline-none text-ink bg-white w-32 focus:border-teal"
-                          />
-                        </Td>
-                        <Td color="#8E8E93"><span className="whitespace-nowrap">{r.notes || "—"}</span></Td>
-                        <Td right>
-                          <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
-                            {canEdit && (
-                              <button
-                                type="button"
-                                title={t("unifiedSale.editTransaction")}
-                                disabled={busy}
-                                onClick={() => handleEditTransaction(r)}
-                                className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-steel hover:text-ink hover:bg-slate-200/60 border border-hairline transition-colors disabled:opacity-50"
-                              >
-                                <Pencil size={13} />
-                              </button>
-                            )}
-
-                            <button
-                              type="button"
-                              title={t("unifiedSale.approvePayment")}
-                              disabled={busy}
-                              onClick={() => (paymentOnly ? handleApprovePaymentOnly(r.id) : handleApprovePayment(r.id))}
-                              className="h-8 shrink-0 inline-flex items-center justify-center gap-1 px-2.5 rounded-md bg-teal/10 hover:bg-teal/20 text-teal border border-teal/30 font-medium text-xs transition-colors disabled:opacity-50"
-                            >
-                              <CheckCircle2 size={13} />
-                              <span>{t("unifiedSale.approvePayment")}</span>
-                            </button>
-
-                            {canEditOrCancel && (
-                              <button
-                                type="button"
-                                title={t("unifiedSale.cancelOrder")}
-                                disabled={busy}
-                                onClick={() => handleCancel(r.id)}
-                                className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-brand-red hover:bg-red-50 border border-transparent hover:border-red-200 transition-colors disabled:opacity-50"
-                              >
-                                <Ban size={13} />
-                              </button>
-                            )}
-                          </div>
-                        </Td>
-                      </tr>
-                    );
-                  })}
+                  {paymentPendingOrders.map((r) => renderPaymentRow(r, true))}
 
                   {!paymentPendingOrders.length && (
                     <tr>
-                      <td colSpan={8} className="text-steel font-body text-[13px] py-6 text-center">
+                      <td colSpan={9} className="text-steel font-body text-[13px] py-6 text-center">
                         {t("unifiedSale.noPlantPaymentsAwaitingApproval")}
                       </td>
                     </tr>
@@ -1652,6 +1707,77 @@ function UnifiedSaleBody() {
               </table>
             </div>
           </Panel>
+
+          {/* § Full-Screen Expand — Pending Approval tables */}
+          {expandSection && (
+            <div
+              className="fixed inset-0 z-[60] bg-white p-6 overflow-auto flex flex-col"
+              onMouseDown={(e) => { if (e.target === e.currentTarget) setExpandSection(null); }}
+            >
+              <div className="w-full h-full max-w-none max-h-none overflow-hidden bg-white rounded-xl shadow-2xl flex flex-col">
+                <div className="flex items-center justify-between px-5 py-4 border-b border-hairline shrink-0 gap-3 flex-wrap">
+                  <div>
+                    <Eyebrow>
+                      {expandSection === "sale" ? t("unifiedSale.saleLoadPendingApproval") : t("unifiedSale.plantPaymentSettlementPendingApproval")}
+                    </Eyebrow>
+                    <SectionCaption>
+                      {t("unifiedSale.pendingCount", { count: expandSection === "sale" ? expandedSaleRows.length : expandedPaymentRows.length })}
+                    </SectionCaption>
+                  </div>
+                  <div className="flex items-center gap-2 flex-1 justify-end min-w-[220px]">
+                    <div className="flex items-center gap-1.5 border border-hairline rounded-md px-2.5 w-full max-w-[320px]">
+                      <Search size={13} className="text-steel shrink-0" />
+                      <input
+                        autoFocus
+                        value={expandSearch}
+                        onChange={(e) => setExpandSearch(e.target.value)}
+                        placeholder={t("unifiedSale.expandSearchPlaceholder")}
+                        className="border-none outline-none font-body text-xs py-2 w-full"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setExpandSection(null)}
+                      className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-steel hover:text-ink hover:bg-slate-200/60 border border-hairline transition-colors"
+                    >
+                      <X size={15} />
+                    </button>
+                  </div>
+                </div>
+                <div className="min-w-full overflow-x-auto overflow-y-auto p-4 flex-1">
+                  {expandSection === "sale" ? (
+                    <table className="w-full min-w-[1250px] border-collapse">
+                      <thead>{saleTableHead(true)}</thead>
+                      <tbody className="divide-y divide-hairline">
+                        {expandedSaleRows.map((r) => renderSaleRow(r, true))}
+                        {!expandedSaleRows.length && (
+                          <tr>
+                            <td colSpan={11} className="text-steel font-body text-xs py-6 text-center whitespace-nowrap">
+                              {t("unifiedSale.noSalesAwaitingApproval")}
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <table className="w-full min-w-[1150px] border-collapse">
+                      <thead>{paymentTableHead(true)}</thead>
+                      <tbody className="divide-y divide-hairline">
+                        {expandedPaymentRows.map((r) => renderPaymentRow(r, true))}
+                        {!expandedPaymentRows.length && (
+                          <tr>
+                            <td colSpan={9} className="text-steel font-body text-xs py-6 text-center whitespace-nowrap">
+                              {t("unifiedSale.noPlantPaymentsAwaitingApproval")}
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* APPROVED SALE — plain Sale records, system-wide (§3/§4) */}
           {showApprovedSaleModal && (
@@ -1928,7 +2054,7 @@ function UnifiedSaleBody() {
           onMouseDown={() => { setSelectedTransaction(null); setTransactionError(null); }}
         >
           <div
-            className="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-white rounded-xl shadow-2xl"
+            className="w-full max-w-3xl max-h-[92vh] overflow-y-auto bg-white rounded-xl shadow-2xl"
             onMouseDown={(e) => e.stopPropagation()}
           >
             {loadingTransaction && <div className="p-6 font-body text-sm text-steel">{t("common.loading")}</div>}

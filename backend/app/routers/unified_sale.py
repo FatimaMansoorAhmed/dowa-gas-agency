@@ -1260,6 +1260,105 @@ def correct_unified_sale_amount(
     return _batch_to_out(db, batch, sales, purchases, plant_payment, expenses, owner_drawing)
 
 
+def reverse_unified_sale_settlement(db: Session, batch: models.UnifiedSaleBatch, by: str) -> None:
+    """§ Bug Fix — Unified Sale Payment Cancel Doesn't Reverse Settlement.
+    Called by routers/payments.py::cancel_payment when the Payment being
+    cancelled is unified_sale_id-linked. That Payment IS this batch's
+    entire settlement-side audit trail (at most one active Payment per
+    batch, created once in _do_approve_sale — see its own comment), so
+    cancelling it means the WHOLE settlement is being undone, not just a
+    customer-side bookkeeping record. Before this fix, cancel_payment only
+    reversed the customer's balance (_reverse_payment, keyed off
+    payment.customer_id directly) — it never touched the plant/account
+    balance or the CompanyPayment/Expense/OwnerDrawings this batch's own
+    settlement posted, since those are linked via unified_sale_id, not
+    source_payment_id (the FK _reverse_payment actually looks for). Real
+    bug, reproduced live: cancelling a Payment-Only batch's Rs 10,000
+    payment (Rs 2,000 routed to Home Expense, Rs 8,000 net to a plant)
+    correctly restored the customer's balance but left the plant's balance
+    permanently short by Rs 8,000 and the Expense row still "active" on
+    the Expenses page — exactly as if the money had vanished into thin air
+    rather than never having moved.
+
+    Mirrors correct_unified_sale_settlement's own reversal block, but for
+    a full undo rather than a reverse-then-repost: reverses net_plant_
+    payment from wherever it posted (only if payment_status was actually
+    "approved" — a batch cancelled while still "pending" never posted any
+    balance in the first place, see approve_unified_sale_payment), cancels
+    every non-cancelled CompanyPayment/Expense/OwnerDrawings row (whether
+    "active" or still "pending" — a payment cancelled before its own
+    settlement was ever approved must not leave a "pending" child sitting
+    around for a later, now-meaningless approve-payment call to wrongly
+    activate), and zeroes the batch's own home_expense_amount/
+    owner_drawings_amount/net_plant_payment display fields so the
+    subsequent resync_unified_sale_batch_totals call (in cancel_payment)
+    computes a clean, fully-zeroed net_plant_payment rather than a
+    nonsensical negative one from a stale home_expense_amount surviving
+    against a freshly-zeroed total_credit_received.
+
+    payment_status becomes "cancelled" — permanently voided, same "cancel
+    then re-enter correctly" convention the frontend already documents for
+    this action (see unified-sale/page.tsx's handleCancelApprovedPayment
+    comment); it can never be re-approved or corrected afterward, exactly
+    like every other cancelled-not-mutated child row in this app.
+
+    § Salary payments are never clawed back (deliberate, permanent design
+    — see utils.apply_salary_expense_if_needed's own docstring). Every
+    Expense row's status flips to "cancelled" here, Salary-category ones
+    included — only the Employee.current_balance reversal is skipped, and
+    this function never touches that balance at all (nothing here calls
+    apply_salary_expense_if_needed's inverse, because there is no such
+    inverse anywhere in this codebase, by design)."""
+    if batch.payment_status == "cancelled":
+        return
+
+    if batch.payment_status == "approved":
+        net = _dec(batch.net_plant_payment)
+        if net > 0:
+            if batch.destination_type == "account":
+                account_row = resolve_account_or_bucket(db, batch.account_id)
+                if account_row:
+                    account_row.current_balance = _dec(account_row.current_balance) - net
+                    db.add(account_row)
+            else:
+                target_id = batch.target_plant_id or batch.company_id
+                target_company = db.query(models.Company).get(target_id) if target_id else None
+                if target_company:
+                    target_company.current_balance = _dec(target_company.current_balance) + net
+                    db.add(target_company)
+
+    plant_payment = (
+        db.query(models.CompanyPayment)
+        .filter(models.CompanyPayment.unified_sale_id == batch.id, models.CompanyPayment.status != "cancelled")
+        .first()
+    )
+    if plant_payment:
+        plant_payment.status = "cancelled"
+        db.add(plant_payment)
+
+    for expense in db.query(models.Expense).filter(
+        models.Expense.unified_sale_id == batch.id, models.Expense.status != "cancelled"
+    ).all():
+        expense.status = "cancelled"
+        db.add(expense)
+
+    owner_drawing = (
+        db.query(models.OwnerDrawings)
+        .filter(models.OwnerDrawings.unified_sale_id == batch.id, models.OwnerDrawings.status != "cancelled")
+        .first()
+    )
+    if owner_drawing:
+        owner_drawing.status = "cancelled"
+        db.add(owner_drawing)
+
+    batch.home_expense_amount = Decimal("0")
+    batch.owner_drawings_amount = Decimal("0")
+    batch.net_plant_payment = Decimal("0")
+    batch.payment_status = "cancelled"
+    _sync_legacy_status(batch)
+    db.add(batch)
+
+
 @router.post("/unified/{unified_sale_id}/cancel", response_model=schemas.UnifiedSaleOut)
 def cancel_unified_sale(
     unified_sale_id: UUID, 

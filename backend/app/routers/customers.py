@@ -81,6 +81,24 @@ def create_customer(payload: schemas.CustomerCreate, db: Session = Depends(get_d
         pso_454 = payload.empty_cylinders_454_pso or 0
         total_454 = (cross_454 + pso_454) if (cross_454 or pso_454) else (payload.empty_cylinders_454 or 0)
 
+        # No duplicate customer — name and mobile are each checked on their
+        # own so the error can say exactly which one collided.
+        name_dupe = (
+            db.query(models.Customer)
+            .filter(func.lower(func.trim(models.Customer.name)) == payload.name.strip().lower())
+            .first()
+        )
+        if name_dupe:
+            raise HTTPException(status_code=400, detail="This name already exists.")
+
+        mobile_dupe = (
+            db.query(models.Customer)
+            .filter(models.Customer.mobile == payload.mobile.strip())
+            .first()
+        )
+        if mobile_dupe:
+            raise HTTPException(status_code=400, detail="This number already exists.")
+
         new_customer = models.Customer(
             display_id=disp_id,
             name=payload.name,
@@ -109,6 +127,9 @@ def create_customer(payload: schemas.CustomerCreate, db: Session = Depends(get_d
         db.refresh(new_customer)
         return new_customer
 
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
