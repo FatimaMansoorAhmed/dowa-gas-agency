@@ -69,6 +69,7 @@ function DashboardBody() {
   const [loading, setLoading] = useState(true);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const inFlight = useRef(false);
+  const pollCount = useRef(0);
   const month = currentMonth();
 
   const loadAll = useCallback(async (isInitial = false) => {
@@ -76,6 +77,12 @@ function DashboardBody() {
     inFlight.current = true;
     try {
       const month = currentMonth();
+      // The four full-history lists only feed the P&L chart, grow with every
+      // year of data, and change slowly — fetch them on load and then only on
+      // every 10th 30-second poll (~5 min), not on every poll. The month-to-
+      // date feeds and live rates still refresh every 30 seconds.
+      const withHistory = isInitial || pollCount.current % 10 === 0;
+      pollCount.current += 1;
       const [c, p, r, cu, sales, purchases, expenses, ownerDrawings, shopSales, fl, allS, allP, allE, allD] = await Promise.all([
         api.companies.list(),
         api.parties.list(),
@@ -87,10 +94,10 @@ function DashboardBody() {
         api.ownerDrawings.list(month),
         api.shops.salesList(month),
         api.ledger.customerFlags(month),
-        api.sales.list(),
-        api.purchases.list(),
-        api.expenses.list(),
-        api.ownerDrawings.list(),
+        withHistory ? api.sales.list() : null,
+        withHistory ? api.purchases.list() : null,
+        withHistory ? api.expenses.list() : null,
+        withHistory ? api.ownerDrawings.list() : null,
       ]);
 
       setCompanies(c);
@@ -103,10 +110,10 @@ function DashboardBody() {
       setOwnerDrawingsMTD(ownerDrawings);
       setShopSalesMTD(shopSales);
       setFlags(fl);
-      setAllSales(allS);
-      setAllPurchases(allP);
-      setAllExpenses(allE);
-      setAllDrawings(allD);
+      if (allS) setAllSales(allS);
+      if (allP) setAllPurchases(allP);
+      if (allE) setAllExpenses(allE);
+      if (allD) setAllDrawings(allD);
       setLastSynced(new Date());
     } finally {
       inFlight.current = false;

@@ -369,14 +369,24 @@ def list_unified_sales(
         q = q.filter(models.UnifiedSaleBatch.customer_id == customer_id)
     if status:
         q = q.filter(models.UnifiedSaleBatch.status == status)
-    rows = q.order_by(models.UnifiedSaleBatch.date.desc(), models.UnifiedSaleBatch.created_at.desc()).all()
     if month:
-        rows = [r for r in rows if r.date.strftime("%Y-%m") == month]
+        # Same result as the old in-Python strftime("%Y-%m") == month filter,
+        # but done by the database so only that month's rows are ever loaded.
+        year, mo = int(month[:4]), int(month[5:7])
+        start = datetime(year, mo, 1)
+        end = datetime(year + 1, 1, 1) if mo == 12 else datetime(year, mo + 1, 1)
+        q = q.filter(models.UnifiedSaleBatch.date >= start, models.UnifiedSaleBatch.date < end)
+    rows = q.order_by(models.UnifiedSaleBatch.date.desc(), models.UnifiedSaleBatch.created_at.desc()).all()
+
+    # ONE query for every batch's child sales (was one query per batch).
+    children_by_batch: dict = {}
+    if rows:
+        for child in db.query(models.Sale).filter(models.Sale.unified_sale_id.in_([r.id for r in rows])).all():
+            children_by_batch.setdefault(child.unified_sale_id, []).append(child)
 
     result = []
     for r in rows:
-        # Batch ke child sales record fetch karein
-        sales = db.query(models.Sale).filter(models.Sale.unified_sale_id == r.id).all()
+        sales = children_by_batch.get(r.id, [])
         
         qty_11_8 = Decimal("0")
         qty_45_4 = Decimal("0")

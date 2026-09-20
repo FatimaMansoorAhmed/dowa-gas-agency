@@ -1156,14 +1156,17 @@ def list_shop_sales(month: str | None = Query(None, description="YYYY-MM"), db: 
     it unreachable (every request would resolve to get_shop_detail with
     shop_id="sales" and 422 on the UUID parse instead) — caught via a
     dry-run of this exact scenario before wiring it up live."""
-    rows = (
+    q = (
         db.query(models.ShopSale)
+        .options(selectinload(models.ShopSale.home_expense_lines))  # was one lazy query per sale
         .filter(models.ShopSale.status == "active")
-        .order_by(models.ShopSale.date.desc(), models.ShopSale.created_at.desc())
-        .all()
     )
     if month:
-        rows = [r for r in rows if r.date.strftime("%Y-%m") == month]
+        year, mo = int(month[:4]), int(month[5:7])
+        start = datetime(year, mo, 1)
+        end = datetime(year + 1, 1, 1) if mo == 12 else datetime(year, mo + 1, 1)
+        q = q.filter(models.ShopSale.date >= start, models.ShopSale.date < end)
+    rows = q.order_by(models.ShopSale.date.desc(), models.ShopSale.created_at.desc()).all()
 
     # § Segregated Profit Centers (Dashboard) — Shop COGS. Reuses the exact
     # FIFO trail already recorded for stock/correction purposes

@@ -825,6 +825,8 @@ def run_startup_migrations(engine: Engine) -> None:
     if engine.dialect.name == "postgresql":
         _drop_fk_columns(engine, _FK_DROPS)
 
+    _ensure_indexes(engine, _INDEXES)
+
 
 # (table, column) pairs whose FK to customers/companies/employees is dropped.
 # customer_cylinder_balances / parties / rate_entries are deliberately NOT
@@ -855,3 +857,46 @@ def _drop_fk_columns(engine: Engine, pairs) -> None:
             """), {"t": table, "c": column}).fetchall()
             for (name,) in names:
                 conn.execute(text(f'ALTER TABLE "{table}" DROP CONSTRAINT IF EXISTS "{name}"'))
+
+
+# Performance — before this, every table had ONLY its primary key and
+# display_id indexed, so every "WHERE customer_id = ..." / "WHERE
+# unified_sale_id = ..." / date-range query was a full table scan. The list
+# endpoints issue one such query per row, so page load time grew with the
+# SQUARE of the data (rows x table size). Plain btree indexes on the columns
+# the app filters and joins by; CREATE INDEX IF NOT EXISTS, so re-running at
+# every startup is a no-op, and a missing table/column is skipped rather than
+# failing startup. Additive only — no query, result or constraint changes.
+_INDEXES = [
+    ("sales", "unified_sale_id"), ("sales", "customer_id"), ("sales", "company_id"), ("sales", "date"), ("sales", "status"),
+    ("purchases", "unified_sale_id"), ("purchases", "company_id"), ("purchases", "date"), ("purchases", "status"),
+    ("payments", "unified_sale_id"), ("payments", "customer_id"), ("payments", "date"), ("payments", "status"),
+    ("company_payments", "company_id"), ("company_payments", "unified_sale_id"), ("company_payments", "date"),
+    ("expenses", "unified_sale_id"), ("expenses", "source_payment_id"), ("expenses", "date"), ("expenses", "status"),
+    ("expenses", "shop_id"), ("expenses", "source_shop_sale_id"),
+    ("owner_drawings", "unified_sale_id"), ("owner_drawings", "date"), ("owner_drawings", "status"), ("owner_drawings", "shop_id"),
+    ("unified_sale_batches", "customer_id"), ("unified_sale_batches", "date"), ("unified_sale_batches", "company_id"),
+    ("unified_sale_batches", "target_plant_id"), ("unified_sale_batches", "status"),
+    ("unified_sale_home_expense_lines", "unified_sale_id"),
+    ("shop_sales", "customer_id"), ("shop_sales", "date"), ("shop_sales", "supply_customer_id"), ("shop_sales", "status"),
+    ("shop_sale_home_expense_lines", "shop_sale_id"), ("shop_sale_batch_consumptions", "shop_sale_id"),
+    ("shop_customer_payments", "shop_id"), ("shop_customer_payments", "supply_customer_id"),
+    ("shop_cash_transfers", "shop_id"), ("shop_expense_transactions", "shop_id"),
+    ("shop_stock_batches", "customer_id"), ("shop_supply_customers", "shop_id"),
+    ("cylinder_transactions", "customer_id"), ("cylinder_transactions", "sale_id"),
+    ("customer_cylinder_balances", "customer_id"), ("cylinder_returns", "customer_id"),
+    ("employee_salary_accruals", "employee_id"), ("audit_logs", "entity_id"),
+    ("parties", "company_id"), ("rate_entries", "company_id"),
+]
+
+
+def _ensure_indexes(engine: Engine, pairs) -> None:
+    insp = inspect(engine)
+    tables = set(insp.get_table_names())
+    with engine.begin() as conn:
+        for table, column in pairs:
+            if table not in tables:
+                continue
+            if column not in {c["name"] for c in insp.get_columns(table)}:
+                continue
+            conn.execute(text(f'CREATE INDEX IF NOT EXISTS ix_{table}_{column} ON "{table}" ("{column}")'))
