@@ -280,7 +280,7 @@ def _totals_block(s, rows: list[tuple[str, object]]):
     the same table instead of a second block, so the layout stays
     identical to today's single-row invoice when GST is off."""
     data = [[row_label, _fmt_amount(amount)] for row_label, amount in rows]
-    t = Table(data, colWidths=[40 * mm, 35 * mm])
+    t = Table(data, colWidths=[52 * mm, 35 * mm])
     t.hAlign = "RIGHT"
     t.setStyle(TableStyle([
         ("FONTSIZE", (0, 0), (-1, -1), 10.5),
@@ -360,6 +360,37 @@ def _build(doc_type: str, party_title: str, party_lines: list, details_rows: lis
     return buf.getvalue()
 
 
+def _sale_totals_rows(doc):
+    """Totals rows for any sale document carrying gst_*/discount_* fields
+    (Sale, UnifiedSaleBatch, ShopSale) - the full chain a customer can
+    follow: Subtotal -> Discount (-) -> Discounted Subtotal -> GST (+) ->
+    Grand Total. `doc` exposes total_amount OR total_selling_amount as its
+    raw base. Returns a plain Decimal (today's single "Total Amount" row)
+    when neither GST nor a discount applied, and today's exact Value Excl.
+    Tax / GST / Grand Total rows when only GST did, so a document without
+    a discount renders exactly as it did before this feature."""
+    base = doc.total_selling_amount if hasattr(doc, "total_selling_amount") else doc.total_amount
+    has_discount = bool(getattr(doc, "discount_enabled", False) and doc.discount_rate is not None and doc.discount_amount)
+    has_gst = bool(doc.gst_enabled and doc.gst_rate is not None)
+    if not has_discount and not has_gst:
+        return base
+    if not has_discount:
+        return [
+            ("Value Excl. Tax", base),
+            (f"GST @ {_fmt_amount(doc.gst_rate)}%", doc.gst_amount),
+            ("Grand Total", doc.grand_total),
+        ]
+    rows = [
+        ("Subtotal", base),
+        (f"Discount @ {_fmt_amount(doc.discount_rate)}% (-)", -Decimal(doc.discount_amount)),
+    ]
+    if has_gst:
+        rows.append(("Discounted Subtotal", Decimal(base) - Decimal(doc.discount_amount)))
+        rows.append((f"GST @ {_fmt_amount(doc.gst_rate)}% (+)", doc.gst_amount))
+    rows.append(("Grand Total", doc.grand_total))
+    return rows
+
+
 def render_sale_invoice_pdf(sale, generated_by: str, generated_at: str) -> bytes:
     customer = sale.customer
     product = sale.product
@@ -374,6 +405,8 @@ def render_sale_invoice_pdf(sale, generated_by: str, generated_at: str) -> bytes
             party_lines.append(", ".join(addr_bits))
     if plant:
         party_lines.append(f"Plant: {plant.name}")
+    elif sale.company_label:
+        party_lines.append(f"Plant: {sale.company_label}")
 
     details_rows = [
         ("Invoice No", sale.display_id),
@@ -388,17 +421,10 @@ def render_sale_invoice_pdf(sale, generated_by: str, generated_at: str) -> bytes
     # GST on Sale (§ GST on Sale) — Value Excl. Tax / GST / Grand Total
     # stacked in the totals block; a GST-off sale keeps today's single
     # "Total Amount" row (see _build's isinstance check) with no empty tax rows.
-    if sale.gst_enabled and sale.gst_rate is not None:
-        totals = [
-            ("Value Excl. Tax", sale.total_amount),
-            (f"GST @ {_fmt_amount(sale.gst_rate)}%", sale.gst_amount),
-            ("Grand Total", sale.grand_total),
-        ]
-    else:
-        totals = sale.total_amount
+    totals = _sale_totals_rows(sale)
 
     return _build(
-        "Sales Invoice", "Bill To", [customer.name if customer else "-"] + party_lines, details_rows,
+        "Sales Invoice", "Bill To", [customer.name if customer else (sale.customer_label or "-")] + party_lines, details_rows,
         ["Description", "Qty", "Rate", "Amount"], items_row, totals, sale.entered_by, sale.notes,
         generated_by, generated_at,
     )
@@ -425,6 +451,8 @@ def render_unified_sale_invoice_pdf(batch, sales: list, generated_by: str, gener
             party_lines.append(", ".join(addr_bits))
     if plant:
         party_lines.append(f"Plant: {plant.name}")
+    elif batch.company_label:
+        party_lines.append(f"Plant: {batch.company_label}")
 
     details_rows = [
         ("Invoice No", batch.display_id),
@@ -452,17 +480,10 @@ def render_unified_sale_invoice_pdf(batch, sales: list, generated_by: str, gener
     # keyed off the BATCH's own total_selling_amount/gst_amount/grand_total
     # (never a sum of the child Sales' own totals, which carry no GST
     # individually).
-    if batch.gst_enabled and batch.gst_rate is not None:
-        totals = [
-            ("Value Excl. Tax", batch.total_selling_amount),
-            (f"GST @ {_fmt_amount(batch.gst_rate)}%", batch.gst_amount),
-            ("Grand Total", batch.grand_total),
-        ]
-    else:
-        totals = batch.total_selling_amount
+    totals = _sale_totals_rows(batch)
 
     return _build(
-        "Sales Invoice", "Bill To", [customer.name if customer else "-"] + party_lines, details_rows,
+        "Sales Invoice", "Bill To", [customer.name if customer else (batch.customer_label or "-")] + party_lines, details_rows,
         ["Description", "Qty", "Rate", "Amount"], items_rows, totals, batch.entered_by, batch.notes,
         generated_by, generated_at,
     )
@@ -492,7 +513,7 @@ def render_payment_invoice_pdf(payment, generated_by: str, generated_at: str) ->
         notes = f"{notes} — {extra}" if notes else extra
 
     return _build(
-        "Payment Receipt", "Received From", [customer.name if customer else "-"] + party_lines, details_rows,
+        "Payment Receipt", "Received From", [customer.name if customer else (payment.customer_label or "-")] + party_lines, details_rows,
         ["Description", "Qty", "Rate", "Amount"], items_row, payment.amount, payment.received_by or payment.entered_by, notes,
         generated_by, generated_at,
     )
@@ -518,7 +539,7 @@ def render_purchase_invoice_pdf(purchase, generated_by: str, generated_at: str) 
     notes = f"{notes} — {charges}" if notes else charges
 
     return _build(
-        "Purchase Invoice", "Supplier", [plant.name if plant else "-"], details_rows,
+        "Purchase Invoice", "Supplier", [plant.name if plant else (purchase.company_label or "-")], details_rows,
         ["Description", "Qty", "Rate", "Amount"], items_row, purchase.total_amount, purchase.entered_by, notes,
         generated_by, generated_at,
     )
@@ -544,7 +565,7 @@ def render_company_payment_invoice_pdf(cp, generated_by: str, generated_at: str)
         notes = f"{notes} — {extra}" if notes else extra
 
     return _build(
-        "Plant Payment Receipt", "Paid To", [plant.name if plant else "-"], details_rows,
+        "Plant Payment Receipt", "Paid To", [plant.name if plant else (cp.company_label or "-")], details_rows,
         ["Description", "Qty", "Rate", "Amount"], items_row, cp.amount, cp.paid_by or cp.entered_by, notes,
         generated_by, generated_at,
     )
@@ -571,13 +592,13 @@ def render_shop_sale_invoice_pdf(sale, generated_by: str, generated_at: str) -> 
 
     notes = sale.notes
     if sale.payment_type == "credit" and sale.amount_received is not None:
-        balance = Decimal(sale.total_amount) - Decimal(sale.amount_received)
+        balance = Decimal(sale.grand_total) - Decimal(sale.amount_received)
         extra = f"Balance Due: {_fmt_amount(balance)}"
         notes = f"{notes} — {extra}" if notes else extra
 
     return _build(
         "Shop Sale Invoice", "Shop", [shop.name if shop else "-"] + party_lines, details_rows,
-        ["Description", "Qty", "Rate", "Amount"], items_row, sale.total_amount, sale.entered_by, notes,
+        ["Description", "Qty", "Rate", "Amount"], items_row, _sale_totals_rows(sale), sale.entered_by, notes,
         generated_by, generated_at,
     )
 
@@ -601,6 +622,16 @@ def _statement_rate_cell(r: "schemas.LedgerRow") -> str:
         return ", ".join(_fmt_amount(x) for x in r.unified_sale_rates)
     if r.rate_per_cylinder:
         return _fmt_amount(r.rate_per_cylinder)
+    return "-"
+
+
+def _statement_discount_cell(r) -> str:
+    """Discount column (Discount feature) - the actual Rs amount, or a dash
+    when no discount was applied to this row (same convention as the GST
+    cell below). Shared by the Customer, Shop and Supply Customer
+    statements."""
+    if getattr(r, "discount_amount", None):
+        return _fmt_amount(r.discount_amount)
     return "-"
 
 
@@ -829,8 +860,8 @@ def _cash_reconciliation_note(
 # render_customer_statement_pdf's SimpleDocTemplate), with Balance getting
 # the largest share since it's the one column that must stay unmistakably
 # readable (§ Balance — "clearly visible").
-_STATEMENT_COL_WIDTHS = [24 * mm, 34 * mm, 24 * mm, 24 * mm, 32 * mm, 38 * mm, 38 * mm, 63 * mm]
-_STATEMENT_HEADERS = ["Date", "Rate", "11.8 KG", "45.4 KG", "GST", "Sale", "Payment", "Balance"]
+_STATEMENT_COL_WIDTHS = [24 * mm, 34 * mm, 24 * mm, 24 * mm, 24 * mm, 32 * mm, 38 * mm, 38 * mm, 39 * mm]
+_STATEMENT_HEADERS = ["Date", "Rate", "11.8 KG", "45.4 KG", "Discount", "GST", "Sale", "Payment", "Balance"]
 
 # Target row count on the tightest page (page 1, which carries the company
 # header/customer line/summary row above the table — see the budget math
@@ -849,6 +880,7 @@ def _statement_row_cells(s, r: "schemas.LedgerRow") -> list:
         Paragraph(_statement_rate_cell(r), s["compact_table_cell"]),
         Paragraph(_statement_qty_cell(r.qty_118), s["compact_table_cell"]),
         Paragraph(_statement_qty_cell(r.qty_454), s["compact_table_cell"]),
+        Paragraph(_statement_discount_cell(r), s["compact_table_cell"]),
         Paragraph(_statement_gst_cell(r), s["compact_table_cell"]),
         Paragraph(_fmt_amount(r.sale_amount) if r.sale_amount else "-", s["compact_table_cell"]),
         Paragraph(_fmt_amount(r.payment_amount) if r.payment_amount else "-", s["compact_table_cell"]),
@@ -864,7 +896,7 @@ def _statement_opening_row_cells(s, opening_balance) -> list:
     bold = ParagraphStyle("CompactOpeningRow", parent=s["compact_table_cell"], fontName="Helvetica-Bold")
     return [
         Paragraph("Opening Balance", bold),
-        dash, dash, dash, dash, dash, dash,
+        dash, dash, dash, dash, dash, dash, dash,
         Paragraph(_fmt_amount(opening_balance), bold),
     ]
 
@@ -1210,8 +1242,8 @@ def _shop_statement_gst_cell(r: "schemas.ShopTransactionRow") -> str:
 # same Rate→GST→Amount position as the Customer Statement's own Rate→GST→
 # Sale ordering — still sums to 277mm (shaved from Customer/Cylinder Type/
 # Quantity/Rate/Amount/Paid to make room, Balance untouched).
-_SHOP_STATEMENT_COL_WIDTHS = [18 * mm, 18 * mm, 26 * mm, 18 * mm, 14 * mm, 18 * mm, 20 * mm, 33 * mm, 33 * mm, 79 * mm]
-_SHOP_STATEMENT_HEADERS = ["Date", "Type", "Customer", "Cylinder Type", "Quantity", "Rate", "GST", "Amount", "Paid", "Dowa Balance"]
+_SHOP_STATEMENT_COL_WIDTHS = [18 * mm, 18 * mm, 26 * mm, 18 * mm, 14 * mm, 18 * mm, 20 * mm, 20 * mm, 33 * mm, 33 * mm, 59 * mm]
+_SHOP_STATEMENT_HEADERS = ["Date", "Type", "Customer", "Cylinder Type", "Quantity", "Rate", "Discount", "GST", "Amount", "Paid", "Dowa Balance"]
 
 
 def _shop_statement_row_cells(s, r: "schemas.ShopTransactionRow", balance) -> list:
@@ -1282,6 +1314,7 @@ def _shop_statement_row_cells(s, r: "schemas.ShopTransactionRow", balance) -> li
         Paragraph(cylinder_cell, s["compact_table_cell"]),
         Paragraph(quantity_cell, s["compact_table_cell"]),
         Paragraph(rate_cell, s["compact_table_cell"]),
+        Paragraph(_statement_discount_cell(r), s["compact_table_cell"]),
         Paragraph(gst_cell, s["compact_table_cell"]),
         Paragraph(amount_cell, s["compact_table_cell"]),
         Paragraph(paid_cell, s["compact_table_cell"]),
@@ -1290,8 +1323,8 @@ def _shop_statement_row_cells(s, r: "schemas.ShopTransactionRow", balance) -> li
 
 
 def _shop_statement_opening_row_cells(s, opening_balance) -> list:
-    # The 8 dashes are placeholders only — render_shop_statement_pdf SPANs
-    # columns 0-8 over this row so only the "Dowa Payable (Opening)" label
+    # The 9 dashes are placeholders only — render_shop_statement_pdf SPANs
+    # columns 0-9 over this row so only the "Dowa Payable (Opening)" label
     # (cell 0) actually renders, never sitting under the Date column as
     # though it were one (§ Opening Balance row presentation). Kept here so
     # the row still has 10 cells, matching every other row's shape (§ Shop
@@ -1303,7 +1336,7 @@ def _shop_statement_opening_row_cells(s, opening_balance) -> list:
     bold = ParagraphStyle("CompactShopOpeningRow", parent=s["compact_table_cell"], fontName="Helvetica-Bold")
     return [
         Paragraph("Dowa Payable (Opening)", bold),
-        dash, dash, dash, dash, dash, dash, dash, dash,
+        dash, dash, dash, dash, dash, dash, dash, dash, dash,
         Paragraph(_fmt_amount(opening_balance), bold),
     ]
 
@@ -1456,14 +1489,14 @@ def render_shop_statement_pdf(
         table = _statement_table_chunk(s, header_cells, body_rows, _SHOP_STATEMENT_COL_WIDTHS)
         if i == 0:
             # Opening Balance row (§ Opening Balance row presentation) —
-            # merges Date..Paid (columns 0-8, table row 1 since row 0 is
+            # merges Date..Paid (columns 0-9, table row 1 since row 0 is
             # the header) into one left-aligned "Opening Balance" label so
             # it never reads as though sitting in the Date column; Balance
-            # (column 9) keeps its own real value. Applied to this Table
+            # (column 10) keeps its own real value. Applied to this Table
             # instance only, after _statement_table_chunk builds it — never
             # touches that shared function or Customer/Plant Statement.
             table.setStyle(TableStyle([
-                ("SPAN", (0, 1), (8, 1)),
+                ("SPAN", (0, 1), (9, 1)),
                 ("ALIGN", (0, 1), (0, 1), "LEFT"),
             ]))
         story.append(table)
@@ -1498,8 +1531,8 @@ _SUPPLY_CUSTOMER_TYPE_LABELS = {"sale": "Sale", "payment": "Payment"}
 # § Shop Customer Ledger GST columns — GST inserted between Rate and
 # Amount, mirroring the Shop Statement's own GST column insertion
 # (_SHOP_STATEMENT_COL_WIDTHS); still sums to 277mm.
-_SUPPLY_CUSTOMER_STATEMENT_COL_WIDTHS = [20 * mm, 18 * mm, 24 * mm, 16 * mm, 18 * mm, 16 * mm, 32 * mm, 32 * mm, 101 * mm]
-_SUPPLY_CUSTOMER_STATEMENT_HEADERS = ["Date", "Type", "Cylinder Type", "Quantity", "Rate", "GST", "Amount", "Paid", "Balance"]
+_SUPPLY_CUSTOMER_STATEMENT_COL_WIDTHS = [20 * mm, 18 * mm, 24 * mm, 16 * mm, 18 * mm, 18 * mm, 16 * mm, 32 * mm, 32 * mm, 83 * mm]
+_SUPPLY_CUSTOMER_STATEMENT_HEADERS = ["Date", "Type", "Cylinder Type", "Quantity", "Rate", "Discount", "GST", "Amount", "Paid", "Balance"]
 
 
 def _supply_customer_statement_quantity_cell(r: "schemas.ShopSupplyCustomerLedgerRow") -> str:
@@ -1539,6 +1572,7 @@ def _supply_customer_statement_row_cells(s, r: "schemas.ShopSupplyCustomerLedger
         Paragraph(cylinder_cell, s["compact_table_cell"]),
         Paragraph(quantity_cell, s["compact_table_cell"]),
         Paragraph(rate_cell, s["compact_table_cell"]),
+        Paragraph(_statement_discount_cell(r) if r.kind == "sale" else "-", s["compact_table_cell"]),
         Paragraph(gst_cell, s["compact_table_cell"]),
         Paragraph(amount_cell, s["compact_table_cell"]),
         Paragraph(paid_cell, s["compact_table_cell"]),
@@ -1551,7 +1585,7 @@ def _supply_customer_statement_opening_row_cells(s, opening_balance) -> list:
     bold = ParagraphStyle("CompactSupplyCustOpeningRow", parent=s["compact_table_cell"], fontName="Helvetica-Bold")
     return [
         Paragraph("Opening Balance", bold),
-        dash, dash, dash, dash, dash, dash, dash,
+        dash, dash, dash, dash, dash, dash, dash, dash,
         Paragraph(_fmt_amount(opening_balance), bold),
     ]
 
@@ -1565,9 +1599,9 @@ def render_supply_customer_statement_pdf(
     vertical-budget math and manual page-chunking rationale, unchanged
     here). `customer` is a live ShopSupplyCustomer row; `ledger` is
     get_supply_customer_ledger's own output for it, read here, never
-    recomputed — ledger.rows is already oldest-first (unlike ShopDetailOut.
-    transactions/CustomerLedgerSummary.rows, which are latest-first for
-    on-screen display and need reversing), so no reversal is needed."""
+    recomputed — ledger.rows is latest-first (matching the on-screen modal),
+    so the Opening Balance row, being the oldest entry, is the LAST row of
+    the last page rather than the first row of the first."""
     usable_width = landscape(A4)[0] - 20 * mm  # 297mm - 10mm each side = 277mm
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -1605,16 +1639,18 @@ def render_supply_customer_statement_pdf(
     chunks = [ledger.rows[i:i + STATEMENT_ROWS_PER_PAGE] for i in range(0, len(ledger.rows), STATEMENT_ROWS_PER_PAGE)] or [[]]
 
     for i, chunk in enumerate(chunks):
+        is_last = i == len(chunks) - 1
         body_rows = [_supply_customer_statement_row_cells(s, r) for r in chunk]
-        if i == 0:
-            body_rows = [_supply_customer_statement_opening_row_cells(s, ledger.opening_balance)] + body_rows
+        if is_last:
+            body_rows = body_rows + [_supply_customer_statement_opening_row_cells(s, ledger.opening_balance)]
         if i > 0:
             story.append(PageBreak())
         table = _statement_table_chunk(s, header_cells, body_rows, _SUPPLY_CUSTOMER_STATEMENT_COL_WIDTHS)
-        if i == 0:
+        if is_last:
+            opening_row = len(body_rows)  # table row 0 is the header, so the last body row sits at len(body_rows)
             table.setStyle(TableStyle([
-                ("SPAN", (0, 1), (7, 1)),
-                ("ALIGN", (0, 1), (0, 1), "LEFT"),
+                ("SPAN", (0, opening_row), (8, opening_row)),
+                ("ALIGN", (0, opening_row), (0, opening_row), "LEFT"),
             ]))
         story.append(table)
 

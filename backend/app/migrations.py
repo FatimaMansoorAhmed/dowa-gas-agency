@@ -191,12 +191,41 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     ("sales", "gst_rate", "NUMERIC(5, 2)"),
     ("sales", "gst_amount", "NUMERIC(14, 2) NOT NULL DEFAULT 0"),
     ("sales", "grand_total", "NUMERIC(14, 2)"),
+    ("sales", "discount_enabled", "BOOLEAN NOT NULL DEFAULT false"),
+    ("sales", "discount_rate", "NUMERIC(5, 2)"),
+    ("sales", "discount_amount", "NUMERIC(14, 2) NOT NULL DEFAULT 0"),
     # GST on Sale, extended to Unified Sale — same additive/backfill
     # pattern as the sales.* columns above.
     ("unified_sale_batches", "gst_enabled", "BOOLEAN NOT NULL DEFAULT false"),
     ("unified_sale_batches", "gst_rate", "NUMERIC(5, 2)"),
     ("unified_sale_batches", "gst_amount", "NUMERIC(14, 2) NOT NULL DEFAULT 0"),
     ("unified_sale_batches", "grand_total", "NUMERIC(14, 2)"),
+    ("unified_sale_batches", "discount_enabled", "BOOLEAN NOT NULL DEFAULT false"),
+    ("unified_sale_batches", "discount_rate", "NUMERIC(5, 2)"),
+    ("unified_sale_batches", "discount_amount", "NUMERIC(14, 2) NOT NULL DEFAULT 0"),
+    # Delete Customer / Delete Company — permanent display snapshot ("name
+    # (CUST-007)"), written ONLY by the delete endpoints at the moment the
+    # row they describe is hard-deleted, and left NULL for every row whose
+    # customer/plant is still live. The customer_id/company_id UUID itself is
+    # kept as-is (its FK constraint is dropped below), so the historical row
+    # is otherwise untouched; this label is what keeps invoices, lists and
+    # reports readable once the live Customer/Company row is gone.
+    ("sales", "customer_label", "VARCHAR"),
+    ("payments", "customer_label", "VARCHAR"),
+    ("unified_sale_batches", "customer_label", "VARCHAR"),
+    ("cylinder_transactions", "customer_label", "VARCHAR"),
+    ("cylinder_returns", "customer_label", "VARCHAR"),
+    ("cylinder_returns", "to_customer_label", "VARCHAR"),
+    ("empty_cylinder_sales", "customer_label", "VARCHAR"),
+    ("sales", "company_label", "VARCHAR"),
+    ("purchases", "company_label", "VARCHAR"),
+    ("company_payments", "company_label", "VARCHAR"),
+    ("unified_sale_batches", "company_label", "VARCHAR"),
+    # Delete Supply Customer (a shop's own customer) — same permanent display
+    # snapshot idea as customer_label above, written only by that endpoint.
+    ("shop_sales", "supply_customer_label", "VARCHAR"),
+    ("shop_customer_payments", "supply_customer_label", "VARCHAR"),
+    ("shop_expense_transactions", "supply_customer_label", "VARCHAR"),
     # Sell Empty Cylinders / Return Cylinder unification (§ Empty Cylinders
     # page) — every existing cylinder_returns row predates this distinction
     # and was, by construction, an ordinary Customer Ledger return, so it
@@ -300,6 +329,9 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     ("shop_sales", "gst_rate", "NUMERIC(5, 2)"),
     ("shop_sales", "gst_amount", "NUMERIC(14, 2) NOT NULL DEFAULT 0"),
     ("shop_sales", "grand_total", "NUMERIC(14, 2)"),
+    ("shop_sales", "discount_enabled", "BOOLEAN NOT NULL DEFAULT false"),
+    ("shop_sales", "discount_rate", "NUMERIC(5, 2)"),
+    ("shop_sales", "discount_amount", "NUMERIC(14, 2) NOT NULL DEFAULT 0"),
     # § Add Filled Cylinder Stock — one-time-only. False for every existing
     # shop; a shop that already used this feature before the restriction
     # existed is NOT retroactively locked out (would be indistinguishable
@@ -783,3 +815,43 @@ def run_startup_migrations(engine: Engine) -> None:
                     INSERT INTO expense_categories (id, name, description, active, is_system)
                     VALUES (:id, 'Salary', 'Employee salary payments — system-provided, cannot be deactivated', 'active', true)
                 """), {"id": str(_uuid.uuid4())})
+
+    # Delete Customer / Delete Company / Delete Employee — the entity row is
+    # hard-deleted while every historical transaction that points at it
+    # stays exactly as it was, so the FK constraints that would refuse that
+    # delete are dropped (the UUID column and its value are kept). Postgres
+    # only, idempotent: a column with no FK constraint left is simply
+    # skipped, so this is a no-op on every restart after the first.
+    if engine.dialect.name == "postgresql":
+        _drop_fk_columns(engine, _FK_DROPS)
+
+
+# (table, column) pairs whose FK to customers/companies/employees is dropped.
+# customer_cylinder_balances / parties / rate_entries are deliberately NOT
+# here — Delete Customer/Company hard-deletes those rows instead.
+_FK_DROPS = [
+    ("sales", "customer_id"), ("payments", "customer_id"), ("unified_sale_batches", "customer_id"),
+    ("cylinder_transactions", "customer_id"), ("cylinder_returns", "customer_id"),
+    ("cylinder_returns", "to_customer_id"), ("empty_cylinder_sales", "customer_id"),
+    ("purchases", "company_id"), ("company_payments", "company_id"), ("sales", "company_id"),
+    ("unified_sale_batches", "company_id"), ("owner_capital", "target_plant_id"),
+    ("shop_cash_transfers", "settlement_target_plant_id"),
+    ("employee_salary_accruals", "employee_id"), ("shop_sale_home_expense_lines", "employee_id"),
+    ("unified_sale_home_expense_lines", "employee_id"),
+    ("shop_customer_payments", "supply_customer_id"),
+]
+
+
+def _drop_fk_columns(engine: Engine, pairs) -> None:
+    with engine.begin() as conn:
+        for table, column in pairs:
+            names = conn.execute(text("""
+                SELECT tc.constraint_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                  ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+                WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = :t AND kcu.column_name = :c
+                  AND tc.table_schema = current_schema()
+            """), {"t": table, "c": column}).fetchall()
+            for (name,) in names:
+                conn.execute(text(f'ALTER TABLE "{table}" DROP CONSTRAINT IF EXISTS "{name}"'))

@@ -31,6 +31,7 @@ type RegisterRow = {
   display_id: string;
   date: string;
   customer_id: string;
+  customer_label?: string | null; // Delete Customer snapshot
   // § Part B — always the GROSS amount the customer actually handed over,
   // never net-after-bypass (that would show "Rs 0 Received" for a payment
   // that fully routed to Owner Drawings/Home Expense, which is misleading —
@@ -126,6 +127,7 @@ function PaymentsBody() {
           display_id: p.display_id,
           date: p.date,
           customer_id: p.customer_id,
+          customer_label: p.customer_label,
           amount: p.amount,
           net_amount: net,
           home_expense_amount: parseFloat(p.home_expense_amount || "0") || 0,
@@ -153,6 +155,7 @@ function PaymentsBody() {
           display_id: b.display_id,
           date: b.approved_at || b.date,
           customer_id: b.customer_id,
+          customer_label: b.customer_label,
           amount: b.total_credit_received,
           net_amount: net,
           home_expense_amount: parseFloat(b.home_expense_amount || "0") || 0,
@@ -437,7 +440,7 @@ function PaymentsBody() {
                     <tr key={row.id} className="hover:bg-paper/60 transition-colors">
                       <Td color="#8E8E93" mono>{fmtTime(row.date)}</Td>
                       <Td bold>
-                        <div>{cust?.name || "—"}</div>
+                        <div>{cust?.name || row.customer_label || "—"}</div>
                         <div className="text-[10px] text-steel font-mono">{cust?.display_id}</div>
                       </Td>
                       <Td right mono bold color="#0F8B8D">

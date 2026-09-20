@@ -1068,6 +1068,9 @@ class SaleCreate(BaseModel):
     # government rate changes. gst_rate is required when gst_enabled is
     # true (validated in routers/sales.py._apply_sale); both are ignored
     # (treated as off) otherwise.
+    # § Discount (optional, applied BEFORE GST — GST is computed on the discounted base; total_amount itself is never touched)
+    discount_enabled: bool = False
+    discount_rate: Optional[Decimal] = None
     gst_enabled: bool = False
     gst_rate: Optional[Decimal] = None
 
@@ -1084,6 +1087,8 @@ class SaleCorrect(SaleCreate):
 class SaleOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
+    customer_label: Optional[str] = None  # Delete Customer/Company snapshot; NULL while live
+    company_label: Optional[str] = None  # Delete Customer/Company snapshot; NULL while live
     display_id: str
     date: datetime
     customer_id: UUID
@@ -1114,6 +1119,10 @@ class SaleOut(BaseModel):
     # grand_total (= total_amount + gst_amount) is what actually posted to
     # the customer's balance/ledger; total_amount above stays excl.-GST for
     # Dashboard/P&L/Tonnage, unaffected.
+    # § Discount (optional, applied BEFORE GST — GST is computed on the discounted base; total_amount itself is never touched)
+    discount_enabled: bool = False
+    discount_rate: Optional[Decimal] = None
+    discount_amount: Decimal = Decimal("0")
     gst_enabled: bool = False
     gst_rate: Optional[Decimal] = None
     gst_amount: Decimal = Decimal("0")
@@ -1170,6 +1179,7 @@ class PaymentCorrect(PaymentCreate):
 class PaymentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
+    customer_label: Optional[str] = None  # Delete Customer/Company snapshot; NULL while live
     display_id: str
     date: datetime
     customer_id: UUID
@@ -1483,6 +1493,7 @@ class LedgerRow(BaseModel):
     # underlying Sale/invoice to see how much of sale_amount was tax.
     gst_rate: Optional[Decimal] = None
     gst_amount: Decimal = Decimal("0")
+    discount_amount: Decimal = Decimal("0")
 
 
 class CorrectionHistoryRow(BaseModel):
@@ -1577,6 +1588,7 @@ class PurchaseCorrect(PurchaseCreate):
 class PurchaseOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
+    company_label: Optional[str] = None  # Delete Customer/Company snapshot; NULL while live
     display_id: str
     date: datetime
     company_id: UUID
@@ -1629,6 +1641,7 @@ class CompanyPaymentCorrect(CompanyPaymentCreate):
 class CompanyPaymentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
+    company_label: Optional[str] = None  # Delete Customer/Company snapshot; NULL while live
     display_id: str
     date: datetime
     company_id: UUID
@@ -1871,6 +1884,9 @@ class UnifiedSaleCreate(BaseModel):
     # Sale's gst_rate. Applies to the whole batch's total_selling_amount
     # (items are never individually taxed here), computed and frozen
     # server-side — see routers/unified_sale.py.
+    # § Discount (optional, applied BEFORE GST — GST is computed on the discounted base; total_amount itself is never touched)
+    discount_enabled: bool = False
+    discount_rate: Optional[Decimal] = None
     gst_enabled: bool = False
     gst_rate: Optional[Decimal] = None
 
@@ -1928,6 +1944,8 @@ class UnifiedSaleBatchOut(BaseModel):
     """Lightweight list-view row — no nested child records, unlike UnifiedSaleOut."""
     model_config = ConfigDict(from_attributes=True)
     id: UUID
+    customer_label: Optional[str] = None  # Delete Customer/Company snapshot; NULL while live
+    company_label: Optional[str] = None  # Delete Customer/Company snapshot; NULL while live
     display_id: str
     date: datetime
     customer_id: UUID
@@ -1955,6 +1973,10 @@ class UnifiedSaleBatchOut(BaseModel):
     # GST on Sale, extended to Unified Sale — see models.UnifiedSaleBatch.
     # grand_total is what's actually posted to the customer's balance/
     # ledger; total_selling_amount above stays excl.-GST.
+    # § Discount (optional, applied BEFORE GST — GST is computed on the discounted base; total_amount itself is never touched)
+    discount_enabled: bool = False
+    discount_rate: Optional[Decimal] = None
+    discount_amount: Decimal = Decimal("0")
     gst_enabled: bool = False
     gst_rate: Optional[Decimal] = None
     gst_amount: Decimal = Decimal("0")
@@ -1982,6 +2004,8 @@ class UnifiedSaleBatchOut(BaseModel):
 class UnifiedSaleOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
+    customer_label: Optional[str] = None  # Delete Customer/Company snapshot; NULL while live
+    company_label: Optional[str] = None  # Delete Customer/Company snapshot; NULL while live
     display_id: str
     date: datetime
     customer_id: UUID
@@ -2007,6 +2031,10 @@ class UnifiedSaleOut(BaseModel):
     settlement_corrected_at: Optional[datetime] = None
     settlement_correction_reason: Optional[str] = None
     # GST on Sale, extended to Unified Sale — see models.UnifiedSaleBatch.
+    # § Discount (optional, applied BEFORE GST — GST is computed on the discounted base; total_amount itself is never touched)
+    discount_enabled: bool = False
+    discount_rate: Optional[Decimal] = None
+    discount_amount: Decimal = Decimal("0")
     gst_enabled: bool = False
     gst_rate: Optional[Decimal] = None
     gst_amount: Decimal = Decimal("0")
@@ -2056,6 +2084,7 @@ class CylinderTransactionCreate(BaseModel):
 class CylinderTransactionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
+    customer_label: Optional[str] = None  # Delete Customer/Company snapshot; NULL while live
     display_id: str
     date: datetime
     customer_id: UUID
@@ -2130,6 +2159,8 @@ class CylinderReturnCreate(BaseModel):
 class CylinderReturnOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
+    customer_label: Optional[str] = None  # Delete Customer/Company snapshot; NULL while live
+    to_customer_label: Optional[str] = None  # Delete Customer/Company snapshot; NULL while live
     display_id: str
     date: datetime
     customer_id: UUID
@@ -2335,6 +2366,9 @@ class ShopSaleCreate(BaseModel):
     # GST on Sale, extended to Shop Sale (optional, locked at entry — same
     # convention as SaleCreate/UnifiedSale's own gst_enabled/gst_rate).
     # Default off; computed via utils.compute_gst in _apply_shop_sale.
+    # § Discount (optional, applied BEFORE GST — GST is computed on the discounted base; total_amount itself is never touched)
+    discount_enabled: bool = False
+    discount_rate: Optional[Decimal] = None
     gst_enabled: bool = False
     gst_rate: Optional[Decimal] = None
     supply_customer_id: Optional[UUID] = None
@@ -2410,7 +2444,19 @@ class ShopSaleOut(BaseModel):
     saleable_kg_used: Optional[Decimal] = None
     sale_rate_per_cylinder: Decimal
     total_amount: Decimal
+    # § Segregated Profit Centers (Dashboard) — this sale's FIFO-weighted
+    # cost of goods, summed from the exact ShopStockBatch row(s) it drew
+    # from (each batch's load_rate_per_kg is a frozen historical rate, set
+    # at Load time — see routers/sales.py). Computed only by
+    # routers/shops.py's list_shop_sales (the Dashboard's data source);
+    # every other endpoint returning ShopSaleOut leaves this at its
+    # default 0 rather than paying for the join.
+    cogs_amount: Decimal = Decimal("0")
     manual_rate_override: bool = False
+    # § Discount (optional, applied BEFORE GST — GST is computed on the discounted base; total_amount itself is never touched)
+    discount_enabled: bool = False
+    discount_rate: Optional[Decimal] = None
+    discount_amount: Decimal = Decimal("0")
     gst_enabled: bool = False
     gst_rate: Optional[Decimal] = None
     gst_amount: Decimal = Decimal("0")
@@ -2612,14 +2658,14 @@ class ShopSupplyCustomerLedgerRow(BaseModel):
     # this is a NEW field rather than changing `rate`'s existing,
     # already-relied-upon on-screen meaning.
     board_rate_per_kg: Optional[Decimal] = None
-    # Where a Payment Only collection's money was routed (§ Payment Only /
-    # Settlement Routing) — null for "sale" rows (a ShopSale's own
-    # settlement is a separate concept already covered by sale_amount/
-    # payment_amount above) and for a "payment" row with no routing (the
-    # legacy plain-account collection path). Mirrors ShopTransactionRow/
-    # ShopBusinessLedgerRow's identical 6 fields — this schema never had
-    # them, so a Payment Only collection's breakdown had nowhere to go even
-    # though ShopCustomerPayment itself has always stored it correctly.
+    # Where the money collected on this row was routed (§ Settlement
+    # Routing) — populated for a "payment" row (Payment Only) AND now for a
+    # "sale" row too (the amount collected at the point of sale, whose
+    # Expense/Owner Drawings/Plant/Account split the ShopSale itself has
+    # always stored). Null for a row with nothing collected or no routing
+    # (the legacy plain-account collection path). Mirrors ShopTransactionRow/
+    # ShopBusinessLedgerRow's identical fields; for a sale row the collected
+    # figure is payment_amount above.
     settlement_destination_type: Optional[str] = None
     settlement_target_plant_id: Optional[UUID] = None
     settlement_account_id: Optional[UUID] = None
@@ -2635,6 +2681,11 @@ class ShopSupplyCustomerLedgerRow(BaseModel):
     # (outstanding contribution) — these are purely the tax breakout.
     gst_rate: Optional[Decimal] = None
     gst_amount: Optional[Decimal] = None
+    discount_amount: Optional[Decimal] = None
+    # § Multi-line Categorized Expense — a sale row's per-line breakdown
+    # (same source of truth ShopBusinessLedgerRow uses); empty for a payment
+    # row and for a legacy single-amount sale.
+    home_expense_lines: list[ShopSaleHomeExpenseLineOut] = []
 
 
 class ShopSupplyCustomerLedgerOut(BaseModel):
@@ -2786,6 +2837,7 @@ class ShopBusinessLedgerRow(BaseModel):
     # much of it was tax. Mirrors ShopTransactionRow.gst_rate/gst_amount.
     gst_rate: Optional[Decimal] = None
     gst_amount: Optional[Decimal] = None
+    discount_amount: Optional[Decimal] = None
     # § Multi-line Categorized Home Expense — populated only for kind in
     # ("cash_sale", "credit_sale") when that ShopSale used the multi-line
     # path; empty otherwise (settlement_home_expense_* above still carries
@@ -2868,6 +2920,7 @@ class ShopTransactionRow(BaseModel):
     # gst_amount (§ Shop Statement PDF GST columns).
     gst_rate: Optional[Decimal] = None
     gst_amount: Optional[Decimal] = None
+    discount_amount: Optional[Decimal] = None
     # Inline Settlement (§2) — populated only for kind=="shop_sale".
     amount_received: Optional[Decimal] = None
     amount_outstanding: Optional[Decimal] = None

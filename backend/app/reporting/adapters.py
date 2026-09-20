@@ -170,28 +170,41 @@ def _fetch_sales(db: Session, start: datetime, end: datetime) -> list[Reportable
             value_note = f" to {customer.name}" if customer else ""
             if batch:
                 batch_total_amount = batch_line_totals.get(s.unified_sale_id)
-                if batch.gst_enabled and batch_total_amount:
-                    allocated_gst = (s.total_amount / batch_total_amount) * batch.gst_amount
-                    line_amount = (s.total_amount + allocated_gst).quantize(Decimal("0.01"))
+                if (batch.gst_enabled or batch.discount_enabled) and batch_total_amount:
+                    # Discount (applied first) and GST (computed on the
+                    # discounted base) are both batch-level too — this line
+                    # takes its proportional share of each, so every line
+                    # plus the delivery row still sums to batch.grand_total.
+                    share = s.total_amount / batch_total_amount
+                    line_amount = (
+                        s.total_amount - share * (batch.discount_amount or 0) + share * batch.gst_amount
+                    ).quantize(Decimal("0.01"))
                 # grand_total (incl. GST when present) — matches the
                 # customer ledger's GST-inclusive treatment (§ GST on Sale).
                 outstanding = batch.grand_total - batch.total_credit_received
                 if outstanding != 0:
                     value_note += f" — Rs {outstanding:,.2f} outstanding"
+                if batch.discount_enabled:
+                    value_note += f" (Discount {batch.discount_rate}%: Rs -{batch.discount_amount})"
                 if batch.gst_enabled:
                     value_note += f" (GST {batch.gst_rate}%: Rs {batch.gst_amount})"
         elif s.emergency_transfer_shop_id:
             label = "Emergency Transfer"
             shop = customers.get(s.emergency_transfer_shop_id)
             value_note = f" (from {shop.name if shop else 'shop'})"
+            if s.discount_enabled:
+                value_note += f" (Discount {s.discount_rate}%: Rs -{s.discount_amount})"
             if s.gst_enabled:
                 value_note += f" (GST {s.gst_rate}%: Rs {s.gst_amount})"
-        elif s.gst_enabled:
+        elif s.gst_enabled or s.discount_enabled:
             # Standalone (non-Unified-Sale) GST sale (§ GST on Sale) — the
             # day-book's amount is already grand_total-inclusive below;
             # this just surfaces how much of it was tax without opening
             # the invoice.
-            value_note += f" (GST {s.gst_rate}%: Rs {s.gst_amount})"
+            if s.discount_enabled:
+                value_note += f" (Discount {s.discount_rate}%: Rs -{s.discount_amount})"
+            if s.gst_enabled:
+                value_note += f" (GST {s.gst_rate}%: Rs {s.gst_amount})"
         out.append(ReportableTransaction(
             id=s.id, type="sale", date=s.date, display_id=s.display_id,
             # § Daily Report clean columns — label + narrative note only;
@@ -205,7 +218,7 @@ def _fetch_sales(db: Session, start: datetime, end: datetime) -> list[Reportable
             # computed separately, straight off Sale.total_amount, and are
             # unaffected by this.
             amount=line_amount,
-            customer=customer.name if customer else None, plant=plant.name if plant else None,
+            customer=customer.name if customer else s.customer_label, plant=plant.name if plant else s.company_label,
             reference=s.gate_pass_no or s.vehicle_no, entered_by=s.entered_by, status=s.status,
             cylinder_weight=s.weight_per_cylinder, quantity=s.quantity, unit="cylinder",
         ))
@@ -261,7 +274,7 @@ def _fetch_delivery_charges(db: Session, start: datetime, end: datetime) -> list
             # anything extra to a reader who can already see the ID column.
             description=f"Delivery Charges to {customer.name}" if customer else "Delivery Charges",
             amount=b.delivery_charges,
-            customer=customer.name if customer else None, plant=None,
+            customer=customer.name if customer else b.customer_label, plant=None,
             reference=b.vehicle_no or b.gate_pass_no, entered_by=b.entered_by, status=b.status,
         ))
     return out
@@ -288,7 +301,7 @@ def _fetch_purchases(db: Session, start: datetime, end: datetime) -> list[Report
             # to add here.
             description="Purchase",
             amount=p.total_amount,
-            plant=plant.name if plant else None, reference=p.gate_pass_no or p.vehicle_no,
+            plant=plant.name if plant else p.company_label, reference=p.gate_pass_no or p.vehicle_no,
             entered_by=p.entered_by, status=p.status,
             cylinder_weight=p.weight_per_cylinder, quantity=p.quantity, unit="cylinder",
         ))
@@ -328,7 +341,7 @@ def _fetch_customer_payments(db: Session, start: datetime, end: datetime) -> lis
             # leaked through here too (e.g. "unified_sale_credit").
             description=f"Payment · {_method_label(p.method)}",
             amount=p.amount,
-            customer=customer.name if customer else None, reference=p.reference_no,
+            customer=customer.name if customer else p.customer_label, reference=p.reference_no,
             entered_by=p.entered_by, status=p.status,
         ))
     return out
@@ -360,7 +373,7 @@ def _fetch_plant_payments(db: Session, start: datetime, end: datetime) -> list[R
             # leaked through here too ("direct_settlement", "owner_capital").
             description=f"Plant Payment · {_method_label(p.method)}",
             amount=p.amount,
-            plant=plant.name if plant else None, reference=p.reference_no,
+            plant=plant.name if plant else p.company_label, reference=p.reference_no,
             entered_by=p.entered_by, status=p.status,
         ))
     return out
@@ -582,8 +595,8 @@ def _fetch_shop_customer_payments(db: Session, start: datetime, end: datetime) -
             # _method_label — same raw-method leak as the plant-side
             # payment sections (audit found this one too: a shop customer
             # can pay by bank transfer, which showed as raw "bank_transfer").
-            description=f"Payment from {sc.name if sc else 'Unknown'} · {_method_label(p.method)}" + (f" ({shop.name})" if shop else ""),
-            amount=p.amount, customer=sc.name if sc else None, entered_by=p.entered_by, status=p.status,
+            description=f"Payment from {sc.name if sc else (p.supply_customer_label or 'Unknown')} · {_method_label(p.method)}" + (f" ({shop.name})" if shop else ""),
+            amount=p.amount, customer=sc.name if sc else p.supply_customer_label, entered_by=p.entered_by, status=p.status,
         ))
     return out
 

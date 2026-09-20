@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.utils import require_live_customer, require_live_company
 from app.deps import require_active_user, require_csrf
 from app.utils import (
     next_display_id, resolve_settlement_destination, apply_settlement_routing, reverse_payment_receipt,
@@ -114,7 +115,7 @@ def create_cylinder_return(
         if bypass_sum > payload.amount + EPSILON:
             raise HTTPException(
                 400,
-                f"Home expense ({payload.home_expense_amount}) + owner drawings ({payload.owner_drawings_amount}) "
+                f"Expense ({payload.home_expense_amount}) + owner drawings ({payload.owner_drawings_amount}) "
                 f"= {bypass_sum} exceeds the cylinder cash amount ({payload.amount}).",
             )
         if payload.home_expense_amount > 0 and not payload.home_expense_category_id:
@@ -225,7 +226,7 @@ def cancel_cylinder_return(cylinder_return_id: UUID, by: str = Query(...), db: S
     if cyl_return.status != "active":
         raise HTTPException(400, "Already cancelled")
 
-    customer = db.query(models.Customer).get(cyl_return.customer_id)
+    customer = require_live_customer(db, cyl_return.customer_id)
 
     try:
         if cyl_return.mode == "transfer":

@@ -1,13 +1,15 @@
+import json as _json
 from datetime import datetime, date
 from decimal import Decimal
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from app.database import get_db
 from app import models, schemas
-from app.deps import require_active_user, require_csrf
-from app.utils import next_display_id, log_audit
+from app.deps import require_active_user, require_csrf, require_owner
+from app.utils import next_display_id, log_audit, pending_block
 
 router = APIRouter(prefix="/customers", tags=["customers"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
@@ -42,17 +44,15 @@ def list_customers(
 @router.post("/", response_model=schemas.CustomerOut)
 def create_customer(payload: schemas.CustomerCreate, db: Session = Depends(get_db)):
     try:
-        # Display ID generation with fallback
-        try:
-            disp_id = next_display_id(db, models.Customer)
-        except Exception:
-            count = db.query(models.Customer).count() + 1
-            disp_id = f"CUST-{count:03d}"
-
-        # Safety check: display_id null na ho
-        if not disp_id:
-            count = db.query(models.Customer).count() + 1
-            disp_id = f"CUST-{count:03d}"
+        # Highest existing CUST-NNN + 1 — never a row count. This used to call
+        # next_display_id without its required `prefix`, which raised a
+        # TypeError that a bare `except Exception` swallowed, so every ID
+        # silently came from COUNT(*) + 1 instead: fine only until a
+        # customer was deleted, after which COUNT(*) + 1 re-issued an ID that
+        # still existed (UniqueViolation on customers_display_id_key). No
+        # fallback on purpose — a real failure here should surface, not turn
+        # into a colliding ID.
+        disp_id = next_display_id(db, models.Customer, "CUST", width=3)
 
         opening_bal = float(payload.opening_balance or 0)
 
@@ -263,7 +263,7 @@ def add_cylinder_transaction(
     if payload.qty_out == 0 and payload.qty_in == 0:
         raise HTTPException(400, "Enter a quantity out or in")
 
-    disp_id = f"CYL-{db.query(models.CylinderTransaction).count() + 1:06d}"
+    disp_id = next_display_id(db, models.CylinderTransaction, "CYL", width=6)
 
     txn = models.CylinderTransaction(
         display_id=disp_id,
@@ -390,3 +390,83 @@ def get_customer_combined_ledger(customer_id: UUID, db: Session = Depends(get_db
         "current_cyl_454": customer.cylinder_balance_454,
         "ledger": formatted_ledger
     }
+
+
+@router.delete("/{customer_id}")
+def delete_customer(
+    customer_id: UUID, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_owner),
+):
+    """Delete Customer — the Customer row is HARD-deleted and its own
+    standing (outstanding balance, advance credit, cylinder counts) is
+    written off; every past transaction stays exactly as it was. Real,
+    already-completed money movement is never reversed: a payment that was
+    routed to a plant keeps that plant's balance exactly as it is, and any
+    Expense/OwnerDrawings created from this customer's settlements stays
+    untouched. Only history that would otherwise dangle gets a permanent
+    display snapshot (customer_label) — the customer_id UUID itself is
+    kept on every row (its FK constraint is dropped, see migrations).
+    Deliberately different from Delete Shop, which hard-deletes the shop's
+    own rows. No password gate; owner-only. Blocked for a Shop (use Delete
+    Shop) and while anything of theirs is still pending."""
+    customer = db.query(models.Customer).get(customer_id)
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    if customer.customer_type == "shop":
+        raise HTTPException(400, "This customer is a Shop — use Delete Shop on the Shops page instead")
+
+    pending_batches = (
+        db.query(models.UnifiedSaleBatch)
+        .filter(
+            models.UnifiedSaleBatch.customer_id == customer_id,
+            or_(models.UnifiedSaleBatch.sale_status == "pending", models.UnifiedSaleBatch.payment_status == "pending"),
+        ).all()
+    )
+    pending_sales = (
+        db.query(models.Sale).filter(models.Sale.customer_id == customer_id, models.Sale.status == "pending").all()
+    )
+    pending_block([
+        ("Unified Sale", [b.display_id for b in pending_batches]),
+        ("Sale", [x.display_id for x in pending_sales]),
+    ])
+
+    label = f"{customer.name} ({customer.display_id})"
+    balances = db.query(models.CustomerCylinderBalance).filter(models.CustomerCylinderBalance.customer_id == customer_id).all()
+    written_off = {
+        "current_balance": str(customer.current_balance),
+        "account_credit": str(customer.account_credit or 0),
+        "cylinder_balance_118": str(customer.cylinder_balance_118 or 0),
+        "cylinder_balance_454": str(customer.cylinder_balance_454 or 0),
+        "empty_cylinders_118": str(customer.empty_cylinders_118 or 0),
+        "empty_cylinders_454": str(customer.empty_cylinders_454 or 0),
+        "per_product_cylinder_balances": [str(b.balance) for b in balances],
+    }
+
+    try:
+        for model in (
+            models.Sale, models.Payment, models.UnifiedSaleBatch, models.CylinderTransaction,
+            models.CylinderReturn, models.EmptyCylinderSale,
+        ):
+            db.query(model).filter(model.customer_id == customer_id).update(
+                {model.customer_label: label}, synchronize_session=False,
+            )
+        db.query(models.CylinderReturn).filter(models.CylinderReturn.to_customer_id == customer_id).update(
+            {models.CylinderReturn.to_customer_label: label}, synchronize_session=False,
+        )
+        # The customer's live per-product cylinder count — their own current
+        # standing, not history — is discarded with them (written off).
+        db.query(models.CustomerCylinderBalance).filter(
+            models.CustomerCylinderBalance.customer_id == customer_id
+        ).delete(synchronize_session=False)
+
+        log_audit(
+            db, "customer", customer.id, "delete", current_user.name,
+            field="written_off", old=_json.dumps(written_off), new="0",
+            reason=f"Deleted customer {label}; outstanding balance and cylinder counts written off",
+        )
+        db.delete(customer)
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(400, f"Cannot delete — this customer is still referenced by records this delete does not cover: {e.orig}")
+    return {"deleted": True, "name": label, "written_off": written_off}

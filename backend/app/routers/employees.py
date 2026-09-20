@@ -1,13 +1,15 @@
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
+import json as _json
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
-from app.deps import require_active_user, require_csrf
-from app.utils import next_display_id
+from app.deps import require_active_user, require_csrf, require_owner
+from app.utils import next_display_id, log_audit, pending_block
 from app.timezone import karachi_month_str
 
 router = APIRouter(prefix="/employees", tags=["employees"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
@@ -257,3 +259,50 @@ def get_employee_ledger(
         total_accrued=total_accrued, total_paid=total_paid,
         closing_balance=running, rows=rows,
     )
+
+
+@router.delete("/{employee_id}")
+def delete_employee(
+    employee_id: UUID, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_owner),
+):
+    """Delete Employee — the Employee row is HARD-deleted and any salary
+    still owed is written off. Past EmployeeSalaryAccrual rows and Salary-
+    category Expense rows stay exactly as they were, still carrying the
+    now-dangling employee_id (FK constraints dropped, see migrations) —
+    nothing reads them back by joining to the live Employee row, so no
+    label snapshot is kept. Blocked while a still-pending Expense or
+    Unified Sale expense line names this employee (approving it would try
+    to post against a row that no longer exists). Owner-only."""
+    employee = db.query(models.Employee).get(employee_id)
+    if not employee:
+        raise HTTPException(404, "Employee not found")
+
+    pending_expenses = (
+        db.query(models.Expense)
+        .filter(models.Expense.employee_id == employee_id, models.Expense.status == "pending").all()
+    )
+    pending_batches = (
+        db.query(models.UnifiedSaleBatch)
+        .join(models.UnifiedSaleHomeExpenseLine, models.UnifiedSaleHomeExpenseLine.unified_sale_id == models.UnifiedSaleBatch.id)
+        .filter(models.UnifiedSaleHomeExpenseLine.employee_id == employee_id, models.UnifiedSaleBatch.payment_status == "pending")
+        .all()
+    )
+    pending_block([
+        ("Expense", [x.display_id for x in pending_expenses]),
+        ("Unified Sale", sorted({b.display_id for b in pending_batches})),
+    ])
+
+    written_off = {"current_balance": str(employee.current_balance), "monthly_salary": str(employee.monthly_salary)}
+    try:
+        log_audit(
+            db, "employee", employee.id, "delete", current_user.name,
+            field="written_off", old=_json.dumps(written_off), new="0",
+            reason=f"Deleted employee {employee.name}; outstanding salary due written off",
+        )
+        db.delete(employee)
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(400, f"Cannot delete — this employee is still referenced by records this delete does not cover: {e.orig}")
+    return {"deleted": True, "name": employee.name, "written_off": written_off}

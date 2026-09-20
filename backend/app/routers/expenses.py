@@ -10,6 +10,13 @@ from app.utils import next_display_id, apply_salary_expense_if_needed
 router = APIRouter(prefix="/expenses", tags=["expenses"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
 
+def _deleted_customer_label(expense, payments, batches):
+    """A customer-funded expense whose customer was later deleted — the
+    Payment/UnifiedSaleBatch it came from carries the permanent snapshot."""
+    src = payments.get(expense.source_payment_id) or batches.get(expense.unified_sale_id)
+    return getattr(src, "customer_label", None) if src else None
+
+
 @router.get("", response_model=list[schemas.ExpenseOut])
 def list_expenses(
     category_id: UUID | None = Query(None),
@@ -147,7 +154,7 @@ def list_expenses(
             source_shop_cash_transfer_id=r.source_shop_cash_transfer_id,
             source_shop_customer_payment_id=r.source_shop_customer_payment_id,
             customer_id=(customer.id if customer else shop_supply_customer_id),
-            customer_name=(customer.name if customer else None) or shop_customer_name,
+            customer_name=(customer.name if customer else None) or shop_customer_name or _deleted_customer_label(r, payments, batches),
             shop_supply_customer_id=shop_supply_customer_id,
             shop_sale_display_id=shop_sale_display_id,
             shop_id=r.shop_id or (source_shop_sale.customer_id if source_shop_sale else None),

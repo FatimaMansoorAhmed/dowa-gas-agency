@@ -1,6 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Search, ChevronRight, X, AlertTriangle, Plus } from "lucide-react";
+import { Search, ChevronRight, X, AlertTriangle, Plus, Trash2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { customerDeleteMessage } from "@/lib/deleteConfirm";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, Field, inputClass, Button, Th, Td, BalanceTag } from "@/components/ui";
 import AmountInput from "@/components/AmountInput";
@@ -11,6 +13,7 @@ import type { Customer, PaymentAccount } from "@/lib/types";
 
 function CustomerBody() {
   const { user } = useAuth();
+  const { t } = useTranslation();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [accounts, setAccounts] = useState<PaymentAccount[]>([]);
   const [search, setSearch] = useState("");
@@ -63,6 +66,19 @@ function CustomerBody() {
     });
     setIsAddModalOpen(false);
     load(search || undefined);
+  };
+
+  // Delete Customer — owner-only on the server; the confirm text states the
+  // exact balance/cylinders being written off. Shops are managed (and
+  // deleted) from the Shops page, so no Delete button is offered for them.
+  const handleDelete = async (c: Customer) => {
+    if (!window.confirm(customerDeleteMessage(t, c))) return;
+    try {
+      await api.customers.remove(c.id);
+      load(search || undefined);
+    } catch (e) {
+      alert(apiErrorMessage(e, t("deleteEntity.failed")));
+    }
   };
 
   const submitPayment = async () => {
@@ -136,6 +152,15 @@ function CustomerBody() {
                     >
                       Record payment <ChevronRight size={12} />
                     </button>
+                    {c.customer_type !== "shop" && (
+                      <button
+                        onClick={() => handleDelete(c)}
+                        title={t("deleteEntity.delete")}
+                        className="bg-transparent border-none cursor-pointer text-steel hover:text-brand-red inline-flex items-center"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    )}
                   </div>
                 </Td>
               </tr>

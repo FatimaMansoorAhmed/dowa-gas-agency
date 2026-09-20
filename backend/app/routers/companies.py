@@ -1,13 +1,16 @@
 from datetime import datetime
 from uuid import UUID
+import json as _json
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
-from app.deps import require_active_user, require_csrf
+from app.deps import require_active_user, require_csrf, require_owner
 from app.timezone import karachi_month_str
-from app.utils import log_audit
+from app.utils import log_audit, pending_block
 
 router = APIRouter(prefix="/companies", tags=["companies"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
@@ -129,3 +132,64 @@ def correct_company_opening_balance(
     db.commit()
     db.refresh(company)
     return company
+
+
+@router.delete("/{company_id}")
+def delete_company(
+    company_id: UUID, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_owner),
+):
+    """Delete Company/Plant — the Company row is HARD-deleted and its
+    outstanding payable is written off. Its Parties and their RateEntry
+    history are deleted along with it (unlike transactions, which all stay).
+    Every past Purchase/CompanyPayment/Sale/Unified Sale keeps pointing at
+    the now-dangling UUID (FK constraints dropped, see migrations) and gets
+    a permanent company_label snapshot for display; nothing already settled
+    is reversed. Blocked while anything is still pending against this
+    plant. Owner-only, no password gate."""
+    company = db.query(models.Company).get(company_id)
+    if not company:
+        raise HTTPException(404, "Company not found")
+
+    B = models.UnifiedSaleBatch
+    pending_batches = (
+        db.query(B)
+        .filter(
+            or_(B.company_id == company_id, B.target_plant_id == company_id),
+            or_(B.sale_status == "pending", B.payment_status == "pending"),
+        ).all()
+    )
+    pending_purchases = db.query(models.Purchase).filter(models.Purchase.company_id == company_id, models.Purchase.status == "pending").all()
+    pending_cpay = db.query(models.CompanyPayment).filter(models.CompanyPayment.company_id == company_id, models.CompanyPayment.status == "pending").all()
+    pending_sales = db.query(models.Sale).filter(models.Sale.company_id == company_id, models.Sale.status == "pending").all()
+    pending_block([
+        ("Unified Sale", [b.display_id for b in pending_batches]),
+        ("Purchase", [x.display_id for x in pending_purchases]),
+        ("Company Payment", [x.display_id for x in pending_cpay]),
+        ("Sale", [x.display_id for x in pending_sales]),
+    ])
+
+    label = company.name
+    written_off = {
+        "current_balance": str(company.current_balance),
+        "account_credit": str(company.account_credit or 0),
+    }
+    party_ids = [p.id for p in db.query(models.Party).filter(models.Party.company_id == company_id).all()]
+    try:
+        for model in (models.Sale, models.Purchase, models.CompanyPayment, models.UnifiedSaleBatch):
+            db.query(model).filter(model.company_id == company_id).update(
+                {model.company_label: label}, synchronize_session=False,
+            )
+        db.query(models.RateEntry).filter(models.RateEntry.company_id == company_id).delete(synchronize_session=False)
+        db.query(models.Party).filter(models.Party.company_id == company_id).delete(synchronize_session=False)
+        log_audit(
+            db, "company", company.id, "delete", current_user.name,
+            field="written_off", old=_json.dumps({**written_off, "parties_deleted": len(party_ids)}), new="0",
+            reason=f"Deleted plant {label}; outstanding payable written off, parties and rate history deleted",
+        )
+        db.delete(company)
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(400, f"Cannot delete — this plant is still referenced by records this delete does not cover: {e.orig}")
+    return {"deleted": True, "name": label, "written_off": written_off}

@@ -52,6 +52,8 @@ function NewSaleBody() {
   // applied to both cylinder-size lines of this same entry.
   const [gstEnabled, setGstEnabled] = useState(false);
   const [gstRate, setGstRate] = useState("");
+  const [discountEnabled, setDiscountEnabled] = useState(false);
+  const [discountRate, setDiscountRate] = useState("");
 
   // Payment
   const [recordPayment, setRecordPayment] = useState(false);
@@ -186,9 +188,14 @@ function NewSaleBody() {
   const total454 = (parseFloat(qty454) || 0) * (parseFloat(rate454) || 0);
   const grandTotal = total118 + total454;
 
+  // Discount (optional) applies FIRST; GST then runs on the discounted base.
+  // grandTotal (raw, pre-discount) is what the backend keeps as total_amount.
+  const effectiveDiscountRate = discountEnabled ? parseFloat(discountRate) || 0 : 0;
+  const discountAmount = grandTotal * (effectiveDiscountRate / 100);
+  const discountedBase = grandTotal - discountAmount;
   const effectiveGstRate = gstEnabled ? parseFloat(gstRate) || 0 : 0;
-  const gstAmount = grandTotal * (effectiveGstRate / 100);
-  const grandTotalWithGst = grandTotal + gstAmount;
+  const gstAmount = discountedBase * (effectiveGstRate / 100);
+  const grandTotalWithGst = discountedBase + gstAmount;
 
   const projectedBalance = selectedCustomer
     ? parseFloat(selectedCustomer.current_balance || "0") + grandTotalWithGst - (recordPayment ? parseFloat(payAmount) || 0 : 0)
@@ -247,6 +254,10 @@ function NewSaleBody() {
       return;
     }
 
+    if (discountEnabled && (!discountRate || parseFloat(discountRate) <= 0 || parseFloat(discountRate) > 100)) {
+      setToast({ type: "error", msg: "Enter a discount rate between 0 and 100, or turn Discount off." });
+      return;
+    }
     if (gstEnabled && (!gstRate || parseFloat(gstRate) <= 0)) {
       setToast({ type: "error", msg: "Enter a GST rate, or turn GST off." });
       return;
@@ -282,6 +293,8 @@ function NewSaleBody() {
           entered_by: user?.name || "fatima",
           status: "active",
           cylinders_returned: Math.min(parseFloat(returned118) || 0, q118),
+          discount_enabled: discountEnabled,
+          discount_rate: discountEnabled ? parseFloat(discountRate) : undefined,
           gst_enabled: gstEnabled,
           gst_rate: gstEnabled ? parseFloat(gstRate) : undefined,
         };
@@ -312,6 +325,8 @@ function NewSaleBody() {
           entered_by: user?.name || "fatima",
           status: "active",
           cylinders_returned: Math.min(parseFloat(returned454) || 0, q454),
+          discount_enabled: discountEnabled,
+          discount_rate: discountEnabled ? parseFloat(discountRate) : undefined,
           gst_enabled: gstEnabled,
           gst_rate: gstEnabled ? parseFloat(gstRate) : undefined,
         };
@@ -344,6 +359,8 @@ function NewSaleBody() {
         setGatePass("");
         setGstEnabled(false);
         setGstRate("");
+        setDiscountEnabled(false);
+        setDiscountRate("");
         setRecordPayment(false);
         setPayAmount("");
         await load();
@@ -569,6 +586,33 @@ function NewSaleBody() {
             <div className="flex items-center gap-3 px-3 py-2 bg-paper rounded-lg border border-hairline">
               <button
                 type="button"
+                onClick={() => setDiscountEnabled((v) => !v)}
+                className={`font-body text-[12px] font-semibold px-2.5 py-1 rounded border cursor-pointer ${
+                  discountEnabled ? "bg-teal text-white border-teal" : "bg-white text-steel border-hairline"
+                }`}
+              >
+                {discountEnabled ? "Discount: ON" : "+ Apply Discount"}
+              </button>
+              {discountEnabled && (
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    value={discountRate}
+                    onChange={(e) => setDiscountRate(e.target.value)}
+                    placeholder="Rate %"
+                    className={`${inputClass} w-24`}
+                  />
+                  <span className="font-body text-[12px] text-steel">%</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3 px-3 py-2 bg-paper rounded-lg border border-hairline">
+              <button
+                type="button"
                 onClick={() => setGstEnabled((v) => !v)}
                 className={`font-body text-[12px] font-semibold px-2.5 py-1 rounded border cursor-pointer ${
                   gstEnabled ? "bg-teal text-white border-teal" : "bg-white text-steel border-hairline"
@@ -592,16 +636,34 @@ function NewSaleBody() {
               )}
             </div>
 
-            {gstEnabled && parseFloat(gstRate) > 0 ? (
+            {(gstEnabled && parseFloat(gstRate) > 0) || (discountEnabled && parseFloat(discountRate) > 0) ? (
               <div className="flex flex-col gap-1 px-3 py-2.5 bg-ink rounded-lg">
                 <div className="flex justify-between items-center">
-                  <span className="font-mono text-[10.5px] text-[#9FD8D8] tracking-wide">VALUE EXCL. TAX</span>
+                  <span className="font-mono text-[10.5px] text-[#9FD8D8] tracking-wide">
+                    {discountEnabled && parseFloat(discountRate) > 0 ? "SUBTOTAL" : "VALUE EXCL. TAX"}
+                  </span>
                   <span className="font-display font-semibold text-sm text-white">{pkr(grandTotal)}</span>
                 </div>
-                <div className="flex justify-between items-center">
-                  <span className="font-mono text-[10.5px] text-[#9FD8D8] tracking-wide">GST @ {gstRate}%</span>
-                  <span className="font-display font-semibold text-sm text-white">{pkr(gstAmount)}</span>
-                </div>
+                {discountEnabled && parseFloat(discountRate) > 0 && (
+                  <>
+                    <div className="flex justify-between items-center">
+                      <span className="font-mono text-[10.5px] text-[#9FD8D8] tracking-wide">DISCOUNT @ {discountRate}% (−)</span>
+                      <span className="font-display font-semibold text-sm text-white">−{pkr(discountAmount)}</span>
+                    </div>
+                    {gstEnabled && parseFloat(gstRate) > 0 && (
+                      <div className="flex justify-between items-center">
+                        <span className="font-mono text-[10.5px] text-[#9FD8D8] tracking-wide">DISCOUNTED SUBTOTAL</span>
+                        <span className="font-display font-semibold text-sm text-white">{pkr(discountedBase)}</span>
+                      </div>
+                    )}
+                  </>
+                )}
+                {gstEnabled && parseFloat(gstRate) > 0 && (
+                  <div className="flex justify-between items-center">
+                    <span className="font-mono text-[10.5px] text-[#9FD8D8] tracking-wide">GST @ {gstRate}% (+)</span>
+                    <span className="font-display font-semibold text-sm text-white">{pkr(gstAmount)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between items-center border-t border-white/20 pt-1 mt-0.5">
                   <span className="font-mono text-[11px] text-[#9FD8D8] tracking-wide">GRAND TOTAL</span>
                   <span className="font-display font-bold text-lg text-white">{pkr(grandTotalWithGst)}</span>

@@ -1,12 +1,13 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Search, PlusCircle, Pencil, Check, X, CheckCircle2, AlertTriangle, XCircle } from "lucide-react";
+import { Search, PlusCircle, Pencil, Check, X, CheckCircle2, AlertTriangle, XCircle, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, Th, Td, inputClass, BalanceTag, Button, Field } from "@/components/ui";
 import { api, apiErrorMessage } from "@/lib/api";
 import { pkr, fmtTime, todayLocalInput } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
+import { employeeDeleteMessage } from "@/lib/deleteConfirm";
 import type { Employee, EmployeeLedgerSummary } from "@/lib/types";
 
 function currentMonth() {
@@ -182,6 +183,21 @@ function EmployeesBody() {
     }
   };
 
+  // Delete Employee — owner-only on the server; the confirm text states
+  // the exact salary standing being written off.
+  const handleDeleteEmployee = async () => {
+    const emp = employees.find((e) => e.id === employeeId);
+    if (!emp) return;
+    if (!window.confirm(employeeDeleteMessage(t, emp))) return;
+    try {
+      await api.employees.remove(emp.id);
+      setEmployeeId("");
+      loadEmployees();
+    } catch (e) {
+      alert(apiErrorMessage(e, t("deleteEntity.failed")));
+    }
+  };
+
   return (
     <div>
       <PageHeader
@@ -324,6 +340,9 @@ function EmployeesBody() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <Button variant="outline" onClick={openEditSalary}>
                       <Pencil size={14} /> {t("employees.editSalary")}
+                    </Button>
+                    <Button variant="outline" onClick={handleDeleteEmployee}>
+                      <Trash2 size={14} /> {t("deleteEntity.delete")}
                     </Button>
                     <div className="flex gap-1.5 ml-1">
                       <select

@@ -11,7 +11,7 @@ from app.deps import require_active_user, require_csrf
 from app.reporting.invoice_pdf import render_sale_invoice_pdf
 from app.routers.purchases import _correct_purchase_internal, _reverse_purchase
 from app.timezone import KARACHI_TZ
-from app.utils import next_display_id, adjust_cylinder_balance, resync_unified_sale_batch_totals
+from app.utils import next_display_id, adjust_cylinder_balance, resync_unified_sale_batch_totals, compute_sale_totals, require_live_customer
 
 router = APIRouter(prefix="/sales", tags=["sales"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
@@ -131,9 +131,13 @@ def _apply_sale(db: Session, payload: schemas.SaleCreate, entered_by: str) -> mo
     # changes). grand_total is what actually posts to the customer's
     # balance/ledger below — total_amount itself is never touched, so
     # Dashboard/P&L/Tonnage (all keyed off total_amount) stay unaffected.
-    gst_enabled = bool(payload.gst_enabled and payload.gst_rate)
-    gst_amount = (total_amount * payload.gst_rate / Decimal("100")) if gst_enabled else Decimal("0")
-    grand_total = total_amount + gst_amount
+    # Discount (§ Discount, optional) applies FIRST — GST is then computed
+    # on the discounted base (utils.compute_sale_totals). total_amount is
+    # never reduced; only grand_total reflects the discount.
+    totals = compute_sale_totals(
+        total_amount, payload.discount_enabled, payload.discount_rate, payload.gst_enabled, payload.gst_rate,
+    )
+    gst_enabled, gst_amount, grand_total = totals["gst_enabled"], totals["gst_amount"], totals["grand_total"]
 
     sale = models.Sale(
         display_id=next_display_id(db, models.Sale, "SALE", width=6),
@@ -147,8 +151,11 @@ def _apply_sale(db: Session, payload: schemas.SaleCreate, entered_by: str) -> mo
         rate_per_kg=rate_per_kg,
         rate_per_cylinder=payload.rate_per_cylinder,
         total_amount=total_amount,
+        discount_enabled=totals["discount_enabled"],
+        discount_rate=totals["discount_rate"],
+        discount_amount=totals["discount_amount"],
         gst_enabled=gst_enabled,
-        gst_rate=payload.gst_rate if gst_enabled else None,
+        gst_rate=totals["gst_rate"],
         gst_amount=gst_amount,
         grand_total=grand_total,
         gate_pass_no=payload.gate_pass_no,
@@ -217,12 +224,55 @@ def _apply_sale(db: Session, payload: schemas.SaleCreate, entered_by: str) -> mo
     return sale
 
 
+def _posted_unified_batch_grand_total(db: Session, unified_sale_id):
+    """The grand_total (GST/Discount inclusive) the customer was actually
+    charged for a Unified Sale batch — approve_unified_sale_sale posts
+    batch.grand_total, never the child lines' own raw totals. None when this
+    isn't a Unified-Sale-linked Sale, or its sale side was never approved
+    (nothing was posted to the customer, so nothing to keep in sync)."""
+    if not unified_sale_id:
+        return None
+    batch = db.query(models.UnifiedSaleBatch).get(unified_sale_id)
+    if not batch or batch.sale_status != "approved":
+        return None
+    return batch.grand_total
+
+
+def _sync_customer_to_unified_batch(db: Session, customer, balance_before, batch_grand_before, unified_sale_id) -> None:
+    """A Unified Sale child line's own row carries only its RAW amount
+    (total_amount == grand_total; Discount and GST live on the BATCH), so
+    _reverse_sale/_apply_sale — which move the customer by that raw figure —
+    leave the customer out of step with the batch as soon as a line is
+    cancelled or corrected: the customer was charged the batch's grand_total
+    (raw - discount + GST), and after resync_unified_sale_batch_totals
+    recomputes that on the smaller/changed base, the difference between
+    what was posted and what the batch now says is stuck on their balance
+    (Rs 1,800 with GST alone, Rs 620 with 10% Discount + 18% GST on a
+    Rs 10,000 line). Called AFTER the resync: nudges the customer by exactly
+    the missing amount so the balance moves by (new batch grand_total - old
+    batch grand_total) — i.e. the removed/changed line's true share of
+    discount + GST is reversed along with its raw amount. Delivery charges
+    stay on the batch (they aren't a line), so their discount/GST share
+    correctly stays charged too."""
+    if batch_grand_before is None:
+        return
+    batch = db.query(models.UnifiedSaleBatch).get(unified_sale_id)
+    if not batch:
+        return
+    expected_change = batch.grand_total - batch_grand_before
+    actual_change = customer.current_balance - balance_before
+    drift = expected_change - actual_change
+    if drift != 0:
+        customer.current_balance = customer.current_balance + drift
+        db.add(customer)
+
+
 def _reverse_sale(db: Session, sale: models.Sale, by: str) -> None:
     """Undoes exactly what _apply_sale posted — the customer balance and
     the linked CylinderTransaction — without touching sale.status itself
     (the caller decides "cancelled" vs "corrected"). Shared by cancel_sale
     and correct_sale (§1)."""
-    customer = db.query(models.Customer).get(sale.customer_id)
+    customer = require_live_customer(db, sale.customer_id)
     customer.current_balance = customer.current_balance - sale.grand_total
     db.add(customer)
 
@@ -316,6 +366,10 @@ def cancel_sale(sale_id: UUID, by: str = Query(...), db: Session = Depends(get_d
                 f"Company Payment first, then retry this cancellation.",
             )
 
+    batch_grand_before = _posted_unified_batch_grand_total(db, sale.unified_sale_id)
+    sale_customer = require_live_customer(db, sale.customer_id)
+    balance_before = sale_customer.current_balance
+
     _reverse_sale(db, sale, by)
 
     sale.status = "cancelled"
@@ -334,6 +388,7 @@ def cancel_sale(sale_id: UUID, by: str = Query(...), db: Session = Depends(get_d
 
     db.flush()
     resync_unified_sale_batch_totals(db, sale.unified_sale_id)
+    _sync_customer_to_unified_batch(db, sale_customer, balance_before, batch_grand_before, sale.unified_sale_id)
 
     db.commit()
     db.refresh(sale)
@@ -413,6 +468,10 @@ def correct_sale(
                 f"Company Payment first, then retry this correction.",
             )
 
+    batch_grand_before = _posted_unified_batch_grand_total(db, original.unified_sale_id)
+    original_customer = require_live_customer(db, original.customer_id)
+    balance_before = original_customer.current_balance
+
     _reverse_sale(db, original, current_user.name)
 
     original.status = "corrected"
@@ -465,6 +524,10 @@ def correct_sale(
         )
 
     resync_unified_sale_batch_totals(db, corrected.unified_sale_id)
+    # Same customer only — a correction that moved the line to a different
+    # customer isn't a normal Unified Sale line edit; leave that as before.
+    if corrected.customer_id == original.customer_id:
+        _sync_customer_to_unified_batch(db, original_customer, balance_before, batch_grand_before, corrected.unified_sale_id)
 
     _log(db, "sale", original.id, "correct", current_user.name, old=str(original.total_amount), new=str(corrected.total_amount))
 

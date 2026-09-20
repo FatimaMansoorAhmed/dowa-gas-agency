@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, Integer, cast
@@ -13,11 +13,16 @@ def next_display_id(db: Session, model, prefix: str, width: int = 4) -> str:
     replaced). Casting the suffix to Integer before MAX() is required so
     'CPAY-000009' < 'CPAY-000010' compares numerically, not as strings."""
     suffix_len = len(prefix) + 1  # +1 for the hyphen
-    max_suffix = (
-        db.query(func.max(cast(func.substr(model.display_id, suffix_len + 1), Integer)))
-        .filter(model.display_id.like(f"{prefix}-%"))
-        .scalar()
+    query = db.query(func.max(cast(func.substr(model.display_id, suffix_len + 1), Integer))).filter(
+        model.display_id.like(f"{prefix}-%")
     )
+    # Only rows whose suffix is purely numeric take part in the MAX(). Without
+    # this, a single malformed display_id (e.g. "EXP-DELTEST") makes Postgres
+    # fail the whole CAST with InvalidTextRepresentation and blocks creating
+    # EVERY new record of that type until the bad row is removed by hand.
+    if db.get_bind().dialect.name == "postgresql":
+        query = query.filter(model.display_id.op("~")(f"^{prefix}-[0-9]+$"))
+    max_suffix = query.scalar()
     next_number = (max_suffix or 0) + 1
     candidate = f"{prefix}-{str(next_number).zfill(width)}"
 
@@ -142,6 +147,50 @@ def log_audit(db: Session, entity_type: str, entity_id, action: str, by: str, fi
     ))
 
 
+def pending_block(what: list) -> None:
+    """Delete Customer/Company/Employee guard — a write-off only ever applies
+    to fully settled history, so anything still in flight blocks the delete
+    and is named so the user knows exactly what to approve/cancel first.
+    `what` is [(label, [display_id, ...]), ...]."""
+    from fastapi import HTTPException
+
+    parts = [
+        f"{len(ids)} pending {label} ({', '.join(ids[:5])}{'…' if len(ids) > 5 else ''})"
+        for label, ids in what if ids
+    ]
+    if parts:
+        raise HTTPException(
+            400,
+            "Cannot delete — still has unresolved activity: " + "; ".join(parts) + ". Approve or cancel it first, then retry.",
+        )
+
+
+def require_live_customer(db: Session, customer_id):
+    """Delete Customer — a Customer row is hard-deleted while every past
+    transaction keeps pointing at its (now dangling) UUID, so any reversal/
+    correction/approval that needs the live Customer row (its balance) must
+    refuse cleanly instead of crashing with an AttributeError (a 500). The
+    record itself is left exactly as it was — locked, not broken."""
+    from fastapi import HTTPException
+    from app import models  # local import avoids a circular import with models.py
+
+    customer = db.query(models.Customer).get(customer_id) if customer_id else None
+    if not customer:
+        raise HTTPException(400, "Customer was deleted, so this record is locked")
+    return customer
+
+
+def require_live_company(db: Session, company_id):
+    """Company/Plant counterpart of require_live_customer (Delete Company)."""
+    from fastapi import HTTPException
+    from app import models  # local import avoids a circular import with models.py
+
+    company = db.query(models.Company).get(company_id) if company_id else None
+    if not company:
+        raise HTTPException(400, "Plant was deleted, so this record is locked")
+    return company
+
+
 def compute_gst(
     base_amount: Decimal, gst_enabled: bool, gst_rate: Optional[Decimal]
 ) -> tuple[bool, Optional[Decimal], Decimal, Decimal]:
@@ -155,6 +204,56 @@ def compute_gst(
     enabled = bool(gst_enabled and gst_rate)
     amount = (base_amount * gst_rate / Decimal("100")) if enabled else Decimal("0")
     return enabled, (gst_rate if enabled else None), amount, base_amount + amount
+
+
+_CENT = Decimal("0.01")
+
+
+def compute_discount(
+    base_amount: Decimal, discount_enabled: bool, discount_rate: Optional[Decimal]
+) -> tuple[bool, Optional[Decimal], Decimal, Decimal]:
+    """Shared Discount calc (§ Discount on Sale/Unified Sale/Shop Sale) —
+    discount_amount = base_amount * rate/100, rounded to the paisa so the
+    stored figures always add up exactly. Returns (enabled, rate,
+    discount_amount, discounted_base). Same normalization as compute_gst:
+    `enabled` is False when no rate was given, so a stray flag with no rate
+    never silently discounts at 0%.
+
+    Kept as its own helper (rather than a new parameter on compute_gst) so
+    compute_gst's signature and every caller that has no discount stay
+    exactly as they were — see compute_sale_totals for the discount-then-GST
+    chain."""
+    enabled = bool(discount_enabled and discount_rate)
+    if enabled and not (Decimal("0") < discount_rate <= Decimal("100")):
+        from fastapi import HTTPException
+        raise HTTPException(400, "Discount rate must be greater than 0 and at most 100%")
+    amount = (base_amount * discount_rate / Decimal("100")).quantize(_CENT, rounding=ROUND_HALF_UP) if enabled else Decimal("0")
+    return enabled, (discount_rate if enabled else None), amount, base_amount - amount
+
+
+def compute_sale_totals(
+    base_amount: Decimal,
+    discount_enabled: bool, discount_rate: Optional[Decimal],
+    gst_enabled: bool, gst_rate: Optional[Decimal],
+) -> dict:
+    """Discount-then-GST chain used by every sale type that supports both:
+    discounted_base = base - discount_amount; gst_amount = discounted_base *
+    gst_rate/100; grand_total = discounted_base + gst_amount. base_amount
+    (total_amount / total_selling_amount) is never modified — only
+    grand_total reflects the discount, so Dashboard/P&L/Tonnage, which read
+    the raw figure, are unaffected. With no discount this returns exactly
+    what compute_gst alone would (discount_amount 0, GST on the full base)."""
+    d_enabled, d_rate, d_amount, discounted_base = compute_discount(base_amount, discount_enabled, discount_rate)
+    g_enabled, g_rate, g_amount, grand_total = compute_gst(discounted_base, gst_enabled, gst_rate)
+    if g_enabled:
+        g_amount = g_amount.quantize(_CENT, rounding=ROUND_HALF_UP)
+        grand_total = discounted_base + g_amount
+    return {
+        "discount_enabled": d_enabled, "discount_rate": d_rate, "discount_amount": d_amount,
+        "discounted_base": discounted_base,
+        "gst_enabled": g_enabled, "gst_rate": g_rate, "gst_amount": g_amount,
+        "grand_total": grand_total,
+    }
 
 
 def resync_unified_sale_batch_totals(db: Session, unified_sale_id) -> None:
@@ -228,7 +327,14 @@ def resync_unified_sale_batch_totals(db: Session, unified_sale_id) -> None:
     # frozen gst_enabled/gst_rate (never a new rate); keeps grand_total in
     # sync with total_selling_amount exactly the way this function already
     # keeps total_selling_amount itself in sync after a child correction.
-    _, _, batch.gst_amount, batch.grand_total = compute_gst(total_selling_amount, batch.gst_enabled, batch.gst_rate)
+    # Discount (§ Discount) — same frozen-rate re-derivation, applied first;
+    # GST then runs on the discounted base (compute_sale_totals).
+    totals = compute_sale_totals(
+        total_selling_amount, batch.discount_enabled, batch.discount_rate, batch.gst_enabled, batch.gst_rate,
+    )
+    batch.discount_amount = totals["discount_amount"]
+    batch.gst_amount = totals["gst_amount"]
+    batch.grand_total = totals["grand_total"]
     db.add(batch)
 
 
@@ -435,7 +541,7 @@ def reverse_payment_receipt(db: Session, payment) -> None:
     commit, same as before this was extracted."""
     from app import models  # local import avoids a circular import with models.py
 
-    customer = db.query(models.Customer).get(payment.customer_id)
+    customer = require_live_customer(db, payment.customer_id)
     customer.current_balance = customer.current_balance + payment.amount
     if payment.excess_amount:
         customer.account_credit = customer.account_credit - payment.excess_amount
@@ -447,7 +553,7 @@ def reverse_payment_receipt(db: Session, payment) -> None:
         .first()
     )
     if company_payment:
-        company = db.query(models.Company).get(company_payment.company_id)
+        company = require_live_company(db, company_payment.company_id)
         company.current_balance = company.current_balance + company_payment.amount
         if company_payment.excess_amount:
             company.account_credit = company.account_credit - company_payment.excess_amount

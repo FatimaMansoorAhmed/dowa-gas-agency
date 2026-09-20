@@ -9,7 +9,7 @@ from app import models, schemas
 from app.deps import require_active_user, require_csrf
 from app.reporting.invoice_pdf import render_payment_invoice_pdf
 from app.timezone import KARACHI_TZ
-from app.utils import next_display_id, resync_unified_sale_batch_totals
+from app.utils import next_display_id, resync_unified_sale_batch_totals, require_live_customer
 
 router = APIRouter(prefix="/payments", tags=["payments"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
@@ -156,7 +156,7 @@ def _apply_payment(db: Session, payload: schemas.PaymentCreate, entered_by: str)
 def _reverse_payment(db: Session, payment: models.Payment) -> None:
     """Undoes exactly what _apply_payment posted. Shared by cancel_payment
     and correct_payment (§1)."""
-    customer = db.query(models.Customer).get(payment.customer_id)
+    customer = require_live_customer(db, payment.customer_id)
     customer.current_balance = customer.current_balance + payment.amount
     if payment.excess_amount:
         customer.account_credit = customer.account_credit - payment.excess_amount

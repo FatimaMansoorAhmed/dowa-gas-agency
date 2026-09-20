@@ -280,8 +280,12 @@ class Sale(Base):
     id = Column(GUID(), primary_key=True, default=gen_uuid)
     display_id = Column(String, unique=True, nullable=False)  # e.g. SALE-000123
     date = Column(DateTime, nullable=False)  # business date of the sale
+    # Delete Customer/Company — display snapshot, written only by the delete endpoint (NULL while the row's customer/plant is live).
+    customer_label = Column(String, nullable=True)
     customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
     product_id = Column(GUID(), ForeignKey("products.id"), nullable=False)
+    # Delete Customer/Company — display snapshot, written only by the delete endpoint (NULL while the row's customer/plant is live).
+    company_label = Column(String, nullable=True)
     company_id = Column(GUID(), ForeignKey("companies.id"), nullable=True)  # plant
 
     quantity = Column(Numeric(10, 2), nullable=False)
@@ -301,6 +305,13 @@ class Sale(Base):
     # posts to customer.current_balance/the ledger — GST is money owed by
     # the customer, not business revenue, so it must never be added into
     # total_amount itself.
+    # § Discount (optional, locked at entry) — same convention as gst_*:
+    # applied BEFORE GST (GST is computed on total - discount_amount), frozen
+    # forever once saved. total_amount is never reduced by it (Dashboard/
+    # P&L/Tonnage keep reading the raw figure); only grand_total reflects it.
+    discount_enabled = Column(Boolean, nullable=False, default=False)
+    discount_rate = Column(Numeric(5, 2), nullable=True)
+    discount_amount = Column(Numeric(14, 2), nullable=False, default=0)
     gst_enabled = Column(Boolean, nullable=False, default=False)
     gst_rate = Column(Numeric(5, 2), nullable=True)
     gst_amount = Column(Numeric(14, 2), nullable=False, default=0)
@@ -355,6 +366,8 @@ class Payment(Base):
     id = Column(GUID(), primary_key=True, default=gen_uuid)
     display_id = Column(String, unique=True, nullable=False)  # e.g. PAY-000123
     date = Column(DateTime, nullable=False)
+    # Delete Customer/Company — display snapshot, written only by the delete endpoint (NULL while the row's customer/plant is live).
+    customer_label = Column(String, nullable=True)
     customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
     sale_id = Column(GUID(), ForeignKey("sales.id"), nullable=True)  # optional allocation to one sale
 
@@ -633,11 +646,15 @@ class UnifiedSaleBatch(Base):
     id = Column(GUID(), primary_key=True, default=gen_uuid)
     display_id = Column(String, unique=True, nullable=False)  # e.g. USALE-000123
     date = Column(DateTime, nullable=False)
+    # Delete Customer/Company — display snapshot, written only by the delete endpoint (NULL while the row's customer/plant is live).
+    customer_label = Column(String, nullable=True)
     customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
     # Nullable — a Payment-Only batch (§ Payment-Only Pending Approval) has
     # no purchase plant at all: no items, nothing loaded, only a payment to
     # route. NULL is exactly how routers/unified_sale.py tells a Payment-
     # Only batch apart from an ordinary Full Sale (which always has one).
+    # Delete Customer/Company — display snapshot, written only by the delete endpoint (NULL while the row's customer/plant is live).
+    company_label = Column(String, nullable=True)
     company_id = Column(GUID(), ForeignKey("companies.id"), nullable=True)
 
     total_selling_amount = Column(Numeric(14, 2), nullable=False, default=0)
@@ -729,6 +746,13 @@ class UnifiedSaleBatch(Base):
     # already-frozen gst_rate — never a new rate). grand_total is what
     # approve_unified_sale_sale posts to the customer's balance/ledger;
     # total_selling_amount stays excl.-GST for anything reading it directly.
+    # § Discount (optional, locked at entry) — same convention as gst_*:
+    # applied BEFORE GST (GST is computed on total - discount_amount), frozen
+    # forever once saved. total_amount is never reduced by it (Dashboard/
+    # P&L/Tonnage keep reading the raw figure); only grand_total reflects it.
+    discount_enabled = Column(Boolean, nullable=False, default=False)
+    discount_rate = Column(Numeric(5, 2), nullable=True)
+    discount_amount = Column(Numeric(14, 2), nullable=False, default=0)
     gst_enabled = Column(Boolean, nullable=False, default=False)
     gst_rate = Column(Numeric(5, 2), nullable=True)
     gst_amount = Column(Numeric(14, 2), nullable=False, default=0)
@@ -800,6 +824,8 @@ class Purchase(Base):
     id = Column(GUID(), primary_key=True, default=gen_uuid)
     display_id = Column(String, unique=True, nullable=False)  # e.g. PUR-000123
     date = Column(DateTime, nullable=False)
+    # Delete Customer/Company — display snapshot, written only by the delete endpoint (NULL while the row's customer/plant is live).
+    company_label = Column(String, nullable=True)
     company_id = Column(GUID(), ForeignKey("companies.id"), nullable=False)
     product_id = Column(GUID(), ForeignKey("products.id"), nullable=False)
 
@@ -846,6 +872,8 @@ class CompanyPayment(Base):
     id = Column(GUID(), primary_key=True, default=gen_uuid)
     display_id = Column(String, unique=True, nullable=False)  # e.g. CPAY-000123
     date = Column(DateTime, nullable=False)
+    # Delete Customer/Company — display snapshot, written only by the delete endpoint (NULL while the row's customer/plant is live).
+    company_label = Column(String, nullable=True)
     company_id = Column(GUID(), ForeignKey("companies.id"), nullable=False)
     purchase_id = Column(GUID(), ForeignKey("purchases.id"), nullable=True)  # optional allocation
 
@@ -917,6 +945,8 @@ class CylinderTransaction(Base):
     display_id = Column(String, unique=True, nullable=False)  # e.g. CYL-000123
     date = Column(DateTime, nullable=False, default=datetime.utcnow)
 
+    # Delete Customer/Company — display snapshot, written only by the delete endpoint (NULL while the row's customer/plant is live).
+    customer_label = Column(String, nullable=True)
     customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
     product_id = Column(GUID(), ForeignKey("products.id"), nullable=True)
 
@@ -972,6 +1002,8 @@ class EmptyCylinderSale(Base):
     id = Column(GUID(), primary_key=True, default=gen_uuid)
     display_id = Column(String, unique=True, nullable=False)  # e.g. ECS-000123
     date = Column(DateTime, nullable=False, default=datetime.utcnow)
+    # Delete Customer/Company — display snapshot, written only by the delete endpoint (NULL while the row's customer/plant is live).
+    customer_label = Column(String, nullable=True)
     customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
 
     # Which categorized balance (Customer.empty_cylinders_118 /
@@ -1026,6 +1058,8 @@ class CylinderReturn(Base):
     id = Column(GUID(), primary_key=True, default=gen_uuid)
     display_id = Column(String, unique=True, nullable=False)  # e.g. CRET-000123
     date = Column(DateTime, nullable=False, default=datetime.utcnow)
+    # Delete Customer/Company — display snapshot, written only by the delete endpoint (NULL while the row's customer/plant is live).
+    customer_label = Column(String, nullable=True)
     customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
 
     # Same categorization as EmptyCylinderSale — "118"/"454" size, optional
@@ -1036,6 +1070,8 @@ class CylinderReturn(Base):
 
     mode = Column(String(20), nullable=False)  # transfer | cash | manual_add
     origin = Column(String(20), nullable=False, default="return_cylinder")  # return_cylinder | sell_cylinder — see docstring
+    # Delete Customer/Company — display snapshot, written only by the delete endpoint (NULL while the row's customer/plant is live).
+    to_customer_label = Column(String, nullable=True)
     to_customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=True)  # transfer only
     payment_id = Column(GUID(), ForeignKey("payments.id"), nullable=True)  # cash only
 
@@ -1237,6 +1273,8 @@ class ShopSale(Base):
     # sale, exactly today's behavior. "credit" always requires a
     # supply_customer_id (a credit sale to nobody is meaningless); "cash"
     # may or may not name a customer.
+    # Delete Supply Customer — display snapshot, written only by the delete endpoint (NULL while the customer is live).
+    supply_customer_label = Column(String, nullable=True)
     supply_customer_id = Column(GUID(), ForeignKey("shop_supply_customers.id"), nullable=True)
     payment_type = Column(String(10), nullable=False, default="cash")  # "cash" | "credit"
 
@@ -1287,6 +1325,13 @@ class ShopSale(Base):
     # row. grand_total (= total_amount + gst_amount, or just total_amount
     # when GST is off) is what actually drives amount_received bounds/
     # outstanding — see routers/shops.py::_apply_shop_sale.
+    # § Discount (optional, locked at entry) — same convention as gst_*:
+    # applied BEFORE GST (GST is computed on total - discount_amount), frozen
+    # forever once saved. total_amount is never reduced by it (Dashboard/
+    # P&L/Tonnage keep reading the raw figure); only grand_total reflects it.
+    discount_enabled = Column(Boolean, nullable=False, default=False)
+    discount_rate = Column(Numeric(5, 2), nullable=True)
+    discount_amount = Column(Numeric(14, 2), nullable=False, default=0)
     gst_enabled = Column(Boolean, nullable=False, default=False)
     gst_rate = Column(Numeric(5, 2), nullable=True)
     gst_amount = Column(Numeric(14, 2), nullable=False, default=0)
@@ -1506,6 +1551,8 @@ class ShopCustomerPayment(Base):
     display_id = Column(String, unique=True, nullable=False)  # e.g. SHCPAY-000123
     date = Column(DateTime, nullable=False)
     shop_id = Column(GUID(), ForeignKey("customers.id"), nullable=False)
+    # Delete Supply Customer — display snapshot, written only by the delete endpoint (NULL while the customer is live).
+    supply_customer_label = Column(String, nullable=True)
     supply_customer_id = Column(GUID(), ForeignKey("shop_supply_customers.id"), nullable=False)
     # Optional traceability back to the credit ShopSale this collection is
     # settling — mirrors Payment.sale_id's "optional allocation" convention
@@ -1600,6 +1647,8 @@ class ShopExpenseTransaction(Base):
     # form, which has neither. Header-level, not per-line — one atomic
     # transaction is entered alongside at most one sale/customer, same as
     # shop_id above.
+    # Delete Supply Customer — display snapshot, written only by the delete endpoint (NULL while the customer is live).
+    supply_customer_label = Column(String, nullable=True)
     supply_customer_id = Column(GUID(), ForeignKey("shop_supply_customers.id"), nullable=True)
     shop_sale_id = Column(GUID(), ForeignKey("shop_sales.id"), nullable=True)
 

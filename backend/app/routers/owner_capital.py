@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app import models, schemas
 from app.deps import require_active_user, require_csrf
-from app.utils import next_display_id, resolve_account_or_bucket
+from app.utils import next_display_id, resolve_account_or_bucket, require_live_company
 
 router = APIRouter(prefix="/owner-capital", tags=["owner-capital"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
@@ -162,7 +162,7 @@ def cancel_owner_capital(capital_id: UUID, by: str = Query(...), db: Session = D
             .first()
         )
         if company_payment:
-            company = db.query(models.Company).get(company_payment.company_id)
+            company = require_live_company(db, company_payment.company_id)
             company.current_balance = company.current_balance + company_payment.amount
             if company_payment.excess_amount:
                 company.account_credit = company.account_credit - company_payment.excess_amount

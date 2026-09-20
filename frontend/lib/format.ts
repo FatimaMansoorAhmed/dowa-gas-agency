@@ -31,6 +31,21 @@ export const resolveAccountLabel = (
   return accountId.replace(/_/g, " ").toUpperCase();
 };
 
+// When Expense and/or Owner Drawings consume the ENTIRE collected amount,
+// nothing is routed to any Plant/Account — so a destination label would be
+// wrong no matter what destination was stored. Returns the label to show
+// instead, or null when something was actually left to route.
+export const fullyDeductedLabel = (
+  gross: number, expense: number, drawings: number,
+  t: (key: string) => string,
+): string | null => {
+  const deducted = expense + drawings;
+  if (gross <= 0.01 || deducted <= 0.01 || gross - deducted > 0.01) return null;
+  if (drawings <= 0.01) return t("payments.fullyRoutedToExpense");
+  if (expense <= 0.01) return t("payments.fullyRoutedToOwnerDrawings");
+  return t("payments.fullyRoutedToExpenseAndDrawings");
+};
+
 export const pkr = (n: number | string) => {
   const num = typeof n === "string" ? parseFloat(n) : n;
   const neg = num < 0;

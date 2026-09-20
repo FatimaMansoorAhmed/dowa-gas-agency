@@ -105,6 +105,8 @@ export default function RecordShopSaleModal({
   // Sale's own gstEnabled/gstRate.
   const [gstEnabled, setGstEnabled] = useState(false);
   const [gstRate, setGstRate] = useState("");
+  const [discountEnabled, setDiscountEnabled] = useState(false);
+  const [discountRate, setDiscountRate] = useState("");
 
   const [paymentType, setPaymentType] = useState<"cash" | "credit">("cash");
   const [supplyCustomerId, setSupplyCustomerId] = useState("");
@@ -225,9 +227,14 @@ export default function RecordShopSaleModal({
   // § GST on Shop Sale — saleAmount stays GST-exclusive (matches
   // total_amount server-side); grandTotal is what's actually owed/
   // collected from here on, mirroring unified-sale/page.tsx exactly.
+  // Discount (optional) applies FIRST — GST then runs on the discounted
+  // base. saleAmount (raw) stays what the backend keeps as total_amount.
+  const effectiveDiscountRate = discountEnabled ? parseFloat(discountRate) || 0 : 0;
+  const discountAmount = saleAmount != null && effectiveDiscountRate > 0 ? (saleAmount * effectiveDiscountRate) / 100 : 0;
+  const discountedBase = saleAmount != null ? saleAmount - discountAmount : null;
   const effectiveGstRate = gstEnabled ? parseFloat(gstRate) || 0 : 0;
-  const gstAmount = saleAmount != null && effectiveGstRate > 0 ? (saleAmount * effectiveGstRate) / 100 : 0;
-  const grandTotal = saleAmount != null ? saleAmount + gstAmount : null;
+  const gstAmount = discountedBase != null && effectiveGstRate > 0 ? (discountedBase * effectiveGstRate) / 100 : 0;
+  const grandTotal = discountedBase != null ? discountedBase + gstAmount : null;
 
   // Amount Received is only ever editable once a real Supply Customer is
   // named — Walk-in (no customer) always collects the full amount, on
@@ -307,6 +314,7 @@ export default function RecordShopSaleModal({
         typedBoardRate > 0 &&
         // § GST on Shop Sale — a checked box needs an actual rate.
         (!gstEnabled || parseFloat(gstRate) > 0) &&
+        (!discountEnabled || (parseFloat(discountRate) > 0 && parseFloat(discountRate) <= 100)) &&
         (paymentType === "cash" || !!supplyCustomerId));
 
   /* -------------------------------------------------------------
@@ -359,6 +367,8 @@ export default function RecordShopSaleModal({
         unit,
         board_rate_per_kg: typedBoardRate,
         manual_total_amount: hasManualOverride ? typedManualTotal : undefined,
+        discount_enabled: discountEnabled,
+        discount_rate: discountEnabled ? effectiveDiscountRate : undefined,
         gst_enabled: gstEnabled,
         gst_rate: gstEnabled ? effectiveGstRate : undefined,
         payment_type: paymentType,
@@ -657,9 +667,36 @@ export default function RecordShopSaleModal({
                 </p>
               </div>
 
+              {/* Discount — optional, applied to this sale's total_amount
+                  BEFORE GST (GST is then computed on the discounted base);
+                  frozen server-side at creation. */}
+              <div className="mt-5 border-t border-slate-200 pt-5">
+                <Field label={t("unifiedSale.discountSectionTitle")}>
+                  <div className="flex items-center gap-3">
+                    <label className="flex items-center gap-1.5 font-body text-[13px] text-ink cursor-pointer">
+                      <input type="checkbox" checked={discountEnabled} onChange={(e) => setDiscountEnabled(e.target.checked)} />
+                      {t("unifiedSale.applyDiscount")}
+                    </label>
+                    {discountEnabled && (
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="0.01"
+                        value={discountRate}
+                        onChange={(e) => setDiscountRate(e.target.value)}
+                        placeholder="Rate %"
+                        className={`${inputClass} w-24`}
+                      />
+                    )}
+                  </div>
+                </Field>
+              </div>
+
               {/* § GST on Shop Sale — optional, applies to this sale's
-                  total_amount; frozen server-side at creation, same
-                  convention as Unified Sale's own GST section. */}
+                  discounted base (or total_amount when no discount); frozen
+                  server-side at creation, same convention as Unified
+                  Sale's own GST section. */}
               <div className="mt-5 border-t border-slate-200 pt-5">
                 <Field label={t("unifiedSale.gstSectionTitle")}>
                   <div className="flex items-center gap-3">
@@ -709,15 +746,24 @@ export default function RecordShopSaleModal({
 
                   <div className="sm:text-right">
                     <p className="font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
-                      {gstEnabled && effectiveGstRate > 0 ? t("unifiedSale.grandTotal") : t("modals.totalLabel")}
+                      {(gstEnabled && effectiveGstRate > 0) || (discountEnabled && effectiveDiscountRate > 0) ? t("unifiedSale.grandTotal") : t("modals.totalLabel")}
                     </p>
                     <p className="mt-1 font-display text-3xl font-bold text-brand-green sm:text-4xl">
                       {grandTotal != null ? pkr(grandTotal) : "—"}
                     </p>
-                    {gstEnabled && effectiveGstRate > 0 && saleAmount != null && (
-                      <p className="mt-1 font-mono text-[11px] text-slate-500">
-                        {t("modals.totalLabel")} {pkr(saleAmount)} + GST @ {gstRate}% ({pkr(gstAmount)})
-                      </p>
+                    {((gstEnabled && effectiveGstRate > 0) || (discountEnabled && effectiveDiscountRate > 0)) && saleAmount != null && (
+                      <div className="mt-1 flex flex-col items-end gap-0.5 font-mono text-[11px] text-slate-500">
+                        <span>{t("unifiedSale.subtotal")} {pkr(saleAmount)}</span>
+                        {discountEnabled && effectiveDiscountRate > 0 && (
+                          <span>{t("unifiedSale.discount")} @ {discountRate}% (−) −{pkr(discountAmount)}</span>
+                        )}
+                        {discountEnabled && effectiveDiscountRate > 0 && gstEnabled && effectiveGstRate > 0 && discountedBase != null && (
+                          <span>{t("unifiedSale.discountedSubtotal")} {pkr(discountedBase)}</span>
+                        )}
+                        {gstEnabled && effectiveGstRate > 0 && (
+                          <span>GST @ {gstRate}% (+) {pkr(gstAmount)}</span>
+                        )}
+                      </div>
                     )}
                     {hasManualOverride && (
                       <p className="mt-1 font-mono text-[11px] text-amber-600">
@@ -916,7 +962,7 @@ export default function RecordShopSaleModal({
                           {t("modals.remainingBalance")}
                         </p>
                         <p className="mt-1 font-body text-sm font-medium text-slate-600">
-                          {t("modals.outstandingAfterPayment")}
+                          {balanceDue < 0 ? t("modals.advanceCreditNote") : t("modals.outstandingAfterPayment")}
                         </p>
                       </div>
                       <span

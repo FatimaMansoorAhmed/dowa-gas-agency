@@ -8,11 +8,12 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
+from app.utils import require_live_customer, require_live_company
 from app.deps import require_active_user, require_csrf
 from app.reporting.invoice_pdf import render_unified_sale_invoice_pdf
 from app.timezone import KARACHI_TZ
 from app.utils import (
-    next_display_id, resolve_account_or_bucket, compute_gst, resync_unified_sale_batch_totals,
+    next_display_id, resolve_account_or_bucket, compute_sale_totals, resync_unified_sale_batch_totals,
     is_salary_category, apply_salary_expense_if_needed,
 )
 from app.routers.payments import _reverse_payment
@@ -35,10 +36,22 @@ def _try_uuid(value):
         return None
 
 
-def _resolve_destination(db: Session, settlement: schemas.UnifiedSaleSettlement, purchase_plant_id):
+def _resolve_destination(db: Session, settlement: schemas.UnifiedSaleSettlement, purchase_plant_id, net_settlement=None):
     """Validates and normalizes settlement routing, defaulting an empty
     target_plant_id to the purchase plant itself (old-behavior default).
-    Returns (destination_type, target_plant_id, account_id_str)."""
+    Returns (destination_type, target_plant_id, account_id_str).
+
+    net_settlement, when given and <= 0 (Expense + Owner Drawings consumed
+    the entire collected amount), means nothing is routed anywhere — so no
+    plant/account is required or stored, exactly like utils.
+    resolve_settlement_destination does for every other settlement flow.
+    Previously whatever destination the form last had selected was
+    validated and stored regardless (a stale "owner_home" account, or a
+    hard 404/422 for Payment Only + Plant, which has no plant to fall
+    back to), so the batch later displayed a destination the money never
+    reached."""
+    if net_settlement is not None and net_settlement <= EPSILON:
+        return "plant", None, None
     destination_type = settlement.destination_type or "plant"
     if destination_type == "plant":
         target_plant_id = settlement.target_plant_id or purchase_plant_id
@@ -106,7 +119,7 @@ def _validate_and_load(db: Session, payload: schemas.UnifiedSaleCreate):
     if bypass_sum > s.total_credit_received + EPSILON:
         raise HTTPException(
             400,
-            f"Home expense ({home_expense_total}) + owner drawings ({s.owner_drawings_amount}) "
+            f"Expense ({home_expense_total}) + owner drawings ({s.owner_drawings_amount}) "
             f"= {bypass_sum} exceeds total credit received ({s.total_credit_received}) — "
             f"nothing would be left to settle with the plant.",
         )
@@ -118,7 +131,7 @@ def _validate_and_load(db: Session, payload: schemas.UnifiedSaleCreate):
             # Employee Salary Tracking (§ Employee Salary Tracking) — same
             # check as ShopSaleCreate's home_expense_lines handling.
             if line.amount > 0 and is_salary_category(db, line.category_id) and not line.employee_id:
-                raise HTTPException(400, "Employee is required when a Home Expense line's category is Salary")
+                raise HTTPException(400, "Employee is required when an Expense line's category is Salary")
     else:
         if s.home_expense_amount > 0 and not s.home_expense_category_id:
             raise HTTPException(400, "home_expense_category_id is required when home_expense_amount > 0")
@@ -126,7 +139,9 @@ def _validate_and_load(db: Session, payload: schemas.UnifiedSaleCreate):
             if not db.query(models.ExpenseCategory).get(s.home_expense_category_id):
                 raise HTTPException(404, "Expense category not found")
 
-    destination_type, target_plant_id, account_id = _resolve_destination(db, s, payload.plant_id)
+    destination_type, target_plant_id, account_id = _resolve_destination(
+        db, s, payload.plant_id, net_settlement=s.total_credit_received - bypass_sum,
+    )
 
     return customer, company, products_by_id, destination_type, target_plant_id, account_id
 
@@ -290,6 +305,8 @@ def _batch_to_out(db: Session, batch, sales, purchases, plant_payment, expenses,
         settlement_corrected_by=batch.settlement_corrected_by,
         settlement_corrected_at=batch.settlement_corrected_at,
         settlement_correction_reason=batch.settlement_correction_reason,
+        discount_enabled=batch.discount_enabled, discount_rate=batch.discount_rate, discount_amount=batch.discount_amount,
+        customer_label=batch.customer_label, company_label=batch.company_label,
         gst_enabled=batch.gst_enabled, gst_rate=batch.gst_rate, gst_amount=batch.gst_amount, grand_total=batch.grand_total,
         status=batch.status, approved_at=batch.approved_at, approved_by=batch.approved_by,
         sale_status=batch.sale_status, sale_approved_at=batch.sale_approved_at, sale_approved_by=batch.sale_approved_by,
@@ -443,8 +460,14 @@ def create_unified_sale(
         # once here from total_selling_amount and frozen on the batch;
         # grand_total (never total_selling_amount) is what
         # approve_unified_sale_sale posts to the customer's balance/ledger.
-        gst_enabled, gst_rate, gst_amount, grand_total = compute_gst(
-            total_selling_amount, payload.gst_enabled, payload.gst_rate
+        # Discount (§ Discount, optional) applies FIRST, GST then runs on the
+        # discounted base — total_selling_amount itself is never reduced.
+        totals = compute_sale_totals(
+            total_selling_amount, payload.discount_enabled, payload.discount_rate,
+            payload.gst_enabled, payload.gst_rate,
+        )
+        gst_enabled, gst_rate, gst_amount, grand_total = (
+            totals["gst_enabled"], totals["gst_rate"], totals["gst_amount"], totals["grand_total"]
         )
 
         batch = models.UnifiedSaleBatch(
@@ -466,6 +489,9 @@ def create_unified_sale(
             vehicle_no=payload.vehicle_no,
             gate_pass_no=payload.gate_pass_no,
             notes=payload.notes,
+            discount_enabled=totals["discount_enabled"],
+            discount_rate=totals["discount_rate"],
+            discount_amount=totals["discount_amount"],
             gst_enabled=gst_enabled,
             gst_rate=gst_rate,
             gst_amount=gst_amount,
@@ -524,8 +550,12 @@ def edit_unified_sale(
         # GST on Sale, extended to Unified Sale (§ GST on Sale) — recomputed
         # from this edit's own total_selling_amount/gst_rate, same as every
         # other field here being fully replaced by the edit, not patched.
-        gst_enabled, gst_rate, gst_amount, grand_total = compute_gst(
-            total_selling_amount, payload.gst_enabled, payload.gst_rate
+        totals = compute_sale_totals(
+            total_selling_amount, payload.discount_enabled, payload.discount_rate,
+            payload.gst_enabled, payload.gst_rate,
+        )
+        gst_enabled, gst_rate, gst_amount, grand_total = (
+            totals["gst_enabled"], totals["gst_rate"], totals["gst_amount"], totals["grand_total"]
         )
 
         batch.date = payload.date
@@ -545,6 +575,9 @@ def edit_unified_sale(
         batch.vehicle_no = payload.vehicle_no
         batch.gate_pass_no = payload.gate_pass_no
         batch.notes = payload.notes
+        batch.discount_enabled = totals["discount_enabled"]
+        batch.discount_rate = totals["discount_rate"]
+        batch.discount_amount = totals["discount_amount"]
         batch.gst_enabled = gst_enabled
         batch.gst_rate = gst_rate
         batch.gst_amount = gst_amount
@@ -574,7 +607,7 @@ def _do_approve_sale(db: Session, batch: models.UnifiedSaleBatch, sales, purchas
     if batch.sale_status != "pending":
         raise HTTPException(400, f"Cannot approve sale — already {batch.sale_status}")
 
-    customer = db.query(models.Customer).get(batch.customer_id)
+    customer = require_live_customer(db, batch.customer_id)
     # None for a Payment-Only batch (no purchase plant) — see
     # UnifiedSaleCreate.plant_id. Every step below already guards on it.
     company = db.query(models.Company).get(batch.company_id) if batch.company_id else None
@@ -922,7 +955,7 @@ def correct_unified_sale_settlement(
     if bypass_sum > _dec(batch.total_credit_received) + EPSILON:
         raise HTTPException(
             400,
-            f"Home expense ({home_expense_total}) + owner drawings ({payload.owner_drawings_amount}) "
+            f"Expense ({home_expense_total}) + owner drawings ({payload.owner_drawings_amount}) "
             f"= {bypass_sum} exceeds total credit received ({batch.total_credit_received}) — "
             f"nothing would be left to settle.",
         )
@@ -931,14 +964,16 @@ def correct_unified_sale_settlement(
             if line.amount > 0 and not db.query(models.ExpenseCategory).get(line.category_id):
                 raise HTTPException(404, "Expense category not found")
             if line.amount > 0 and is_salary_category(db, line.category_id) and not line.employee_id:
-                raise HTTPException(400, "Employee is required when a Home Expense line's category is Salary")
+                raise HTTPException(400, "Employee is required when an Expense line's category is Salary")
     else:
         if payload.home_expense_amount > 0 and not payload.home_expense_category_id:
             raise HTTPException(400, "home_expense_category_id is required when home_expense_amount > 0")
         if payload.home_expense_category_id and not db.query(models.ExpenseCategory).get(payload.home_expense_category_id):
             raise HTTPException(404, "Expense category not found")
 
-    new_destination_type, new_target_plant_id, new_account_id = _resolve_destination(db, payload, batch.company_id)
+    new_destination_type, new_target_plant_id, new_account_id = _resolve_destination(
+        db, payload, batch.company_id, net_settlement=_dec(batch.total_credit_received) - bypass_sum,
+    )
 
     sales, purchases, old_plant_payment, old_expenses, old_owner_drawing = _load_children(db, batch.id)
 
@@ -1159,8 +1194,21 @@ def correct_unified_sale_amount(
     if bypass_sum > payload.amount + EPSILON:
         raise HTTPException(
             400,
-            f"Home expense ({batch.home_expense_amount}) + owner drawings ({batch.owner_drawings_amount}) "
+            f"Expense ({batch.home_expense_amount}) + owner drawings ({batch.owner_drawings_amount}) "
             f"= {bypass_sum} would exceed the corrected amount ({payload.amount}) — nothing would be left to settle.",
+        )
+    # A batch that was fully deducted to Expense/Owner Drawings was saved
+    # with no destination at all (see _resolve_destination) — raising the
+    # amount here would leave a positive remainder with nowhere to go.
+    if (
+        payload.amount - bypass_sum > EPSILON
+        and batch.destination_type != "account"
+        and not (batch.target_plant_id or batch.company_id)
+    ):
+        raise HTTPException(
+            400,
+            "This settlement was fully deducted to Expense/Owner Drawings, so it has no destination for the "
+            "extra amount — use Correct Settlement to choose where the remainder goes instead.",
         )
 
     # home_expense_amount/owner_drawings_amount are untouched by this
@@ -1174,7 +1222,7 @@ def correct_unified_sale_amount(
     )
 
     try:
-        customer = db.query(models.Customer).get(original.customer_id)
+        customer = require_live_customer(db, original.customer_id)
 
         # ---- Reverse exactly what the OLD amount posted ----
         _reverse_payment(db, original)

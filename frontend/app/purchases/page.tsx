@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { PlusCircle, Search, Truck, Wallet, Pencil, Printer, Share2 } from "lucide-react";
+import { PlusCircle, Search, Truck, Wallet, Pencil, Printer, Share2, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Th, Td, inputClass, BalanceTag, Button } from "@/components/ui";
@@ -9,9 +9,10 @@ import AddPurchaseModal from "@/components/AddPurchaseModal";
 import RecordPlantPaymentModal from "@/components/RecordPlantPaymentModal";
 import CorrectTransactionModal, { CorrectableKind } from "@/components/CorrectTransactionModal";
 import EditOpeningBalanceModal from "@/components/EditOpeningBalanceModal";
-import { api } from "@/lib/api";
+import { api, apiErrorMessage } from "@/lib/api";
+import { companyDeleteMessage } from "@/lib/deleteConfirm";
 import { pkr, fmtTime, fmtClock, todayLocalInput, fmtNumber } from "@/lib/format";
-import type { PlantLedgerSummaryRow, CompanyLedgerSummary, CompanyLedgerRow, Purchase, CompanyPayment } from "@/lib/types";
+import type { PlantLedgerSummaryRow, CompanyLedgerSummary, CompanyLedgerRow, Purchase, CompanyPayment, Company } from "@/lib/types";
 
 // Derived from the Asia/Karachi-aware todayLocalInput() ("YYYY-MM-DD"), so
 // "this month" reflects the Karachi calendar even off-Karachi machines.
@@ -69,6 +70,19 @@ function PurchasesBody() {
     }
   };
   useEffect(() => { loadSummary(); }, [month]);
+
+  // Delete Plant — owner-only on the server; the confirm text states the
+  // exact payable being written off (parties and rate history go with it).
+  const handleDeletePlant = async (c: Company) => {
+    if (!window.confirm(companyDeleteMessage(t, c))) return;
+    try {
+      await api.companies.remove(c.id);
+      if (selectedCompanyId === c.id) setSelectedCompanyId(null);
+      loadSummary();
+    } catch (e) {
+      alert(apiErrorMessage(e, t("deleteEntity.failed")));
+    }
+  };
 
   useEffect(() => {
     if (!selectedCompanyId) { setDetail(null); return; }
@@ -308,6 +322,14 @@ function PurchasesBody() {
                   <Button variant="outline" onClick={shareStatement} disabled={sharing}>
                     <Share2 size={14} /> {sharing ? t("customerLedger.sharingWhatsapp") : t("customerLedger.shareWhatsapp")}
                   </Button>
+                  {/* Delete lives here, in the opened plant's own section, not
+                      on the clickable summary rows — a stray click on a row
+                      must never sit next to a destructive action. */}
+                  <span className="print:hidden">
+                    <Button variant="outline" onClick={() => handleDeletePlant(detail.company)}>
+                      <Trash2 size={14} /> {t("deleteEntity.delete")}
+                    </Button>
+                  </span>
                   <BalanceTag amount={detail.closing_balance} />
                 </div>
               </div>

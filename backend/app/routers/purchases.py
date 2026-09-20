@@ -9,7 +9,7 @@ from app import models, schemas
 from app.deps import require_active_user, require_csrf
 from app.reporting.invoice_pdf import render_purchase_invoice_pdf
 from app.timezone import KARACHI_TZ
-from app.utils import next_display_id
+from app.utils import next_display_id, require_live_company
 
 router = APIRouter(prefix="/purchases", tags=["purchases"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
@@ -80,7 +80,7 @@ def _apply_purchase(db: Session, payload: schemas.PurchaseCreate, entered_by: st
 def _reverse_purchase(db: Session, purchase: models.Purchase) -> None:
     """Undoes exactly what _apply_purchase posted. Shared by cancel_purchase
     and correct_purchase (§1)."""
-    company = db.query(models.Company).get(purchase.company_id)
+    company = require_live_company(db, purchase.company_id)
     company.current_balance = company.current_balance - purchase.total_amount
     db.add(company)
 

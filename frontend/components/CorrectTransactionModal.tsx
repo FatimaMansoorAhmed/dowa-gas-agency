@@ -140,6 +140,16 @@ export default function CorrectTransactionModal({
   const [gstRate, setGstRate] = useState(
     kind === "sale" ? String(sale.gst_rate || "") : kind === "shopSale" ? String(shopSale.gst_rate || "") : ""
   );
+  // Discount (optional, applied before GST) — pre-filled from the original
+  // for the same reason as GST above: a correction that doesn't touch it
+  // must repost the exact same discount_enabled/discount_rate, never
+  // silently dropping it (and with it, changing what the customer owes).
+  const [discountEnabled, setDiscountEnabled] = useState(
+    kind === "sale" ? !!sale.discount_enabled : kind === "shopSale" ? !!shopSale.discount_enabled : false
+  );
+  const [discountRate, setDiscountRate] = useState(
+    kind === "sale" ? String(sale.discount_rate || "") : kind === "shopSale" ? String(shopSale.discount_rate || "") : ""
+  );
 
   // Shop Sale-only fields — a correction must preserve unit/payment_type/
   // supply_customer_id unless the user deliberately changes them; the
@@ -247,10 +257,12 @@ export default function CorrectTransactionModal({
         // the correction form never lets this be cleared to empty.
         && (!sale.emergency_transfer_shop_id || !!emergencyTransferShopId)
         && (kind !== "sale" || !gstEnabled || parseFloat(gstRate) > 0)
+        && (kind !== "sale" || !discountEnabled || (parseFloat(discountRate) > 0 && parseFloat(discountRate) <= 100))
       : kind === "shopSale"
       ? parseFloat(quantity) > 0 && parseFloat(boardRatePerKg) > 0 && (paymentType === "cash" || !!supplyCustomerId)
         && (paymentType === "cash" || (parseFloat(amountReceived) || 0) >= 0)
         && (!gstEnabled || parseFloat(gstRate) > 0)
+        && (!discountEnabled || (parseFloat(discountRate) > 0 && parseFloat(discountRate) <= 100))
       : parseFloat(amount) > 0) &&
     (showRouting
       ? routingValid
@@ -284,6 +296,8 @@ export default function CorrectTransactionModal({
           entered_by: user.name,
           cylinders_returned: parseFloat(cylindersReturned) || 0,
           emergency_transfer_shop_id: emergencyTransferShopId || undefined,
+          discount_enabled: discountEnabled,
+          discount_rate: discountEnabled ? parseFloat(discountRate) : undefined,
           gst_enabled: gstEnabled,
           gst_rate: gstEnabled ? parseFloat(gstRate) : undefined,
           correction_reason: reason,
@@ -350,6 +364,8 @@ export default function CorrectTransactionModal({
           unit,
           board_rate_per_kg: parseFloat(boardRatePerKg),
           manual_total_amount: parseFloat(manualTotalAmount) > 0 ? parseFloat(manualTotalAmount) : undefined,
+          discount_enabled: discountEnabled,
+          discount_rate: discountEnabled ? parseFloat(discountRate) : undefined,
           gst_enabled: gstEnabled,
           gst_rate: gstEnabled ? parseFloat(gstRate) : undefined,
           payment_type: paymentType,
@@ -541,6 +557,26 @@ export default function CorrectTransactionModal({
               {kind === "sale" && (
                 <div className="flex items-center gap-3">
                   <label className="flex items-center gap-1.5 font-body text-[13px] text-ink cursor-pointer">
+                    <input type="checkbox" checked={discountEnabled} onChange={(e) => setDiscountEnabled(e.target.checked)} />
+                    {t("unifiedSale.applyDiscount")}
+                  </label>
+                  {discountEnabled && (
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.01"
+                      value={discountRate}
+                      onChange={(e) => setDiscountRate(e.target.value)}
+                      placeholder="Rate %"
+                      className={`${inputClass} w-24`}
+                    />
+                  )}
+                </div>
+              )}
+              {kind === "sale" && (
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-1.5 font-body text-[13px] text-ink cursor-pointer">
                     <input type="checkbox" checked={gstEnabled} onChange={(e) => setGstEnabled(e.target.checked)} />
                     Apply GST
                   </label>
@@ -636,6 +672,24 @@ export default function CorrectTransactionModal({
                   className={inputClass}
                 />
               </Field>
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-1.5 font-body text-[13px] text-ink cursor-pointer">
+                  <input type="checkbox" checked={discountEnabled} onChange={(e) => setDiscountEnabled(e.target.checked)} />
+                  {t("unifiedSale.applyDiscount")}
+                </label>
+                {discountEnabled && (
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    value={discountRate}
+                    onChange={(e) => setDiscountRate(e.target.value)}
+                    placeholder="Rate %"
+                    className={`${inputClass} w-24`}
+                  />
+                )}
+              </div>
               <div className="flex items-center gap-3">
                 <label className="flex items-center gap-1.5 font-body text-[13px] text-ink cursor-pointer">
                   <input type="checkbox" checked={gstEnabled} onChange={(e) => setGstEnabled(e.target.checked)} />

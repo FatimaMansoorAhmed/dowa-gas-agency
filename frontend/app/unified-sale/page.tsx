@@ -9,7 +9,7 @@ import AmountInput from "@/components/AmountInput";
 import CorrectTransactionModal, { CorrectableKind } from "@/components/CorrectTransactionModal";
 import HomeExpenseLinesEditor, { HomeExpenseLine, emptyHomeExpenseLine, homeExpenseLinesTotal, homeExpenseLinesValid, toHomeExpenseLinesPayload } from "@/components/HomeExpenseLinesEditor";
 import { api, apiErrorMessage } from "@/lib/api";
-import { pkr, fmtTime, todayLocalInput, toKarachiDateString, ACCOUNT_TYPE_LABELS, resolveAccountLabel, fmtNumber } from "@/lib/format";
+import { pkr, fmtTime, todayLocalInput, toKarachiDateString, ACCOUNT_TYPE_LABELS, resolveAccountLabel, fmtNumber, fullyDeductedLabel } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import { resolveRate, NO_PARTY_VALUE } from "@/lib/rates";
 import type {
@@ -157,6 +157,8 @@ function UnifiedSaleBody() {
   // applies to the whole batch's total_selling_amount, not per item.
   const [gstEnabled, setGstEnabled] = useState(false);
   const [gstRate, setGstRate] = useState("");
+  const [discountEnabled, setDiscountEnabled] = useState(false);
+  const [discountRate, setDiscountRate] = useState("");
 
   // Payment Format & Settlement Amounts. Full Sale only ever folds this
   // into a free-text note (POST /sales/unified has no structured method
@@ -323,9 +325,15 @@ function UnifiedSaleBody() {
   // total_selling_amount (totalSelling, incl. delivery charges) × rate,
   // never touching totalPurchase/margin above. grand_total is what the
   // customer is actually charged; total_selling_amount stays excl.-GST.
+  // Discount (optional) applies FIRST — GST then runs on the discounted
+  // base. totalSelling (raw, pre-discount) stays what the backend keeps as
+  // total_selling_amount; only the grand total reflects discount + GST.
+  const effectiveDiscountRate = discountEnabled ? parseFloat(discountRate) || 0 : 0;
+  const discountAmount = totalSelling * (effectiveDiscountRate / 100);
+  const discountedBase = totalSelling - discountAmount;
   const effectiveGstRate = gstEnabled ? parseFloat(gstRate) || 0 : 0;
-  const gstAmount = totalSelling * (effectiveGstRate / 100);
-  const grandTotalWithGst = totalSelling + gstAmount;
+  const gstAmount = discountedBase * (effectiveGstRate / 100);
+  const grandTotalWithGst = discountedBase + gstAmount;
 
   const totalCreditNum = parseFloat(totalCreditReceived) || 0;
   const homeExpenseNum = homeExpenseLinesTotal(homeExpenseLines);
@@ -333,6 +341,12 @@ function UnifiedSaleBody() {
   const bypassSum = homeExpenseNum + ownerDrawingsNum;
   const settlementValid = bypassSum <= totalCreditNum + EPSILON;
   const netPlantPayment = totalCreditNum - homeExpenseNum - ownerDrawingsNum;
+  // False once Expense + Owner Drawings consume the whole collected amount —
+  // nothing is routed anywhere, so no destination is sent (the form itself
+  // already hides the destination picker in that state; this stops a stale
+  // earlier selection from being submitted and later displayed as if the
+  // money had gone there).
+  const routesRemainder = netPlantPayment > EPSILON;
 
   const projectedCustomerBalance = selectedCustomer
     ? parseFloat(selectedCustomer.current_balance) + grandTotalWithGst - totalCreditNum
@@ -390,13 +404,15 @@ function UnifiedSaleBody() {
         (activeItems.length > 0 || totalCreditNum > 0 || deliveryChargesNum > 0) &&
         settlementValid &&
         !homeExpenseLinesInvalid &&
-        (!gstEnabled || parseFloat(gstRate) > 0);
+        (!gstEnabled || parseFloat(gstRate) > 0) &&
+        (!discountEnabled || (parseFloat(discountRate) > 0 && parseFloat(discountRate) <= 100));
 
   const resetForm = () => {
     setFormMode("full_sale");
     setItems({});
     setDeliveryCharges("");
     setGstEnabled(false); setGstRate("");
+    setDiscountEnabled(false); setDiscountRate("");
     setTotalCreditReceived(""); setPaymentMethod("cash");
     setHomeExpenseLines([]); setOwnerDrawingsAmount("");
     setGatePassNo(""); setVehicleNo(""); setNotes("");
@@ -461,6 +477,8 @@ function UnifiedSaleBody() {
       setDeliveryCharges(full.delivery_charges && Number(full.delivery_charges) > 0 ? String(full.delivery_charges) : "");
       setGstEnabled(!!full.gst_enabled);
       setGstRate(full.gst_rate ? String(full.gst_rate) : "");
+      setDiscountEnabled(!!full.discount_enabled);
+      setDiscountRate(full.discount_rate ? String(full.discount_rate) : "");
       setTotalCreditReceived(String(full.total_credit_received));
       // § Multi-line Categorized Home Expense — load the structured lines
       // for editing; a legacy single-amount batch (no lines) is loaded as
@@ -612,7 +630,7 @@ function UnifiedSaleBody() {
     try {
       const combinedNotes = [
         `Format: ${paymentMethod.toUpperCase()}`,
-        destinationType === "account" ? `Category: ${accountCategory}` : "",
+        routesRemainder && destinationType === "account" ? `Category: ${accountCategory}` : "",
         notes,
       ].filter(Boolean).join(" | ");
 
@@ -640,9 +658,9 @@ function UnifiedSaleBody() {
             // scalar fields entirely for this form (see RecordShopSaleModal).
             home_expense_lines: toHomeExpenseLinesPayload(homeExpenseLines),
             owner_drawings_amount: ownerDrawingsNum,
-            destination_type: destinationType,
-            target_plant_id: destinationType === "plant" ? targetPlantId : undefined,
-            account_id: destinationType === "account" ? accountCategory : undefined,
+            destination_type: routesRemainder ? destinationType : "plant",
+            target_plant_id: routesRemainder && destinationType === "plant" ? (targetPlantId || undefined) : undefined,
+            account_id: routesRemainder && destinationType === "account" ? accountCategory : undefined,
             payment_reference: paymentReference.trim() || undefined,
           },
           notes: combinedNotes || undefined,
@@ -663,6 +681,8 @@ function UnifiedSaleBody() {
           purchase_rate: parseFloat(x.row!.purchaseRate) || 0, selling_rate: parseFloat(x.row!.sellingRate) || 0,
         })),
         delivery_charges: deliveryChargesNum,
+        discount_enabled: discountEnabled,
+        discount_rate: discountEnabled ? effectiveDiscountRate : undefined,
         gst_enabled: gstEnabled,
         gst_rate: gstEnabled ? effectiveGstRate : undefined,
         gst_amount: gstEnabled ? gstAmount : undefined,
@@ -675,9 +695,9 @@ function UnifiedSaleBody() {
           // scalar fields entirely for this form (see RecordShopSaleModal).
           home_expense_lines: toHomeExpenseLinesPayload(homeExpenseLines),
           owner_drawings_amount: ownerDrawingsNum,
-          destination_type: destinationType,
-          target_plant_id: destinationType === "plant" ? (targetPlantId || companyId) : undefined,
-          account_id: destinationType === "account" ? accountCategory : undefined,
+          destination_type: routesRemainder ? destinationType : "plant",
+          target_plant_id: routesRemainder && destinationType === "plant" ? (targetPlantId || companyId) : undefined,
+          account_id: routesRemainder && destinationType === "account" ? accountCategory : undefined,
           payment_reference: paymentReference.trim() || undefined,
         },
         gate_pass_no: gatePassNo || undefined,
@@ -755,6 +775,10 @@ function UnifiedSaleBody() {
   // side — see routers/payments.py._attach_destination_info) are the real
   // source of truth for where this payment actually went.
   const resolvePaymentAccountLabel = (p: Payment) => {
+    const fullyDeducted = fullyDeductedLabel(
+      Number(p.amount), Number(p.home_expense_amount || 0), Number(p.owner_drawings_amount || 0), t,
+    );
+    if (fullyDeducted) return fullyDeducted;
     if (p.destination_type === "plant") {
       const plant = companies.find((c) => c.id === p.target_plant_id);
       return plant ? t("payments.plantLabel", { name: plant.name }) : t("payments.plantSettlementBadge");
@@ -766,6 +790,10 @@ function UnifiedSaleBody() {
   };
 
   const getDestinationLabel = (r: UnifiedSaleBatch) => {
+    const fullyDeducted = fullyDeductedLabel(
+      Number(r.total_credit_received), Number(r.home_expense_amount), Number(r.owner_drawings_amount), t,
+    );
+    if (fullyDeducted) return fullyDeducted;
     if (r.destination_type === "account") {
       return resolveAccountLabel(r.account_id, accounts);
     }
@@ -876,13 +904,13 @@ function UnifiedSaleBody() {
         </Td>
         <Td dense={dense} mono color="#8E8E93">{fmtTime(r.date)}</Td>
         <Td dense={dense} bold>
-          <div className="whitespace-nowrap" title={c?.name || "—"}>{c?.name || "—"}</div>
+          <div className="whitespace-nowrap" title={c?.name || r.customer_label || "—"}>{c?.name || r.customer_label || "—"}</div>
         </Td>
         <Td dense={dense} right mono bold>{Number(r.qty_11_8kg || 0)}</Td>
         <Td dense={dense} right mono bold>{Number(r.qty_45_4kg || 0)}</Td>
         <Td dense={dense}>
           <span className="inline-flex items-center px-2 py-1 rounded-md bg-slate-100 text-slate-800 text-[11px] font-medium border border-slate-200 whitespace-nowrap">
-            {plant?.name || r.company_id || "—"}
+            {plant?.name || r.company_label || r.company_id || "—"}
           </span>
         </Td>
         <Td dense={dense} right mono color="#0F8B8D">
@@ -972,11 +1000,11 @@ function UnifiedSaleBody() {
         <Td dense={dense} mono color="#8E8E93">{fmtTime(r.date)}</Td>
         <Td dense={dense}>
           <span className="inline-flex items-center px-2 py-1 rounded-md bg-slate-100 text-slate-800 text-[11px] font-medium border border-slate-200 whitespace-nowrap">
-            {plant?.name || r.company_id || "—"}
+            {plant?.name || r.company_label || r.company_id || "—"}
           </span>
         </Td>
         <Td dense={dense} bold>
-          <div className="whitespace-nowrap" title={c?.name || "—"}>{c?.name || "—"}</div>
+          <div className="whitespace-nowrap" title={c?.name || r.customer_label || "—"}>{c?.name || r.customer_label || "—"}</div>
         </Td>
         <Td dense={dense} right mono color="#1E8A5F" bold>
           <span className="whitespace-nowrap">{pkr(netAmount)}</span>
@@ -1322,27 +1350,52 @@ function UnifiedSaleBody() {
                   })}
                 </div>
 
-                {(activeItems.length > 0 || deliveryChargesNum > 0) && (
-                  <div className="grid grid-cols-3 gap-2 mt-3">
-                    <div className="px-3 py-2 bg-ink rounded-md">
-                      <div className="font-mono text-[9.5px] text-[#9FD8D8] uppercase">{t("unifiedSale.sellingTotal")}</div>
-                      <div className="font-display font-bold text-xs sm:text-sm text-white mt-0.5">{pkr(totalSelling)}</div>
-                    </div>
-                    <div className="px-3 py-2 bg-ink rounded-md">
-                      <div className="font-mono text-[9.5px] text-[#9FD8D8] uppercase">{t("unifiedSale.purchaseTotal")}</div>
-                      <div className="font-display font-bold text-xs sm:text-sm text-white mt-0.5">{pkr(totalPurchase)}</div>
-                    </div>
-                    <div className="px-3 py-2 bg-ink rounded-md">
-                      <div className="font-mono text-[9.5px] text-[#9FD8D8] uppercase">{t("unifiedSale.margin")}</div>
-                      <div className="font-display font-bold text-xs sm:text-sm text-white mt-0.5">{pkr(margin)}</div>
-                    </div>
+                {/* Always rendered (Rs 0 while no quantity is entered) so the
+                    bar doesn't pop in and out of the layout as the user types. */}
+                <div className="grid grid-cols-3 gap-2 mt-3">
+                  <div className="px-3 py-2 bg-ink rounded-md">
+                    <div className="font-mono text-[9.5px] text-[#9FD8D8] uppercase">{t("unifiedSale.sellingTotal")}</div>
+                    <div className="font-display font-bold text-xs sm:text-sm text-white mt-0.5">{pkr(totalSelling)}</div>
                   </div>
-                )}
+                  <div className="px-3 py-2 bg-ink rounded-md">
+                    <div className="font-mono text-[9.5px] text-[#9FD8D8] uppercase">{t("unifiedSale.purchaseTotal")}</div>
+                    <div className="font-display font-bold text-xs sm:text-sm text-white mt-0.5">{pkr(totalPurchase)}</div>
+                  </div>
+                  <div className="px-3 py-2 bg-ink rounded-md">
+                    <div className="font-mono text-[9.5px] text-[#9FD8D8] uppercase">{t("unifiedSale.margin")}</div>
+                    <div className="font-display font-bold text-xs sm:text-sm text-white mt-0.5">{pkr(margin)}</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Discount Section — optional, applied to the whole batch's
+                  total_selling_amount BEFORE GST (GST is then computed on
+                  the discounted base); frozen server-side at create/edit. */}
+              <div className="border-t border-hairline pt-4">
+                <Eyebrow>{t("unifiedSale.discountSectionTitle")}</Eyebrow>
+                <div className="flex items-center gap-3 mt-2">
+                  <label className="flex items-center gap-1.5 font-body text-[13px] text-ink cursor-pointer">
+                    <input type="checkbox" checked={discountEnabled} onChange={(e) => setDiscountEnabled(e.target.checked)} />
+                    {t("unifiedSale.applyDiscount")}
+                  </label>
+                  {discountEnabled && (
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.01"
+                      value={discountRate}
+                      onChange={(e) => setDiscountRate(e.target.value)}
+                      placeholder="Rate %"
+                      className={`${inputClass} w-24`}
+                    />
+                  )}
+                </div>
               </div>
 
               {/* GST Section (§ GST on Sale) — optional, applies to the
-                  whole batch's total_selling_amount; frozen server-side
-                  at create/edit time. */}
+                  discounted base (or the whole batch's total_selling_amount
+                  when no discount); frozen server-side at create/edit time. */}
               <div className="border-t border-hairline pt-4">
                 <Eyebrow>{t("unifiedSale.gstSectionTitle")}</Eyebrow>
                 <div className="flex items-center gap-3 mt-2">
@@ -1363,20 +1416,40 @@ function UnifiedSaleBody() {
                   )}
                 </div>
 
-                {gstEnabled && effectiveGstRate > 0 && (
+                {((gstEnabled && effectiveGstRate > 0) || (discountEnabled && effectiveDiscountRate > 0)) && (
                   <div className="flex flex-col gap-1 px-3 py-2.5 bg-ink rounded-lg mt-3">
                     <div className="flex justify-between items-center">
                       <span className="font-mono text-[10.5px] text-[#9FD8D8] tracking-wide uppercase">
-                        {t("unifiedSale.valueExclTax")}
+                        {discountEnabled && effectiveDiscountRate > 0 ? t("unifiedSale.subtotal") : t("unifiedSale.valueExclTax")}
                       </span>
                       <span className="font-display font-semibold text-sm text-white">{pkr(totalSelling)}</span>
                     </div>
-                    <div className="flex justify-between items-center">
-                      <span className="font-mono text-[10.5px] text-[#9FD8D8] tracking-wide uppercase">
-                        GST @ {gstRate}%
-                      </span>
-                      <span className="font-display font-semibold text-sm text-white">{pkr(gstAmount)}</span>
-                    </div>
+                    {discountEnabled && effectiveDiscountRate > 0 && (
+                      <>
+                        <div className="flex justify-between items-center">
+                          <span className="font-mono text-[10.5px] text-[#9FD8D8] tracking-wide uppercase">
+                            {t("unifiedSale.discount")} @ {discountRate}% (−)
+                          </span>
+                          <span className="font-display font-semibold text-sm text-white">−{pkr(discountAmount)}</span>
+                        </div>
+                        {gstEnabled && effectiveGstRate > 0 && (
+                          <div className="flex justify-between items-center">
+                            <span className="font-mono text-[10.5px] text-[#9FD8D8] tracking-wide uppercase">
+                              {t("unifiedSale.discountedSubtotal")}
+                            </span>
+                            <span className="font-display font-semibold text-sm text-white">{pkr(discountedBase)}</span>
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {gstEnabled && effectiveGstRate > 0 && (
+                      <div className="flex justify-between items-center">
+                        <span className="font-mono text-[10.5px] text-[#9FD8D8] tracking-wide uppercase">
+                          GST @ {gstRate}% (+)
+                        </span>
+                        <span className="font-display font-semibold text-sm text-white">{pkr(gstAmount)}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between items-center border-t border-white/20 pt-1 mt-0.5">
                       <span className="font-mono text-[11px] text-[#9FD8D8] tracking-wide uppercase">
                         {t("unifiedSale.grandTotal")}
@@ -1799,7 +1872,7 @@ function UnifiedSaleBody() {
                   <Panel>
                     <div className="mt-1"><DateFilterToolbar value={saleDateFilter} onChange={setSaleDateFilter} /></div>
                     <div className="mt-3 overflow-x-auto">
-                      <table className="w-full min-w-[1450px] border-collapse">
+                      <table className="w-full min-w-[1550px] border-collapse">
                         <thead>
                           <tr className="border-b border-hairline text-left">
                             <Th>{t("unifiedSale.colId")}</Th>
@@ -1810,6 +1883,7 @@ function UnifiedSaleBody() {
                             <Th right>{t("unifiedSale.colSellingRate")}</Th>
                             <Th right>{t("unifiedSale.colPurchaseRate")}</Th>
                             <Th right>{t("unifiedSale.colValueExclTax")}</Th>
+                            <Th right>{t("unifiedSale.colDiscount")}</Th>
                             <Th right>{t("unifiedSale.colGstRate")}</Th>
                             <Th right>{t("unifiedSale.colGstAmount")}</Th>
                             <Th right>{t("unifiedSale.colDeliveryCharges")}</Th>
@@ -1829,12 +1903,13 @@ function UnifiedSaleBody() {
                                 <tr key={row.key} className="hover:bg-paper/60 transition-colors">
                                   <Td mono>{s.display_id}</Td>
                                   <Td mono>{fmtTime(s.date)}</Td>
-                                  <Td bold>{c?.name || "—"}</Td>
+                                  <Td bold>{c?.name || s.customer_label || "—"}</Td>
                                   <Td>{product?.name || "—"}</Td>
                                   <Td right mono>{fmtNumber(s.quantity, 2)}</Td>
                                   <Td right mono>{s.rate_per_cylinder ? pkr(s.rate_per_cylinder) : "—"}</Td>
                                   <Td right mono color="#8E8E93">{purchaseRate ? pkr(purchaseRate) : "—"}</Td>
                                   <Td right mono>{pkr(s.total_amount)}</Td>
+                                  <Td right mono>{s.discount_amount && parseFloat(s.discount_amount) > 0 ? pkr(s.discount_amount) : "—"}</Td>
                                   <Td right mono>{s.gst_rate ? `${s.gst_rate}%` : "—"}</Td>
                                   <Td right mono>{s.gst_amount && parseFloat(s.gst_amount) > 0 ? pkr(s.gst_amount) : "—"}</Td>
                                   <Td right mono>—</Td>
@@ -1875,12 +1950,13 @@ function UnifiedSaleBody() {
                                 <tr className="bg-teal/5 hover:bg-teal/10 transition-colors">
                                   <Td mono bold>{batch?.display_id || t("unifiedSale.unifiedSaleFallback")}</Td>
                                   <Td mono>{fmtTime(row.date)}</Td>
-                                  <Td bold>{c?.name || "—"}</Td>
+                                  <Td bold>{c?.name || batch?.customer_label || "—"}</Td>
                                   <Td>{productNames}</Td>
                                   <Td right mono>{fmtNumber(totalQty, 2)}</Td>
                                   <Td right mono>{sellingRates}</Td>
                                   <Td right mono color="#8E8E93">{purchaseRates}</Td>
                                   <Td right mono>{pkr(valueExclTax)}</Td>
+                                  <Td right mono>{batch?.discount_amount && parseFloat(batch.discount_amount) > 0 ? pkr(batch.discount_amount) : "—"}</Td>
                                   <Td right mono>{batch?.gst_rate ? `${batch.gst_rate}%` : "—"}</Td>
                                   <Td right mono>{batch?.gst_amount && parseFloat(batch.gst_amount) > 0 ? pkr(batch.gst_amount) : "—"}</Td>
                                   <Td right mono>{batch?.delivery_charges && parseFloat(batch.delivery_charges) > 0 ? pkr(batch.delivery_charges) : "—"}</Td>
@@ -1905,6 +1981,7 @@ function UnifiedSaleBody() {
                                       <Td right mono>{s.rate_per_cylinder ? pkr(s.rate_per_cylinder) : "—"}</Td>
                                       <Td right mono color="#8E8E93">{purchaseRate ? pkr(purchaseRate) : "—"}</Td>
                                       <Td right mono>{pkr(s.total_amount)}</Td>
+                                      <Td right mono>—</Td>
                                       <Td right mono>—</Td>
                                       <Td right mono>—</Td>
                                       <Td right mono>—</Td>
@@ -1938,7 +2015,7 @@ function UnifiedSaleBody() {
                             );
                           })}
                           {!approvedSaleRows.length && (
-                            <tr><td colSpan={14} className="text-steel font-body text-[13px] py-6 text-center">{t("unifiedSale.noSalesFoundFilter")}</td></tr>
+                            <tr><td colSpan={15} className="text-steel font-body text-[13px] py-6 text-center">{t("unifiedSale.noSalesFoundFilter")}</td></tr>
                           )}
                         </tbody>
                       </table>
@@ -1991,7 +2068,7 @@ function UnifiedSaleBody() {
                               <tr key={p.id} className="hover:bg-paper/60 transition-colors">
                                 <Td mono>{p.display_id}</Td>
                                 <Td mono>{fmtTime(p.date)}</Td>
-                                <Td bold>{c?.name || "—"}</Td>
+                                <Td bold>{c?.name || p.customer_label || "—"}</Td>
                                 <Td right mono bold color="#1E8A5F">{pkr(p.amount)}</Td>
                                 <Td mono>{p.method}</Td>
                                 <Td mono color="#8E8E93">{resolvePaymentAccountLabel(p)}</Td>

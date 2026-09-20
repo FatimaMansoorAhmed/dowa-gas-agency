@@ -74,7 +74,7 @@ def _validate_payment_receipt(db: Session, payload):
     if bypass_sum > payload.amount + EPSILON:
         raise HTTPException(
             400,
-            f"Home expense ({payload.home_expense_amount}) + owner drawings ({payload.owner_drawings_amount}) "
+            f"Expense ({payload.home_expense_amount}) + owner drawings ({payload.owner_drawings_amount}) "
             f"= {bypass_sum} exceeds amount received ({payload.amount}).",
         )
 

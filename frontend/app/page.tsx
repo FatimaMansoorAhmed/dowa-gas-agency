@@ -18,6 +18,32 @@ function currentMonth() {
   return todayLocalInput().slice(0, 7);
 }
 
+// § Dashboard P&L UI (§ Profit/Loss UI refinement) — same visual language
+// as the KPI cards above (Eyebrow-style mono uppercase label + a bold
+// font-display figure), just reused at two sizes: PnLStat for the
+// Combined card's tile grid, PnLRow for a channel card's stacked list.
+function PnLStat({ label, value, prominent = false }: { label: string; value: number; prominent?: boolean }) {
+  return (
+    <div>
+      <div className="font-mono text-[10px] tracking-widest uppercase text-steel mb-1">{label}</div>
+      <div className={`font-display font-bold ${prominent ? "text-[24px]" : "text-lg"} ${prominent ? (value >= 0 ? "text-brand-green" : "text-brand-red") : "text-ink"}`}>
+        {pkr(value)}
+      </div>
+    </div>
+  );
+}
+
+function PnLRow({ label, value, prominent = false }: { label: string; value: number; prominent?: boolean }) {
+  return (
+    <div className={`flex items-center justify-between ${prominent ? "mt-1.5 pt-2 border-t border-hairline" : "py-0.5"}`}>
+      <span className={`font-mono text-[11px] tracking-wide uppercase ${prominent ? "text-ink font-semibold" : "text-steel"}`}>{label}</span>
+      <span className={`font-display font-bold ${prominent ? `text-[20px] ${value >= 0 ? "text-brand-green" : "text-brand-red"}` : "text-[14px] text-ink"}`}>
+        {pkr(value)}
+      </span>
+    </div>
+  );
+}
+
 function DashboardBody() {
   const router = useRouter();
   const { t } = useTranslation();
@@ -106,18 +132,60 @@ function DashboardBody() {
   const hasSalesData = salesMTD.length > 0;
   const hasExpenseData = expensesMTD.length > 0;
 
-  // Profit / Loss (§ Dashboard) — Sale Revenue − Purchase Cost (COGS) −
-  // Expenses (plant + shop, combined for free now that Shop Expenses are
-  // dual-written into the same /expenses table — see routers/shops.py's
-  // create_shop_expense). Owner Drawings deliberately kept OUT of this
-  // primary figure — OwnerDrawings' own established convention elsewhere
-  // in this app is "must never reduce reported profit" — and shown as a
-  // separate, clearly-labeled second line instead.
+  // Segregated Profit Centers (§ Dashboard — Wholesale/Shop P&L) — Wholesale
+  // and Shop are two independent businesses sharing one ledger, so pooling
+  // Shop's expenses into a Wholesale-revenue-only Gross Profit (the old
+  // behavior here) understated Net Profit by exactly however much Shop
+  // spent, with nothing on the revenue side to offset it. Every Shop-
+  // originated Expense row is identifiable from data that already exists —
+  // either shop_id (set directly by the standalone Shop Expense form and
+  // the multi-line Shop Sale Home Expense path) or one of the source_shop_
+  // *_id lineage FKs (set by apply_settlement_routing for Shop Cash
+  // Transfer/Shop Customer Payment/legacy single-amount Shop Sale Home
+  // Expense, which never set shop_id itself) or shop_origin_label (the
+  // permanent snapshot Delete Shop leaves once the shop itself is gone) —
+  // never a new column, just recognizing the FKs Expense already has.
+  const isShopExpense = (e: Expense) =>
+    !!(e.shop_id || e.source_shop_sale_id || e.source_shop_cash_transfer_id || e.source_shop_customer_payment_id || e.shop_origin_label);
+  const wholesaleExpensesMTD = expensesMTD.filter((e) => !isShopExpense(e));
+  const shopExpensesMTD = expensesMTD.filter(isShopExpense);
+  const wholesaleExpensesTotal = wholesaleExpensesMTD.reduce((s, x) => s + parseFloat(x.amount), 0);
+  const shopExpensesTotal = shopExpensesMTD.reduce((s, x) => s + parseFloat(x.amount), 0);
+
+  // Wholesale channel — Sale/Purchase already exclude Shop entirely (a
+  // Shop's Load posts to the Sale table too, but that IS a real Wholesale
+  // transaction — Dowa selling to the shop at the wholesale rate — so it
+  // belongs here, not double-counted as Shop revenue).
   const totalPurchasesMTD = purchasesMTD.reduce((s, x) => s + parseFloat(x.total_amount), 0);
+  const wholesaleGrossProfit = totalSalesMTD - totalPurchasesMTD;
+  const wholesaleNetProfit = wholesaleGrossProfit - wholesaleExpensesTotal;
+
+  // Shop channel — Sales from the existing shopSalesMTD feed; COGS from
+  // each sale's own cogs_amount (routers/shops.py's list_shop_sales,
+  // computed from the FIFO ShopStockBatch(es) it actually drew from at
+  // that batch's frozen Load-time rate — the only Shop cost data that
+  // already exists and is reliable; nothing here is estimated).
+  const shopSalesTotal = shopSalesMTD.reduce((s, x) => s + parseFloat(x.total_amount), 0);
+  const shopCOGSTotal = shopSalesMTD.reduce((s, x) => s + parseFloat(x.cogs_amount || "0"), 0);
+  const shopGrossProfit = shopSalesTotal - shopCOGSTotal;
+  const shopNetProfit = shopGrossProfit - shopExpensesTotal;
+
+  // Combined — the sum of the two already-complete channel P&Ls (never a
+  // pooled-revenue/pooled-cost recomputation), so it can never silently
+  // drift from Wholesale + Shop again.
+  const combinedSales = totalSalesMTD + shopSalesTotal;
+  const combinedCOGS = totalPurchasesMTD + shopCOGSTotal;
+  const combinedGrossProfit = wholesaleGrossProfit + shopGrossProfit;
+  const combinedExpenses = wholesaleExpensesTotal + shopExpensesTotal;
+  const combinedNetProfit = wholesaleNetProfit + shopNetProfit;
+
+  // Owner Drawings stay a single Combined-level line, exactly as before —
+  // OwnerDrawings' own established convention elsewhere in this app is
+  // "must never reduce reported profit," shown separately rather than
+  // split per channel (not requested, and Drawings aren't tied to either
+  // channel specifically).
   const totalOwnerDrawingsMTD = ownerDrawingsMTD.reduce((s, x) => s + parseFloat(x.amount), 0);
-  const grossProfit = totalSalesMTD - totalPurchasesMTD;
-  const netProfitLoss = grossProfit - totalExpensesMTD;
-  const netProfitAfterDrawings = netProfitLoss - totalOwnerDrawingsMTD;
+  const netProfitAfterDrawings = combinedNetProfit - totalOwnerDrawingsMTD;
 
   // Sale / Purc / Total Tonnage cards (§ Dashboard) — total_kg is already
   // stored per row at write time (Sale/Purchase), combining both cylinder
@@ -170,9 +238,11 @@ function DashboardBody() {
 
         <Panel className="min-h-[96px]">
           <Eyebrow>{t("dashboard.totalSaleAmount")}</Eyebrow>
-          <div className="font-display font-bold text-2xl text-ink">{pkr(totalSalesMTD)}</div>
+          <div className="font-display font-bold text-2xl text-ink">{pkr(combinedSales)}</div>
           <div className="font-body text-[11px] text-steel mt-1">
-            {hasSalesData ? t("dashboard.salesThisMonth", { count: salesMTD.length }) : t("dashboard.noSalesYet")}
+            {hasSalesData || shopSalesMTD.length
+              ? t("dashboard.salesThisMonth", { count: salesMTD.length + shopSalesMTD.length })
+              : t("dashboard.noSalesYet")}
           </div>
         </Panel>
 
@@ -228,41 +298,42 @@ function DashboardBody() {
       </div>
 
       <Panel className="mb-3.5">
-        <Eyebrow>{t("dashboard.pnlEyebrow", { month })}</Eyebrow>
-        <SectionCaption>
-          {t("dashboard.pnlCaption")}
-        </SectionCaption>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 mt-1">
-          <div className="rounded-lg border border-hairline bg-paper px-4 py-3.5">
-            <div className="font-mono text-[10px] uppercase text-steel tracking-wide">{t("dashboard.grossProfit")}</div>
-            <div className={`font-display font-bold text-[26px] mt-0.5 ${grossProfit >= 0 ? "text-brand-green" : "text-brand-red"}`}>
-              {pkr(grossProfit)}
-            </div>
-            <div className="font-mono text-[10.5px] text-steel mt-1.5 flex flex-wrap gap-x-3">
-              <span>{t("dashboard.salesLabel", { amount: pkr(totalSalesMTD) })}</span>
-              <span>{t("dashboard.cogsLabel", { amount: pkr(totalPurchasesMTD) })}</span>
-            </div>
-          </div>
-          <div className="rounded-lg border border-hairline bg-paper px-4 py-3.5">
-            <div className="font-mono text-[10px] uppercase text-steel tracking-wide">{t("dashboard.netProfitLoss")}</div>
-            <div className={`font-display font-bold text-[26px] mt-0.5 ${netProfitLoss >= 0 ? "text-brand-green" : "text-brand-red"}`}>
-              {pkr(netProfitLoss)}
-            </div>
-            <div className="font-mono text-[10.5px] text-steel mt-1.5 flex flex-wrap gap-x-3">
-              <span>{t("dashboard.grossProfitLabel", { amount: pkr(grossProfit) })}</span>
-              <span>{t("dashboard.expensesLabel", { amount: pkr(totalExpensesMTD) })}</span>
-            </div>
-          </div>
-          <div className="rounded-lg border border-hairline bg-paper px-4 py-3.5">
-            <div className="font-mono text-[10px] uppercase text-steel tracking-wide">{t("dashboard.afterOwnerWithdrawals")}</div>
-            <div className={`font-display font-bold text-[26px] mt-0.5 ${netProfitAfterDrawings >= 0 ? "text-ink" : "text-brand-red"}`}>
-              {pkr(netProfitAfterDrawings)}
-            </div>
-            <div className="font-mono text-[10.5px] text-steel mt-1.5">
-              {t("dashboard.netProfitMinusDrawings", { amount: pkr(totalOwnerDrawingsMTD) })}
-            </div>
+        <div className="flex items-baseline justify-between flex-wrap gap-1 mb-4">
+          <h2 className="font-display font-bold text-[16px] text-ink">{t("dashboard.pnlEyebrow")}</h2>
+          <span className="font-mono text-[10.5px] text-steel">{month}</span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <PnLStat label={t("dashboard.rowSales")} value={combinedSales} />
+          <PnLStat label={t("dashboard.rowCogs")} value={combinedCOGS} />
+          <PnLStat label={t("dashboard.rowGrossProfit")} value={combinedGrossProfit} prominent />
+          <PnLStat label={t("dashboard.rowExpenses")} value={combinedExpenses} />
+          <PnLStat label={t("dashboard.rowOwnerWithdrawals")} value={totalOwnerDrawingsMTD} />
+          <PnLStat label={t("dashboard.rowNetProfit")} value={combinedNetProfit} prominent />
+          <PnLStat label={t("dashboard.afterOwnerWithdrawals")} value={netProfitAfterDrawings} prominent />
+        </div>
+
+        <div className="mt-5 pt-4 border-t border-hairline">
+          <h3 className="font-display font-bold text-[14px] text-ink mb-3">{t("dashboard.channelBreakdownEyebrow")}</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+            <Panel className="!bg-paper">
+              <Eyebrow>{t("dashboard.wholesaleChannel")}</Eyebrow>
+              <PnLRow label={t("dashboard.rowSales")} value={totalSalesMTD} />
+              <PnLRow label={t("dashboard.rowCogs")} value={totalPurchasesMTD} />
+              <PnLRow label={t("dashboard.rowGrossProfit")} value={wholesaleGrossProfit} prominent />
+              <PnLRow label={t("dashboard.rowExpenses")} value={wholesaleExpensesTotal} />
+              <PnLRow label={t("dashboard.rowNetProfit")} value={wholesaleNetProfit} prominent />
+            </Panel>
+            <Panel className="!bg-paper">
+              <Eyebrow>{t("dashboard.shopChannel")}</Eyebrow>
+              <PnLRow label={t("dashboard.rowSales")} value={shopSalesTotal} />
+              <PnLRow label={t("dashboard.rowCogs")} value={shopCOGSTotal} />
+              <PnLRow label={t("dashboard.rowGrossProfit")} value={shopGrossProfit} prominent />
+              <PnLRow label={t("dashboard.rowExpenses")} value={shopExpensesTotal} />
+              <PnLRow label={t("dashboard.rowNetProfit")} value={shopNetProfit} prominent />
+            </Panel>
           </div>
         </div>
+
         <div className="mt-4 pt-4 border-t border-hairline">
           <DashboardPnLChart sales={allSales} purchases={allPurchases} expenses={allExpenses} drawings={allDrawings} />
         </div>

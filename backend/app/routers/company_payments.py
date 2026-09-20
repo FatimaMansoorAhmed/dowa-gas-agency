@@ -9,7 +9,7 @@ from app import models, schemas
 from app.deps import require_active_user, require_csrf
 from app.reporting.invoice_pdf import render_company_payment_invoice_pdf
 from app.timezone import KARACHI_TZ
-from app.utils import next_display_id
+from app.utils import next_display_id, require_live_company
 
 router = APIRouter(prefix="/company-payments", tags=["company-payments"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
@@ -91,7 +91,7 @@ def _apply_company_payment(db: Session, payload: schemas.CompanyPaymentCreate, e
 def _reverse_company_payment(db: Session, payment: models.CompanyPayment) -> None:
     """Undoes exactly what _apply_company_payment posted. Shared by
     cancel_company_payment and correct_company_payment (§1)."""
-    company = db.query(models.Company).get(payment.company_id)
+    company = require_live_company(db, payment.company_id)
     company.current_balance = company.current_balance + payment.amount
     if payment.excess_amount:
         company.account_credit = company.account_credit - payment.excess_amount

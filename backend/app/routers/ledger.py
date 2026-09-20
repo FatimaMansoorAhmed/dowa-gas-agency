@@ -348,7 +348,7 @@ def customer_monthly_ledger(
                 qty_118=q118, qty_454=q454, cyl_out=s.quantity,
                 entered_by=s.entered_by, correctable=True,
                 rate_per_cylinder=s.rate_per_cylinder, rate_per_kg=s.rate_per_kg,
-                gst_rate=s.gst_rate, gst_amount=s.gst_amount,
+                gst_rate=s.gst_rate, gst_amount=s.gst_amount, discount_amount=s.discount_amount,
             ))
         elif e["kind"] == "payment":
             p: models.Payment = e["obj"]
@@ -405,7 +405,7 @@ def customer_monthly_ledger(
                 sale_amount=b.grand_total, payment_amount=b.total_credit_received,
                 running_balance=running, qty_118=q118, qty_454=q454, cyl_out=q118 + q454,
                 unified_sale_rates=batch_rates or None,
-                gst_rate=b.gst_rate, gst_amount=b.gst_amount,
+                gst_rate=b.gst_rate, gst_amount=b.gst_amount, discount_amount=b.discount_amount,
             ))
         elif e["kind"] == "empty_cylinder_sale":
             ecs: models.EmptyCylinderSale = e["obj"]

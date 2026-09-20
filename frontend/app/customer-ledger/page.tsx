@@ -416,6 +416,7 @@ function CustomerLedgerBody() {
                           <Th right>{t("customerLedger.colRate")}</Th>
                           <Th right>{t("customerLedger.kg118Sold")}</Th>
                           <Th right>{t("customerLedger.kg454Sold")}</Th>
+                          <Th right>{t("customerLedger.colDiscount")}</Th>
                           <Th right>{t("customerLedger.colGst")}</Th>
                           <Th right>{t("customerLedger.colSale")}</Th>
                           <Th right>{t("customerLedger.colPayment")}</Th>
@@ -426,7 +427,7 @@ function CustomerLedgerBody() {
                       </thead>
                       <tbody>
                         <tr>
-                          <Td colSpan={9}>{t("customerLedger.openingBalanceRow")}</Td>
+                          <Td colSpan={10}>{t("customerLedger.openingBalanceRow")}</Td>
                           <Td right mono bold>
                             {pkr(summary.opening_balance)}
                           </Td>
@@ -446,6 +447,9 @@ function CustomerLedgerBody() {
                             </Td>
                             <Td right mono>{parseFloat(r.qty_118) ? r.qty_118 : "—"}</Td>
                             <Td right mono>{parseFloat(r.qty_454) ? r.qty_454 : "—"}</Td>
+                            <Td right mono>
+                              {r.discount_amount && parseFloat(r.discount_amount) > 0 ? pkr(r.discount_amount) : "—"}
+                            </Td>
                             <Td right mono>
                               {r.gst_rate && parseFloat(r.gst_rate) > 0 ? (
                                 <span title={`${t("customerLedger.colGst")}: ${r.gst_rate}%`}>
@@ -481,7 +485,7 @@ function CustomerLedgerBody() {
                         ))}
                         {!summary.rows.length && (
                           <tr>
-                            <td colSpan={12} className="text-steel font-body text-[13px] py-4 text-center">
+                            <td colSpan={13} className="text-steel font-body text-[13px] py-4 text-center">
                               {t("customerLedger.noTransactionsThisMonth")}
                             </td>
                           </tr>

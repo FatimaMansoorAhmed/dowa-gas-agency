@@ -615,6 +615,10 @@ function TransactionHistoryModal({
                   </th>
 
                   <th className="border-r border-slate-200 px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                    {t("customerLedger.colDiscount")}
+                  </th>
+
+                  <th className="border-r border-slate-200 px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                     {t("customerLedger.colGst")}
                   </th>
 
@@ -713,6 +717,10 @@ function TransactionHistoryModal({
                           : row.load_rate_per_kg
                           ? `${pkr(row.load_rate_per_kg)}/kg`
                           : "—"}
+                      </td>
+
+                      <td className="border-r border-slate-100 px-4 py-3 text-right font-mono text-xs text-slate-600">
+                        {row.discount_amount && parseFloat(row.discount_amount) > 0 ? pkr(row.discount_amount) : "—"}
                       </td>
 
                       <td className="border-r border-slate-100 px-4 py-3 text-right font-mono text-xs text-slate-600">
@@ -824,7 +832,7 @@ function TransactionHistoryModal({
                 {!transactions.length && (
                   <tr>
                     <td
-                      colSpan={14}
+                      colSpan={15}
                       className="py-16 text-center"
                     >
                       <div className="flex flex-col items-center">
@@ -1818,6 +1826,10 @@ function TransactionHistoryModal({
                         </th>
 
                         <th className="border-r border-slate-200 px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                          {t("customerLedger.colDiscount")}
+                        </th>
+
+                        <th className="border-r border-slate-200 px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                           {t("customerLedger.colGst")}
                         </th>
 
@@ -1897,6 +1909,10 @@ function TransactionHistoryModal({
 
                             <td className="border-r border-slate-100 px-4 py-3 text-right font-mono text-xs font-medium text-slate-700">
                               {pkr(r.amount)}
+                            </td>
+
+                            <td className="border-r border-slate-100 px-4 py-3 text-right font-mono text-xs text-slate-600">
+                              {r.discount_amount && parseFloat(r.discount_amount) > 0 ? pkr(r.discount_amount) : "—"}
                             </td>
 
                             <td className="border-r border-slate-100 px-4 py-3 text-right font-mono text-xs text-slate-600">
@@ -2487,6 +2503,10 @@ function TransactionHistoryModal({
             onReceivePayment={(customer) => {
               setShowCustomerLedger(false);
               setPayCustomerTarget(customer);
+            }}
+            onDeleted={() => {
+              api.shops.customers.list(shopId).then(setSupplyCustomers);
+              load();
             }}
           />
         )}

@@ -1,16 +1,18 @@
+import json
 from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.database import get_db
 from app import models, schemas
-from app.deps import require_active_user, require_csrf
+from app.deps import require_active_user, require_csrf, require_owner
 from app.reporting.invoice_pdf import render_shop_sale_invoice_pdf, render_shop_statement_pdf, render_supply_customer_statement_pdf
-from app.utils import next_display_id, get_or_create_shop_account, log_audit, resolve_settlement_destination, apply_settlement_routing, apply_salary_expense_if_needed, is_salary_category, compute_gst
+from app.utils import next_display_id, get_or_create_shop_account, log_audit, resolve_settlement_destination, apply_settlement_routing, apply_salary_expense_if_needed, is_salary_category, compute_sale_totals
 
 from app.timezone import KARACHI_TZ, karachi_day_bounds, karachi_today_str
 from app.routers.board_rates import resolve_board_rate
@@ -602,7 +604,14 @@ def _apply_shop_sale(db: Session, shop: models.Customer, payload: schemas.ShopSa
     # stock summary which never touches these fields); grand_total is what
     # is ACTUALLY owed/collected from here on, same separation already
     # proven for Sale/Unified Sale.
-    gst_enabled, gst_rate, gst_amount, grand_total = compute_gst(total_amount, payload.gst_enabled, payload.gst_rate)
+    # Discount (§ Discount, optional) applies FIRST; GST then runs on the
+    # discounted base. total_amount is never reduced — only grand_total is.
+    totals = compute_sale_totals(
+        total_amount, payload.discount_enabled, payload.discount_rate, payload.gst_enabled, payload.gst_rate,
+    )
+    gst_enabled, gst_rate, gst_amount, grand_total = (
+        totals["gst_enabled"], totals["gst_rate"], totals["gst_amount"], totals["grand_total"]
+    )
 
     # Inline Settlement (§2, Money Routing) — how much of grand_total was
     # actually collected right now. A Walk-in sale (no supply_customer) is
@@ -621,8 +630,13 @@ def _apply_shop_sale(db: Session, shop: models.Customer, payload: schemas.ShopSa
     else:
         default_received = grand_total if payload.payment_type == "cash" else Decimal("0")
         amount_received = payload.amount_received if payload.amount_received is not None else default_received
-        if amount_received < 0 or amount_received > grand_total:
-            raise HTTPException(400, f"amount_received must be between 0 and the sale total ({grand_total})")
+        # Paying MORE than this sale's total is allowed for a named supply
+        # customer (round-figure payments covering old dues, or leaving
+        # advance): the excess is simply a negative outstanding, which posts
+        # to their balance below as advance credit. Only a negative amount
+        # is invalid. (Walk-in never reaches here — always exactly grand_total.)
+        if amount_received < 0:
+            raise HTTPException(400, "amount_received cannot be negative")
 
     use_settlement_routing = amount_received > 0 and payload.destination_type is not None
     destination_account = None
@@ -648,7 +662,7 @@ def _apply_shop_sale(db: Session, shop: models.Customer, payload: schemas.ShopSa
     if use_settlement_routing:
         bypass_sum = home_expense_total + payload.owner_drawings_amount
         if bypass_sum > amount_received + Decimal("0.01"):
-            raise HTTPException(400, "Home expense + owner drawings exceeds the amount collected")
+            raise HTTPException(400, "Expense + owner drawings exceeds the amount collected")
         # Employee Salary Tracking (§ Employee Salary Tracking) — required
         # whenever a Home Expense category is the system "Salary" category,
         # same as every other Salary-entry surface. Checked per-line when
@@ -656,9 +670,9 @@ def _apply_shop_sale(db: Session, shop: models.Customer, payload: schemas.ShopSa
         if use_home_expense_lines:
             for line in home_expense_lines:
                 if line.amount > 0 and is_salary_category(db, line.category_id) and not line.employee_id:
-                    raise HTTPException(400, "Employee is required when a Home Expense line's category is Salary")
+                    raise HTTPException(400, "Employee is required when an Expense line's category is Salary")
         elif payload.home_expense_amount > 0 and is_salary_category(db, payload.home_expense_category_id) and not payload.home_expense_employee_id:
-            raise HTTPException(400, "Employee is required when Home Expense category is Salary")
+            raise HTTPException(400, "Employee is required when Expense category is Salary")
         settlement_net_amount = amount_received - home_expense_total - payload.owner_drawings_amount
         settlement_destination_type, settlement_target_plant_id, settlement_account_row, _ = resolve_settlement_destination(
             db, payload.destination_type, payload.target_plant_id, payload.account_id, settlement_net_amount, shop=shop
@@ -711,6 +725,9 @@ def _apply_shop_sale(db: Session, shop: models.Customer, payload: schemas.ShopSa
         sale_rate_per_cylinder=sale_rate_per_cylinder,
         total_amount=total_amount,
         manual_rate_override=manual_rate_override,
+        discount_enabled=totals["discount_enabled"],
+        discount_rate=totals["discount_rate"],
+        discount_amount=totals["discount_amount"],
         gst_enabled=gst_enabled,
         gst_rate=gst_rate,
         gst_amount=gst_amount,
@@ -745,7 +762,7 @@ def _apply_shop_sale(db: Session, shop: models.Customer, payload: schemas.ShopSa
     # outstanding > 0 since amount_received is force-set to grand_total
     # above whenever there's no supply_customer.
     outstanding = grand_total - amount_received
-    if supply_customer and outstanding > 0:
+    if supply_customer and outstanding != 0:
         supply_customer.current_balance = supply_customer.current_balance + outstanding
         db.add(supply_customer)
 
@@ -917,7 +934,7 @@ def _reverse_shop_sale(db: Session, sale: models.ShopSale) -> None:
     # actually bounded against at creation — identical to total_amount for
     # every pre-GST row (grand_total was backfilled to equal total_amount).
     outstanding = sale.grand_total - (sale.amount_received if sale.amount_received is not None else Decimal("0"))
-    if sale.supply_customer_id and outstanding > 0:
+    if sale.supply_customer_id and outstanding != 0:
         supply_customer = db.query(models.ShopSupplyCustomer).get(sale.supply_customer_id)
         if supply_customer:
             supply_customer.current_balance = supply_customer.current_balance - outstanding
@@ -957,10 +974,10 @@ def _apply_shop_cash_transfer(
 
     bypass_sum = payload.home_expense_amount + payload.owner_drawings_amount
     if bypass_sum > payload.gross_amount + Decimal("0.01"):
-        raise HTTPException(400, "Home expense + owner drawings exceeds the amount transferred")
+        raise HTTPException(400, "Expense + owner drawings exceeds the amount transferred")
     # Employee Salary Tracking (§ Employee Salary Tracking)
     if payload.home_expense_amount > 0 and is_salary_category(db, payload.home_expense_category_id) and not payload.home_expense_employee_id:
-        raise HTTPException(400, "Employee is required when Home Expense category is Salary")
+        raise HTTPException(400, "Employee is required when Expense category is Salary")
     net_amount = payload.gross_amount - payload.home_expense_amount - payload.owner_drawings_amount
 
     settlement_destination_type, settlement_target_plant_id, settlement_account_row, _ = resolve_settlement_destination(
@@ -1147,6 +1164,44 @@ def list_shop_sales(month: str | None = Query(None, description="YYYY-MM"), db: 
     )
     if month:
         rows = [r for r in rows if r.date.strftime("%Y-%m") == month]
+
+    # § Segregated Profit Centers (Dashboard) — Shop COGS. Reuses the exact
+    # FIFO trail already recorded for stock/correction purposes
+    # (ShopSaleBatchConsumption -> ShopStockBatch.load_rate_per_kg, the
+    # Rs/physical-kg rate frozen at Load time — see routers/sales.py's
+    # `load_rate_per_kg = rate_per_cylinder / product.weight_kg`). Never
+    # re-derived or estimated: just summed from history, batched here to
+    # avoid an N+1 query per sale.
+    sale_ids = [r.id for r in rows]
+    consumptions = (
+        db.query(models.ShopSaleBatchConsumption)
+        .filter(models.ShopSaleBatchConsumption.shop_sale_id.in_(sale_ids))
+        .all()
+        if sale_ids else []
+    )
+    batch_ids = {c.shop_stock_batch_id for c in consumptions}
+    batches = (
+        {b.id: b for b in db.query(models.ShopStockBatch).filter(models.ShopStockBatch.id.in_(batch_ids)).all()}
+        if batch_ids else {}
+    )
+    product_ids = {b.product_id for b in batches.values()}
+    products = (
+        {p.id: p for p in db.query(models.Product).filter(models.Product.id.in_(product_ids)).all()}
+        if product_ids else {}
+    )
+    cogs_by_sale: dict = {}
+    for c in consumptions:
+        batch = batches.get(c.shop_stock_batch_id)
+        if not batch:
+            continue
+        product = products.get(batch.product_id)
+        weight_kg = product.weight_kg if product else Decimal("0")
+        cost = Decimal(c.quantity_consumed) * Decimal(weight_kg) * Decimal(batch.load_rate_per_kg)
+        cogs_by_sale[c.shop_sale_id] = cogs_by_sale.get(c.shop_sale_id, Decimal("0")) + cost
+
+    for r in rows:
+        r.cogs_amount = cogs_by_sale.get(r.id, Decimal("0"))
+
     return rows
 
 
@@ -1222,8 +1277,8 @@ def get_shop_detail(
         sc = supply_customers.get(cp.supply_customer_id)
         transactions.append(schemas.ShopTransactionRow(
             kind="customer_payment", date=cp.date, ref_id=cp.id, display_id=cp.display_id,
-            description=f"Payment from {sc.name if sc else 'Unknown'} · {cp.method}",
-            amount=cp.amount, customer_name=sc.name if sc else "Unknown",
+            description=f"Payment from {sc.name if sc else (cp.supply_customer_label or 'Unknown')} · {cp.method}",
+            amount=cp.amount, customer_name=sc.name if sc else (cp.supply_customer_label or "Unknown"),
             settlement_destination_type=cp.settlement_destination_type,
             settlement_target_plant_id=cp.settlement_target_plant_id,
             settlement_account_id=cp.settlement_account_id,
@@ -1293,8 +1348,10 @@ def get_shop_detail(
         # dropdown value the cashier picked.
         credit_label = (
             (f" · CREDIT (partial: {received} paid, {outstanding} due)" if 0 < received < s.grand_total else " · CREDIT")
-            + (f" ({s.supply_customer.name})" if s.supply_customer_id else "")
-        ) if outstanding > 0 else ""
+            + (f" ({_supply_name(s)})" if s.supply_customer_id else "")
+        ) if outstanding > 0 else (
+            f" · ADVANCE ({-outstanding} over)" + (f" ({_supply_name(s)})" if s.supply_customer_id else "")
+        ) if outstanding < 0 else ""
         # Where the collected amount was routed (§ Settlement Routing) — the
         # shop-side counterpart to the plant ledger's payment-received row.
         # Null for a sale with nothing collected (all-credit) or a pre-
@@ -1307,13 +1364,13 @@ def get_shop_detail(
             description=f"Shop Sale — {product_name} × {qty_label}{credit_label}",
             quantity=s.quantity, board_rate_per_kg=s.board_rate_per_kg_used, cylinder_weight=s.cylinder_weight_used,
             sale_rate_per_cylinder=s.sale_rate_per_cylinder, amount=s.grand_total,
-            gst_rate=s.gst_rate, gst_amount=s.gst_amount,
+            gst_rate=s.gst_rate, gst_amount=s.gst_amount, discount_amount=s.discount_amount,
             home_expense_lines=s.home_expense_lines,
             amount_received=received, amount_outstanding=outstanding,
             # § Shop Statement — structured field for the same customer
             # name credit_label above already embeds into free text; "Walk-in
             # Customer" (not blank) when the sale named no supply customer.
-            customer_name=s.supply_customer.name if s.supply_customer_id else "Walk-in Customer",
+            customer_name=_supply_name(s) if s.supply_customer_id else "Walk-in Customer",
             settlement_destination_type=s.settlement_destination_type,
             settlement_target_plant_id=s.settlement_target_plant_id,
             settlement_account_id=s.settlement_account_id,
@@ -1757,6 +1814,52 @@ def create_supply_customer(
     return customer
 
 
+def _supply_name(row) -> str:
+    """A ShopSale's supply customer name — the live row while it exists,
+    otherwise the permanent snapshot Delete Supply Customer left behind
+    (row.supply_customer is None for a deleted customer, so reading .name
+    off it directly would crash the whole shop page)."""
+    return (row.supply_customer.name if row.supply_customer else row.supply_customer_label) or "Unknown"
+
+
+@router.delete("/customers/{supply_customer_id}")
+def delete_supply_customer(
+    supply_customer_id: UUID, db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_owner),
+):
+    """Delete a shop's own (supply) customer — hard-deletes the customer row
+    and writes off whatever they currently owe (or hold as advance).
+    Every past ShopSale/ShopCustomerPayment/ShopExpenseTransaction stays
+    exactly as it was, keeping its supply_customer_id and gaining a
+    permanent supply_customer_label so ledgers still read "Credit Sale to
+    <name>". Cash already collected into Shop Cash is real money that
+    already moved and is never touched. Cancelling/correcting one of those
+    old sales or payments still works — those paths already skip a missing
+    customer's balance. Owner-only, no password gate; nothing on a supply
+    customer is ever "pending", so there is no pending guard."""
+    sc = db.query(models.ShopSupplyCustomer).get(supply_customer_id)
+    if not sc:
+        raise HTTPException(404, "Customer not found")
+    written_off = {"current_balance": str(sc.current_balance)}
+    label = sc.name
+    try:
+        for model in (models.ShopSale, models.ShopCustomerPayment, models.ShopExpenseTransaction):
+            db.query(model).filter(model.supply_customer_id == supply_customer_id).update(
+                {model.supply_customer_label: label}, synchronize_session=False,
+            )
+        log_audit(
+            db, "shop_supply_customer", sc.id, "delete", current_user.name,
+            field="written_off", old=json.dumps(written_off), new="0",
+            reason=f"Deleted shop customer {label}; outstanding balance written off",
+        )
+        db.delete(sc)
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(400, f"Cannot delete — this customer is still referenced by records this delete does not cover: {e.orig}")
+    return {"deleted": True, "name": label, "written_off": written_off}
+
+
 @router.get("/customers/{supply_customer_id}", response_model=schemas.ShopSupplyCustomerOut)
 def get_supply_customer(supply_customer_id: UUID, db: Session = Depends(get_db)):
     customer = db.query(models.ShopSupplyCustomer).get(supply_customer_id)
@@ -1781,6 +1884,7 @@ def get_supply_customer_ledger(supply_customer_id: UUID, db: Session = Depends(g
 
     sales = (
         db.query(models.ShopSale)
+        .options(selectinload(models.ShopSale.home_expense_lines))
         .filter(models.ShopSale.supply_customer_id == supply_customer_id, models.ShopSale.status == "active")
         .order_by(models.ShopSale.date)
         .all()
@@ -1859,7 +1963,20 @@ def get_supply_customer_ledger(supply_customer_id: UUID, db: Session = Depends(g
                 # the description text above, exposed directly.
                 gross_amount=s.grand_total, cylinder_weight=product.weight_kg if product else None,
                 quantity=qty, unit=s.unit, board_rate_per_kg=s.board_rate_per_kg_used,
-                gst_rate=s.gst_rate, gst_amount=s.gst_amount,
+                gst_rate=s.gst_rate, gst_amount=s.gst_amount, discount_amount=s.discount_amount,
+                # Settlement breakdown of what was collected at the sale
+                # (Expense / Owner Drawings / Plant / Account) — same fields
+                # and same source (the ShopSale itself) the shop's own
+                # Business Ledger uses for this exact sale.
+                settlement_destination_type=s.settlement_destination_type,
+                settlement_target_plant_id=s.settlement_target_plant_id,
+                settlement_account_id=s.settlement_account_id,
+                settlement_home_expense_description=s.settlement_home_expense_description,
+                settlement_home_expense_category_id=s.settlement_home_expense_category_id,
+                settlement_home_expense_employee_id=s.settlement_home_expense_employee_id,
+                settlement_home_expense_amount=s.settlement_home_expense_amount,
+                settlement_owner_drawings_amount=s.settlement_owner_drawings_amount,
+                home_expense_lines=s.home_expense_lines,
             ))
         else:
             p: models.ShopCustomerPayment = e["obj"]
@@ -1889,6 +2006,12 @@ def get_supply_customer_ledger(supply_customer_id: UUID, db: Session = Depends(g
                 settlement_home_expense_amount=p.settlement_home_expense_amount,
                 settlement_owner_drawings_amount=p.settlement_owner_drawings_amount,
             ))
+
+    # Latest transaction first (top) to oldest (bottom). running_balance was
+    # accumulated oldest-first above and stays attached to its own row, so
+    # every figure is unchanged — only the presentation order flips. This
+    # one reversal feeds both the on-screen ledger and the statement PDF.
+    rows.reverse()
 
     return schemas.ShopSupplyCustomerLedgerOut(
         customer=customer, opening_balance=customer.opening_balance,
@@ -1953,10 +2076,10 @@ def _apply_customer_payment(
     if use_settlement_routing:
         bypass_sum = payload.home_expense_amount + payload.owner_drawings_amount
         if bypass_sum > payload.amount + Decimal("0.01"):
-            raise HTTPException(400, "Home expense + owner drawings exceeds the amount collected")
+            raise HTTPException(400, "Expense + owner drawings exceeds the amount collected")
         # Employee Salary Tracking (§ Employee Salary Tracking)
         if payload.home_expense_amount > 0 and is_salary_category(db, payload.home_expense_category_id) and not payload.home_expense_employee_id:
-            raise HTTPException(400, "Employee is required when Home Expense category is Salary")
+            raise HTTPException(400, "Employee is required when Expense category is Salary")
         settlement_net_amount = payload.amount - payload.home_expense_amount - payload.owner_drawings_amount
         settlement_destination_type, settlement_target_plant_id, settlement_account_row, _ = resolve_settlement_destination(
             db, payload.destination_type, payload.target_plant_id, payload.settlement_account_id, settlement_net_amount, shop=shop
@@ -2159,7 +2282,7 @@ def _expense_txn_to_out(db: Session, txn: models.ShopExpenseTransaction) -> sche
         id=txn.id, display_id=txn.display_id, date=txn.date, shop_id=txn.shop_id,
         total_amount=txn.total_amount, account_id=txn.account_id,
         payment_source=txn.payment_source, notes=txn.notes,
-        supply_customer_id=txn.supply_customer_id, customer_name=customer.name if customer else None,
+        supply_customer_id=txn.supply_customer_id, customer_name=customer.name if customer else txn.supply_customer_label,
         shop_sale_id=txn.shop_sale_id, shop_sale_display_id=sale.display_id if sale else None,
         status=txn.status, entered_by=txn.entered_by, created_at=txn.created_at, lines=line_outs,
     )
@@ -2382,12 +2505,14 @@ def get_shop_business_ledger(
         # sale, and this row should show the customer name + outstanding
         # note (kind="credit_sale") to reflect that reality rather than the
         # dropdown value the cashier picked.
-        if s.grand_total - received > 0:
+        if s.grand_total - received != 0:
             sc = supply_customers.get(s.supply_customer_id)
             paid_note = f" ({received} paid, {s.grand_total - received} outstanding)" if 0 < received < s.grand_total else ""
+            if received > s.grand_total:
+                paid_note = f" ({received} paid, {received - s.grand_total} advance)"
             rows.append(schemas.ShopBusinessLedgerRow(
                 kind="credit_sale", date=s.date, ref_id=s.id, display_id=s.display_id,
-                description=f"Credit Sale to {sc.name if sc else 'Unknown'} — {product_name} × {qty_label}{paid_note}",
+                description=f"Credit Sale to {sc.name if sc else (s.supply_customer_label or 'Unknown')} — {product_name} × {qty_label}{paid_note}",
                 amount=s.grand_total, cash_impact=received,
                 settlement_destination_type=s.settlement_destination_type,
                 settlement_target_plant_id=s.settlement_target_plant_id,
@@ -2397,7 +2522,7 @@ def get_shop_business_ledger(
                 settlement_home_expense_employee_id=s.settlement_home_expense_employee_id,
                 settlement_home_expense_amount=s.settlement_home_expense_amount,
                 settlement_owner_drawings_amount=s.settlement_owner_drawings_amount,
-                gst_rate=s.gst_rate, gst_amount=s.gst_amount,
+                gst_rate=s.gst_rate, gst_amount=s.gst_amount, discount_amount=s.discount_amount,
                 home_expense_lines=s.home_expense_lines,
                 entered_by=s.entered_by, status=s.status,
             ))
@@ -2414,7 +2539,7 @@ def get_shop_business_ledger(
                 settlement_home_expense_employee_id=s.settlement_home_expense_employee_id,
                 settlement_home_expense_amount=s.settlement_home_expense_amount,
                 settlement_owner_drawings_amount=s.settlement_owner_drawings_amount,
-                gst_rate=s.gst_rate, gst_amount=s.gst_amount,
+                gst_rate=s.gst_rate, gst_amount=s.gst_amount, discount_amount=s.discount_amount,
                 home_expense_lines=s.home_expense_lines,
                 entered_by=s.entered_by, status=s.status,
             ))
@@ -2427,7 +2552,7 @@ def get_shop_business_ledger(
         sc = supply_customers.get(p.supply_customer_id)
         rows.append(schemas.ShopBusinessLedgerRow(
             kind="customer_payment", date=p.date, ref_id=p.id, display_id=p.display_id,
-            description=f"Payment from {sc.name if sc else 'Unknown'} · {p.method}",
+            description=f"Payment from {sc.name if sc else (p.supply_customer_label or 'Unknown')} · {p.method}",
             amount=p.amount, cash_impact=p.amount,
             # Settlement Routing (§ Payment Only mode) — this row's ShopCustomerPayment
             # already carries these from _apply_customer_payment; simply never copied

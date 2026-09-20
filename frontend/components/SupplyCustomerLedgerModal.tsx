@@ -1,10 +1,11 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { X, Search, Banknote, Printer, Share2 } from "lucide-react";
+import { X, Search, Banknote, Printer, Share2, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Th, Td, Eyebrow, BalanceTag, Button } from "./ui";
-import { api } from "@/lib/api";
+import { api, apiErrorMessage } from "@/lib/api";
 import { pkr, fmtTime, resolveAccountLabel } from "@/lib/format";
+import { supplyCustomerDeleteMessage } from "@/lib/deleteConfirm";
 import type { Company, PaymentAccount, ShopSupplyCustomer, ShopSupplyCustomerLedgerOut, ShopSupplyCustomerLedgerRow, ExpenseCategory, Employee } from "@/lib/types";
 
 // § Employee Salary Tracking — resolves settlement_home_expense_category_id/
@@ -49,6 +50,20 @@ function resolveRoutedLabel(
   return t("payments.accountSettlementBadge");
 }
 
+// One chip label per multi-line Expense entry — mirrors app/shops/[id]/page.tsx's
+// resolveHomeExpenseLineLabel (category name, plus the employee for Salary).
+function resolveHomeExpenseLineLabel(
+  line: { category_id: string; employee_id: string | null; description: string | null },
+  categories: ExpenseCategory[],
+  employees: Employee[],
+  t: (key: string, options?: Record<string, any>) => string
+): string {
+  const cat = categories.find((c) => c.id === line.category_id);
+  const emp = line.employee_id ? employees.find((e) => e.id === line.employee_id) : undefined;
+  const catName = cat?.name || line.description || t("shopDetail.homeExpense");
+  return emp ? `${catName} · ${emp.name}` : catName;
+}
+
 function SettlementBreakdown({
   row, companies, accounts, t, categories = [], employees = [],
 }: {
@@ -59,11 +74,24 @@ function SettlementBreakdown({
   categories?: ExpenseCategory[];
   employees?: Employee[];
 }) {
-  const homeExpenseAmount = Number(row.settlement_home_expense_amount || "0");
+  // A sale row with home_expense_lines uses those (one chip per line) as the
+  // source of truth; a legacy/payment row reads the single scalar amount.
+  const lines = row.home_expense_lines || [];
+  const homeExpenseAmount = lines.length > 0
+    ? lines.reduce((sum, l) => sum + Number(l.amount), 0)
+    : Number(row.settlement_home_expense_amount || "0");
   const ownerDrawingsAmount = Number(row.settlement_owner_drawings_amount || "0");
+  // payment_amount is what was actually collected on this row (the payment
+  // itself, or the amount received at the point of a sale).
   const netSettlementAmount = parseFloat(row.payment_amount) - homeExpenseAmount - ownerDrawingsAmount;
   const parts: Array<{ label: string; value: string }> = [];
-  if (homeExpenseAmount > 0) {
+  if (lines.length > 0) {
+    for (const line of lines) {
+      const amt = Number(line.amount);
+      if (amt <= 0) continue;
+      parts.push({ label: resolveHomeExpenseLineLabel(line, categories, employees, t), value: pkr(amt) });
+    }
+  } else if (homeExpenseAmount > 0) {
     parts.push({ label: resolveHomeExpenseLabel(row, categories, employees, t), value: pkr(homeExpenseAmount) });
   }
   if (ownerDrawingsAmount > 0) {
@@ -98,11 +126,13 @@ export default function SupplyCustomerLedgerModal({
   initialCustomerId,
   onClose,
   onReceivePayment,
+  onDeleted,
 }: {
   customers: ShopSupplyCustomer[];
   initialCustomerId?: string;
   onClose: () => void;
   onReceivePayment: (customer: ShopSupplyCustomer) => void;
+  onDeleted?: () => void;
 }) {
   const { t } = useTranslation();
   const [search, setSearch] = useState("");
@@ -141,6 +171,20 @@ export default function SupplyCustomerLedgerModal({
   }, [customers, search]);
 
   const selected = customers.find((c) => c.id === selectedId) || null;
+
+  // Delete Supply Customer — owner-only on the server; the confirm text
+  // states the exact balance being written off. History stays.
+  const handleDelete = async () => {
+    if (!selected) return;
+    if (!window.confirm(supplyCustomerDeleteMessage(t, selected))) return;
+    try {
+      await api.shops.customers.remove(selected.id);
+      setSelectedId("");
+      onDeleted?.();
+    } catch (e) {
+      alert(apiErrorMessage(e, t("deleteEntity.failed")));
+    }
+  };
 
   // Send via WhatsApp (client-side only) — same mechanism every other
   // statement in the app already uses (frontend/app/customer-ledger/
@@ -293,6 +337,9 @@ export default function SupplyCustomerLedgerModal({
                         <Banknote size={13} /> {t("customerLedger.receivePayment")}
                       </button>
                     )}
+                    <Button variant="outline" onClick={handleDelete}>
+                      <Trash2 size={13} /> {t("deleteEntity.delete")}
+                    </Button>
                   </div>
                 </div>
 
@@ -344,6 +391,7 @@ export default function SupplyCustomerLedgerModal({
                             <Th>{t("customerLedger.colDescription")}</Th>
                             <Th right>{t("customerLedger.colRate")}</Th>
                             <Th right>{t("shopDetail.colBoardRateKg")}</Th>
+                            <Th right>{t("customerLedger.colDiscount")}</Th>
                             <Th right>{t("customerLedger.colGst")}</Th>
                             <Th right>{t("modals.colRemainingAmount")}</Th>
                             <Th right>{t("customerLedger.colPayment")}</Th>
@@ -364,6 +412,7 @@ export default function SupplyCustomerLedgerModal({
                                   unit row's rate is sale_rate_per_cylinder,
                                   not a rate/kg at all). */}
                               <Td right mono color="#8E8E93">{r.board_rate_per_kg ? `${pkr(r.board_rate_per_kg)}/kg` : "—"}</Td>
+                              <Td right mono>{r.discount_amount && parseFloat(r.discount_amount) > 0 ? pkr(r.discount_amount) : "—"}</Td>
                               <Td right>
                                 {r.gst_rate && parseFloat(r.gst_rate) > 0 ? (
                                   <span title={`${t("customerLedger.colGst")}: ${r.gst_rate}%`}>
@@ -376,15 +425,13 @@ export default function SupplyCustomerLedgerModal({
                               <Td right mono>{parseFloat(r.sale_amount) ? pkr(r.sale_amount) : "—"}</Td>
                               <Td right mono color="#1E8A5F">{parseFloat(r.payment_amount) ? pkr(r.payment_amount) : "—"}</Td>
                               <Td>
-                                {r.kind === "payment"
-                                  ? <SettlementBreakdown row={r} companies={companies} accounts={accounts} t={t} categories={categories} employees={employees} />
-                                  : <span className="text-slate-400">—</span>}
+                                <SettlementBreakdown row={r} companies={companies} accounts={accounts} t={t} categories={categories} employees={employees} />
                               </Td>
                               <Td right mono bold>{pkr(r.running_balance)}</Td>
                             </tr>
                           ))}
                           {!ledger.rows.length && (
-                            <tr><td colSpan={10} className="text-steel font-body text-[13px] py-6 text-center">{t("modals.noTransactionsYetForCustomer")}</td></tr>
+                            <tr><td colSpan={11} className="text-steel font-body text-[13px] py-6 text-center">{t("modals.noTransactionsYetForCustomer")}</td></tr>
                           )}
                         </tbody>
                       </table>

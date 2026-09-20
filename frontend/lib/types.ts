@@ -116,6 +116,8 @@ export type CorrectionFields = {
 };
 
 export type Sale = {
+  customer_label?: string | null; // Delete Customer snapshot — set only once the customer is gone
+  company_label?: string | null; // Delete Company snapshot — set only once the plant is gone
   id: string; display_id: string; date: string;
   customer_id: string; product_id: string; company_id: string | null;
   quantity: string; weight_per_cylinder: string; total_kg: string;
@@ -133,10 +135,14 @@ export type Sale = {
   gst_enabled?: boolean;
   gst_rate?: string | null;
   gst_amount?: string;
+  discount_enabled?: boolean;
+  discount_rate?: string | null;
+  discount_amount?: string;
   grand_total?: string;
 } & CorrectionFields;
 
 export type Payment = {
+  customer_label?: string | null; // Delete Customer snapshot — set only once the customer is gone
   id: string; display_id: string; date: string;
   customer_id: string; sale_id: string | null;
   amount: string; method: string; account_id: string | null;
@@ -210,6 +216,7 @@ export type LedgerRow = {
   // with GST applied; sale_amount above is already grand_total-inclusive.
   gst_rate?: string | null;
   gst_amount?: string;
+  discount_amount?: string;
 };
 
 // One superseded (status="corrected") original transaction, kept for the
@@ -240,6 +247,7 @@ export type CustomerFlag = {
 };
 
 export type Purchase = {
+  company_label?: string | null; // Delete Company snapshot — set only once the plant is gone
   id: string; display_id: string; date: string;
   company_id: string; product_id: string;
   quantity: string; weight_per_cylinder: string; total_kg: string;
@@ -253,6 +261,7 @@ export type Purchase = {
 } & CorrectionFields;
 
 export type CompanyPayment = {
+  company_label?: string | null; // Delete Company snapshot — set only once the plant is gone
   id: string; display_id: string; date: string;
   company_id: string; purchase_id: string | null;
   amount: string; method: string; account_id: string;
@@ -432,6 +441,8 @@ export type UnifiedSaleSettlement = {
 export type ApprovalStatus = "pending" | "approved" | "cancelled";
 
 export type UnifiedSaleBatch = {
+  customer_label?: string | null; // Delete Customer snapshot — set only once the customer is gone
+  company_label?: string | null; // Delete Company snapshot — set only once the plant is gone
   id: string;
   display_id: string;
   date: string;
@@ -460,6 +471,9 @@ export type UnifiedSaleBatch = {
   gst_enabled?: boolean;
   gst_rate?: string | null;
   gst_amount?: string;
+  discount_enabled?: boolean;
+  discount_rate?: string | null;
+  discount_amount?: string;
   grand_total?: string;
   qty_11_8kg: string;
   qty_45_4kg: string;
@@ -718,6 +732,12 @@ export type ShopSale = {
   saleable_kg_used: string | null;
   sale_rate_per_cylinder: string;
   total_amount: string;
+  // § Segregated Profit Centers (Dashboard) — FIFO-weighted cost of goods
+  // for this sale, computed server-side from the ShopStockBatch(es) it
+  // drew from (see backend ShopSaleOut.cogs_amount). Only populated by
+  // GET /shops/sales (the Dashboard's data source); defaults to "0" from
+  // every other endpoint returning a ShopSale.
+  cogs_amount: string;
   // § Manual Selling Rate override — true when sale_rate_per_cylinder was
   // typed directly rather than derived from board_rate_per_kg_used × saleable_kg_used.
   manual_rate_override: boolean;
@@ -727,6 +747,9 @@ export type ShopSale = {
   gst_enabled: boolean;
   gst_rate: string | null;
   gst_amount: string;
+  discount_enabled: boolean;
+  discount_rate: string | null;
+  discount_amount: string;
   grand_total: string;
   notes: string | null;
   status: string;
@@ -795,6 +818,7 @@ export type ShopTransactionRow = {
   // it was tax.
   gst_rate: string | null;
   gst_amount: string | null;
+  discount_amount?: string | null;
   // Inline Settlement (§2) — populated only for kind=="shop_sale".
   amount_received: string | null;
   amount_outstanding: string | null;
@@ -913,6 +937,9 @@ export type ShopSupplyCustomerLedgerRow = {
   // § Shop Customer Ledger GST columns — populated only for kind=="sale".
   gst_rate?: string | null;
   gst_amount?: string | null;
+  discount_amount?: string | null;
+  // Sale rows only — per-line Expense breakdown; empty for payment rows / legacy sales.
+  home_expense_lines?: ShopSaleHomeExpenseLine[];
 };
 
 export type ShopSupplyCustomerLedgerOut = {
@@ -1053,6 +1080,7 @@ export type ShopBusinessLedgerRow = {
   // "credit_sale"); amount above is already grand_total-inclusive.
   gst_rate: string | null;
   gst_amount: string | null;
+  discount_amount?: string | null;
   // § Multi-line Categorized Home Expense — populated only for kind in
   // ("cash_sale", "credit_sale") when that ShopSale used the multi-line path.
   home_expense_lines: ShopSaleHomeExpenseLine[];

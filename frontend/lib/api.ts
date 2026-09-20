@@ -121,6 +121,7 @@ import type {
 
 export const api = {
   companies: {
+    remove: (id: string) => request<{ deleted: boolean; name: string }>(`/companies/${id}`, { method: "DELETE" }),
     list: () => request<Company[]>("/companies"),
     get: (id: string) => request<Company>(`/companies/${id}`),
     create: (payload: { name: string; mobile?: string; opening_balance?: number; opening_balance_date?: string }) =>
@@ -144,6 +145,7 @@ export const api = {
       request<RateEntry>("/rates", { method: "POST", body: JSON.stringify(payload) }),
   },
   customers: {
+    remove: (id: string) => request<{ deleted: boolean; name: string }>(`/customers/${id}`, { method: "DELETE" }),
     list: (search?: string) => {
       const query = search?.trim() ? `?search=${encodeURIComponent(search.trim())}` : "";
       return request<Customer[]>(`/customers/${query}`);
@@ -202,7 +204,7 @@ export const api = {
       quantity: number; rate_per_cylinder: number; gate_pass_no?: string;
       vehicle_no?: string; notes?: string; entered_by: string; cylinders_returned?: number;
       emergency_transfer_shop_id?: string;
-      gst_enabled?: boolean; gst_rate?: number;
+      gst_enabled?: boolean; gst_rate?: number; discount_enabled?: boolean; discount_rate?: number;
     }) => request<Sale>("/sales", { method: "POST", body: JSON.stringify(payload) }),
     cancel: (id: string, by: string) => request<Sale>(`/sales/${id}/cancel?by=${encodeURIComponent(by)}`, { method: "PATCH" }),
     // Ledger Correction (§1): reverses this sale, marks it "corrected"
@@ -213,7 +215,7 @@ export const api = {
       vehicle_no?: string; notes?: string; entered_by: string; cylinders_returned?: number;
       correction_reason: string; corrected_by: string;
       emergency_transfer_shop_id?: string;
-      gst_enabled?: boolean; gst_rate?: number;
+      gst_enabled?: boolean; gst_rate?: number; discount_enabled?: boolean; discount_rate?: number;
     }) => request<Sale>(`/sales/${id}/correct`, { method: "PATCH", body: JSON.stringify(payload) }),
     invoiceUrl: (id: string) => `${BASE}/sales/${id}/invoice`,
   },
@@ -343,6 +345,7 @@ export const api = {
   },
   // § Employee Salary Tracking
   employees: {
+    remove: (id: string) => request<{ deleted: boolean; name: string }>(`/employees/${id}`, { method: "DELETE" }),
     list: () => request<Employee[]>("/employees"),
     create: (payload: { name: string; monthly_salary: number; entered_by: string }) =>
       request<Employee>("/employees", { method: "POST", body: JSON.stringify(payload) }),
@@ -501,6 +504,8 @@ export const api = {
       gst_enabled?: boolean;
       gst_rate?: number;
       gst_amount?: number;
+      discount_enabled?: boolean;
+      discount_rate?: number;
       grand_total?: number;
     }) => request<UnifiedSaleResult>(
       "/sales/unified",
@@ -540,6 +545,8 @@ export const api = {
         gst_enabled?: boolean;
         gst_rate?: number;
         gst_amount?: number;
+        discount_enabled?: boolean;
+        discount_rate?: number;
         grand_total?: number;
       }
     ) => request<UnifiedSaleResult>(`/sales/unified/${id}`, {
@@ -712,7 +719,7 @@ export const api = {
       manual_total_amount?: number;
       // § GST on Shop Sale — optional, default off (same convention as
       // Sale/Unified Sale's own gst_enabled/gst_rate).
-      gst_enabled?: boolean; gst_rate?: number;
+      gst_enabled?: boolean; gst_rate?: number; discount_enabled?: boolean; discount_rate?: number;
       supply_customer_id?: string; payment_type?: "cash" | "credit";
       // Inline Settlement (§2) — omitted means "fully paid" for cash,
       // "fully credit" (0) for credit; a credit sale may set any amount
@@ -734,7 +741,7 @@ export const api = {
       date: string; product_id: string; quantity: number; unit?: "cylinder" | "kg";
       board_rate_per_kg: number;
       manual_total_amount?: number;
-      gst_enabled?: boolean; gst_rate?: number;
+      gst_enabled?: boolean; gst_rate?: number; discount_enabled?: boolean; discount_rate?: number;
       supply_customer_id?: string; payment_type?: "cash" | "credit";
       amount_received?: number; destination_account_id?: string;
       notes?: string; entered_by: string;
@@ -757,6 +764,8 @@ export const api = {
 
     // ---- Engine 3: Shop Business Finance ----
     customers: {
+      remove: (supplyCustomerId: string) =>
+        request<{ deleted: boolean; name: string }>(`/shops/customers/${supplyCustomerId}`, { method: "DELETE" }),
       list: (shopId: string) => request<ShopSupplyCustomer[]>(`/shops/${shopId}/customers`),
       create: (shopId: string, payload: {
         name: string; mobile?: string; address?: string; opening_balance?: number; entered_by: string;
