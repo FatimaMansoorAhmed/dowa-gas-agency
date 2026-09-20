@@ -11,6 +11,7 @@ import DashboardPnLChart from "@/components/DashboardPnLChart";
 import type { Company, Party, RateEntry, Customer, Sale, Purchase, Expense, OwnerDrawing, ShopSale, CustomerFlag } from "@/lib/types";
 
 const POLL_MS = 30000;
+const RATES_POLL_MS = 5000;
 
 // Derived from the Asia/Karachi-aware todayLocalInput() ("YYYY-MM-DD"), so
 // "this month" reflects the Karachi calendar even off-Karachi machines.
@@ -69,7 +70,6 @@ function DashboardBody() {
   const [loading, setLoading] = useState(true);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const inFlight = useRef(false);
-  const pollCount = useRef(0);
   const month = currentMonth();
 
   const loadAll = useCallback(async (isInitial = false) => {
@@ -77,12 +77,6 @@ function DashboardBody() {
     inFlight.current = true;
     try {
       const month = currentMonth();
-      // The four full-history lists only feed the P&L chart, grow with every
-      // year of data, and change slowly — fetch them on load and then only on
-      // every 10th 30-second poll (~5 min), not on every poll. The month-to-
-      // date feeds and live rates still refresh every 30 seconds.
-      const withHistory = isInitial || pollCount.current % 10 === 0;
-      pollCount.current += 1;
       const [c, p, r, cu, sales, purchases, expenses, ownerDrawings, shopSales, fl, allS, allP, allE, allD] = await Promise.all([
         api.companies.list(),
         api.parties.list(),
@@ -94,10 +88,10 @@ function DashboardBody() {
         api.ownerDrawings.list(month),
         api.shops.salesList(month),
         api.ledger.customerFlags(month),
-        withHistory ? api.sales.list() : null,
-        withHistory ? api.purchases.list() : null,
-        withHistory ? api.expenses.list() : null,
-        withHistory ? api.ownerDrawings.list() : null,
+        api.sales.list(),
+        api.purchases.list(),
+        api.expenses.list(),
+        api.ownerDrawings.list(),
       ]);
 
       setCompanies(c);
@@ -110,10 +104,10 @@ function DashboardBody() {
       setOwnerDrawingsMTD(ownerDrawings);
       setShopSalesMTD(shopSales);
       setFlags(fl);
-      if (allS) setAllSales(allS);
-      if (allP) setAllPurchases(allP);
-      if (allE) setAllExpenses(allE);
-      if (allD) setAllDrawings(allD);
+      setAllSales(allS);
+      setAllPurchases(allP);
+      setAllExpenses(allE);
+      setAllDrawings(allD);
       setLastSynced(new Date());
     } finally {
       inFlight.current = false;
@@ -124,7 +118,21 @@ function DashboardBody() {
   useEffect(() => {
     loadAll(true);
     const id = setInterval(() => loadAll(false), POLL_MS);
-    return () => clearInterval(id);
+    // Latest Applied Rates is the time-sensitive part of this page, so it
+    // refreshes on its own every few seconds (a single small query) rather
+    // than waiting for the 30-second full refresh.
+    const ratesId = setInterval(() => {
+      if (!document.hidden) api.rates.latest().then(setLatestRates).catch(() => {});
+    }, RATES_POLL_MS);
+    // Coming back to this tab (e.g. after entering a rate elsewhere) refreshes
+    // everything immediately instead of showing whatever was loaded before.
+    const onVisible = () => { if (!document.hidden) loadAll(false); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      clearInterval(ratesId);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [loadAll]);
 
   if (loading) return <div className="font-body text-steel p-10">{t("common.loading")}</div>;
