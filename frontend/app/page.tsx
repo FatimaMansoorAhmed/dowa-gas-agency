@@ -7,8 +7,15 @@ import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption } from "@/components/ui";
 import { pkr, fmtTime, todayLocalInput, isSameKarachiDay } from "@/lib/format";
 import { api } from "@/lib/api";
-import DashboardPnLChart from "@/components/DashboardPnLChart";
+import dynamic from "next/dynamic";
 import type { Company, Party, RateEntry, Customer, Sale, Purchase, Expense, OwnerDrawing, ShopSale, CustomerFlag } from "@/lib/types";
+
+// The chart library is the heaviest part of this page's JavaScript and sits
+// below the fold, so it loads separately instead of delaying first paint.
+const DashboardPnLChart = dynamic(() => import("@/components/DashboardPnLChart"), {
+  ssr: false,
+  loading: () => <div className="h-[340px]" />,
+});
 
 const POLL_MS = 30000;
 const RATES_POLL_MS = 5000;
@@ -95,6 +102,7 @@ function DashboardBody() {
   const [allExpenses, setAllExpenses] = useState<Expense[]>([]);
   const [allDrawings, setAllDrawings] = useState<OwnerDrawing[]>([]);
   const [flags, setFlags] = useState<CustomerFlag[]>([]);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const inFlight = useRef(false);
@@ -125,6 +133,31 @@ function DashboardBody() {
     setFlags(fl);
   }, []);
 
+  // Full-history feeds for the chart. A failure here just leaves the chart
+  // on its previous data; it never blocks or breaks the rest of the page.
+  const historyInFlight = useRef(false);
+  const loadHistory = useCallback(async () => {
+    if (historyInFlight.current) return;
+    historyInFlight.current = true;
+    try {
+      const [allS, allP, allE, allD] = await Promise.all([
+        api.sales.list(),
+        api.purchases.list(),
+        api.expenses.list(),
+        api.ownerDrawings.list(),
+      ]);
+      setAllSales(allS);
+      setAllPurchases(allP);
+      setAllExpenses(allE);
+      setAllDrawings(allD);
+      setHistoryLoaded(true);
+    } catch {
+      /* keep previous chart data */
+    } finally {
+      historyInFlight.current = false;
+    }
+  }, []);
+
   const loadAll = useCallback(async (isInitial = false) => {
     if (inFlight.current) return;
     inFlight.current = true;
@@ -135,15 +168,14 @@ function DashboardBody() {
         monthRef.current = currentMonth();
         setMonth(monthRef.current);
       }
-      const [c, p, r, cu, allS, allP, allE, allD] = await Promise.all([
+      // Started in parallel but not awaited: the full-history lists only
+      // feed the chart, so the KPIs, rates and P&L never wait on them.
+      loadHistory();
+      const [c, p, r, cu] = await Promise.all([
         api.companies.list(),
         api.parties.list(),
         api.rates.latest(),
         api.customers.list(),
-        api.sales.list(),
-        api.purchases.list(),
-        api.expenses.list(),
-        api.ownerDrawings.list(),
         loadMonthData(monthRef.current),
       ]);
 
@@ -151,16 +183,12 @@ function DashboardBody() {
       setParties(p);
       setLatestRates(r);
       setCustomers(cu);
-      setAllSales(allS);
-      setAllPurchases(allP);
-      setAllExpenses(allE);
-      setAllDrawings(allD);
       setLastSynced(new Date());
     } finally {
       inFlight.current = false;
       if (isInitial) setLoading(false);
     }
-  }, [loadMonthData]);
+  }, [loadMonthData, loadHistory]);
 
   const changeMonth = (m: string) => {
     if (!m || m === monthRef.current) return;
@@ -172,7 +200,8 @@ function DashboardBody() {
 
   useEffect(() => {
     loadAll(true);
-    const id = setInterval(() => loadAll(false), POLL_MS);
+    // A hidden tab skips the poll; coming back triggers the refresh below.
+    const id = setInterval(() => { if (!document.hidden) loadAll(false); }, POLL_MS);
     // Latest Applied Rates is the time-sensitive part of this page, so it
     // refreshes on its own every few seconds (a single small query) rather
     // than waiting for the 30-second full refresh.
@@ -422,7 +451,11 @@ function DashboardBody() {
         </div>
 
         <div className="mt-4 pt-4 border-t border-hairline">
-          <DashboardPnLChart sales={allSales} purchases={allPurchases} expenses={allExpenses} drawings={allDrawings} />
+          {historyLoaded ? (
+            <DashboardPnLChart sales={allSales} purchases={allPurchases} expenses={allExpenses} drawings={allDrawings} />
+          ) : (
+            <div className="h-[340px]" />
+          )}
         </div>
       </Panel>
 
