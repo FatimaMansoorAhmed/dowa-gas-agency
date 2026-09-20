@@ -58,9 +58,20 @@ BUSINESS = {
     "phone": "Phone: 0333-2240852",
     "email": "Email: dowagas@gmail.com",
     "ntn": "NTN: 2741131-1",
+    "sales_tax": "Sales Tax No. 3277876150862",
 }
 
 PAGE_WIDTH = A4[0] - 28 * mm  # usable width after 14mm left/right margins
+
+# Boxed / "traditional" invoice look (§ Invoice formatting pass): bordered
+# header, party and details boxes, a black-gridded items table, an amount-in-
+# words box, a bold company header including the Sales Tax No., and bold
+# labels with normal-weight values. One switch for every per-record INVOICE
+# template (Sale, Unified Sale, Shop Sale, Purchase, Payment, Plant Payment
+# — everything rendered through _build). Deliberately NOT read by any
+# statement (Customer, Plant, Shop, Supply Customer), which keep their own
+# compact header and layout exactly as they were.
+INVOICE_STYLE_V2 = True
 
 # ============================================================================
 # LOGO — embedded, not read from disk at request time. backend (Railway) and
@@ -167,9 +178,29 @@ def _amount_in_words(amount) -> str:
     return words + " Only"
 
 
+def _amount_in_words_sentence(amount) -> str:
+    """"(Rupees Five hundred ninety thousand only)" — the same thousands/
+    millions converter as _amount_in_words above, just phrased in sentence
+    case inside parentheses, the way it appears on a traditional invoice."""
+    amount = Decimal(amount or 0)
+    rupees = int(amount)
+    paisa = int((amount - rupees) * 100)
+    text = f"Rupees {_int_to_words(rupees).capitalize()}"
+    if paisa:
+        text += f" and {_int_to_words(paisa).lower()} paisa"
+    return f"({text} only)"
+
+
 def _styles():
     styles = getSampleStyleSheet()
     return {
+        # ---- boxed look (INVOICE_STYLE_V2): bold company header, bold labels
+        # (in <b> tags at the call site) over normal-weight values.
+        "v2_tagline": ParagraphStyle("V2Tagline", parent=styles["Normal"], fontSize=9, fontName="Helvetica-Bold", textColor=colors.HexColor("#0F8B8D"), spaceAfter=0),
+        "v2_address": ParagraphStyle("V2Address", parent=styles["Normal"], fontSize=8.5, fontName="Helvetica-Bold", alignment=TA_RIGHT, leading=11, textColor=colors.HexColor("#1A2B33")),
+        "v2_party": ParagraphStyle("V2Party", parent=styles["Normal"], fontSize=9.5, leading=13, fontName="Helvetica"),
+        "v2_words": ParagraphStyle("V2Words", parent=styles["Normal"], fontSize=9.5, leading=13, fontName="Helvetica"),
+
         "company_name": ParagraphStyle("CompanyName", parent=styles["Title"], fontSize=18, leading=21, alignment=0, spaceAfter=0),
         "company_tagline": ParagraphStyle("CompanyTagline", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#0F8B8D"), spaceAfter=0),
         "address_right": ParagraphStyle("AddressRight", parent=styles["Normal"], fontSize=8.5, alignment=TA_RIGHT, leading=11, textColor=colors.HexColor("#334155")),
@@ -209,6 +240,23 @@ def _header_block(s):
     top-right. See the LOGO comment above _logo_png for why the image is
     embedded rather than read from frontend/public/ at request time."""
     logo = Image(io.BytesIO(_logo_png()), width=18.5 * mm, height=20 * mm)
+    if INVOICE_STYLE_V2:
+        name_block = [
+            Paragraph(BUSINESS["name"].upper(), s["company_name"]),
+            Paragraph(BUSINESS["tagline"], s["v2_tagline"]),
+        ]
+        right_lines = BUSINESS["address_lines"] + [BUSINESS["phone"], BUSINESS["email"], BUSINESS["sales_tax"], BUSINESS["ntn"]]
+        right = [Paragraph(line, s["v2_address"]) for line in right_lines]
+        t = Table([[logo, name_block, right]], colWidths=[24 * mm, 76 * mm, 82 * mm])
+        t.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("BOX", (0, 0), (-1, -1), 1.1, colors.HexColor("#1A2B33")),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        return [t, Spacer(1, 2 * mm)]
     name_block = [
         Paragraph(BUSINESS["name"].upper(), s["company_name"]),
         Paragraph(BUSINESS["tagline"], s["company_tagline"]),
@@ -228,9 +276,10 @@ def _header_block(s):
 
 def _details_box(s, rows: list):
     data = [[Paragraph(f"<b>{label}</b>", s["label_cell"]), Paragraph(str(value) if value else "-", s["value_cell"])] for label, value in rows]
-    t = Table(data, colWidths=[32 * mm, 50 * mm])
+    t = Table(data, colWidths=[32 * mm, 55 * mm] if INVOICE_STYLE_V2 else [32 * mm, 50 * mm])
+    grid_color = colors.HexColor("#1A2B33") if INVOICE_STYLE_V2 else colors.HexColor("#CBD5E1")
     t.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+        ("GRID", (0, 0), (-1, -1), 0.75 if INVOICE_STYLE_V2 else 0.5, grid_color),
         ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F8FAFC")),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("TOPPADDING", (0, 0), (-1, -1), 4),
@@ -241,6 +290,22 @@ def _details_box(s, rows: list):
 
 
 def _party_and_details(s, party_title: str, party_lines: list, details_rows: list):
+    if INVOICE_STYLE_V2:
+        # Bordered party box beside the bordered details box; bold heading,
+        # normal-weight customer details.
+        party_flowables = [Paragraph(f"<b>{party_title}</b>", s["v2_party"]), Spacer(1, 1.5 * mm)] + [
+            Paragraph(line, s["v2_party"]) for line in party_lines
+        ]
+        t = Table([[party_flowables, "", _details_box(s, details_rows)]], colWidths=[91 * mm, 4 * mm, 87 * mm])
+        t.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("BOX", (0, 0), (0, 0), 0.75, colors.HexColor("#1A2B33")),
+            ("LEFTPADDING", (0, 0), (0, 0), 6), ("RIGHTPADDING", (0, 0), (0, 0), 6),
+            ("TOPPADDING", (0, 0), (0, 0), 5), ("BOTTOMPADDING", (0, 0), (0, 0), 5),
+            ("LEFTPADDING", (1, 0), (-1, -1), 0), ("RIGHTPADDING", (1, 0), (-1, -1), 0),
+            ("TOPPADDING", (1, 0), (-1, -1), 0), ("BOTTOMPADDING", (1, 0), (-1, -1), 0),
+        ]))
+        return t
     party_flowables = [Paragraph(party_title, s["section"])] + [Paragraph(line, s["normal"]) for line in party_lines]
     t = Table([[party_flowables, _details_box(s, details_rows)]], colWidths=[97 * mm, 85 * mm])
     t.setStyle(TableStyle([
@@ -259,6 +324,20 @@ def _items_table(s, headers: list, rows: list):
     separate invoice each."""
     data = [headers] + rows
     t = Table(data, colWidths=[82 * mm, 30 * mm, 35 * mm, 35 * mm])
+    if INVOICE_STYLE_V2:
+        t.setStyle(TableStyle([
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("GRID", (0, 0), (-1, -1), 0.75, colors.HexColor("#1A2B33")),
+            ("BOX", (0, 0), (-1, -1), 1.1, colors.HexColor("#1A2B33")),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E5E7EB")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#1A2B33")),
+            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        return t
     t.setStyle(TableStyle([
         ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
@@ -344,9 +423,25 @@ def _build(doc_type: str, party_title: str, party_lines: list, details_rows: lis
     story.append(Spacer(1, 6 * mm))
     story.append(_items_table(s, items_headers, items_rows))
     story.append(Spacer(1, 4 * mm))
-    story.append(_totals_block(s, total_rows))
+    if INVOICE_STYLE_V2:
+        totals_row = Table([["", _totals_block(s, total_rows)]], colWidths=[95 * mm, 87 * mm])
+        totals_row.setStyle(TableStyle([
+            ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        story.append(totals_row)
+    else:
+        story.append(_totals_block(s, total_rows))
     story.append(Spacer(1, 3 * mm))
-    story.append(Paragraph(f"Amount in Words: {_amount_in_words(final_amount)}", s["words"]))
+    if INVOICE_STYLE_V2:
+        words_box = Table([[Paragraph(_amount_in_words_sentence(final_amount), s["v2_words"])]], colWidths=[182 * mm])
+        words_box.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#1A2B33")),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6), ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.append(words_box)
+    else:
+        story.append(Paragraph(f"Amount in Words: {_amount_in_words(final_amount)}", s["words"]))
     if notes:
         story.append(Spacer(1, 3 * mm))
         story.append(Paragraph(f"Notes: {notes}", s["meta"]))

@@ -19,6 +19,34 @@ function currentMonth() {
   return todayLocalInput().slice(0, 7);
 }
 
+function monthLabel(ym: string, lang: string) {
+  const [y, m] = ym.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString(lang === "ur" ? "ur-PK" : "en-US", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+// Every month from the earliest recorded transaction (at least the last 12
+// months) up to the current one, newest first. Future months never appear.
+function monthOptions(earliest: string | undefined, selected: string) {
+  const now = currentMonth();
+  const [ny, nm] = now.split("-").map(Number);
+  const floorIdx = ny * 12 + (nm - 1) - 11;
+  let startIdx = floorIdx;
+  if (earliest) {
+    const [ey, em] = earliest.split("-").map(Number);
+    startIdx = Math.min(floorIdx, ey * 12 + (em - 1));
+  }
+  const out: string[] = [];
+  for (let i = ny * 12 + (nm - 1); i >= startIdx; i--) {
+    out.push(`${Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, "0")}`);
+  }
+  if (!out.includes(selected)) out.push(selected);
+  return out;
+}
+
 // § Dashboard P&L UI (§ Profit/Loss UI refinement) — same visual language
 // as the KPI cards above (Eyebrow-style mono uppercase label + a bold
 // font-display figure), just reused at two sizes: PnLStat for the
@@ -47,7 +75,7 @@ function PnLRow({ label, value, prominent = false }: { label: string; value: num
 
 function DashboardBody() {
   const router = useRouter();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [companies, setCompanies] = useState<Company[]>([]);
   const [parties, setParties] = useState<Party[]>([]);
   const [latestRates, setLatestRates] = useState<RateEntry[]>([]);
@@ -70,40 +98,59 @@ function DashboardBody() {
   const [loading, setLoading] = useState(true);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const inFlight = useRef(false);
-  const month = currentMonth();
+  // Reporting period for the KPI cards, P&L and flagged accounts. Defaults to
+  // the current calendar month and is independent of the chart's Daily/
+  // Monthly/Yearly toggle, which keeps reading the full-history feeds above.
+  const [month, setMonth] = useState(currentMonth);
+  const monthRef = useRef(month);
+  const pickedPastMonth = useRef(false);
+
+  // Month-scoped feeds. A response for a month the user has since moved off
+  // is dropped, so a slow request can never overwrite newer figures.
+  const loadMonthData = useCallback(async (m: string) => {
+    const [sales, purchases, expenses, ownerDrawings, shopSales, fl] = await Promise.all([
+      api.sales.list({ month: m }),
+      api.purchases.list({ month: m }),
+      api.expenses.list({ month: m }),
+      api.ownerDrawings.list(m),
+      api.shops.salesList(m),
+      api.ledger.customerFlags(m),
+    ]);
+    if (monthRef.current !== m) return;
+    setSalesMTD(sales);
+    setPurchasesMTD(purchases);
+    setExpensesMTD(expenses);
+    setOwnerDrawingsMTD(ownerDrawings);
+    setShopSalesMTD(shopSales);
+    setFlags(fl);
+  }, []);
 
   const loadAll = useCallback(async (isInitial = false) => {
     if (inFlight.current) return;
     inFlight.current = true;
     try {
-      const month = currentMonth();
-      const [c, p, r, cu, sales, purchases, expenses, ownerDrawings, shopSales, fl, allS, allP, allE, allD] = await Promise.all([
+      // Left on the default period, the dashboard keeps following the
+      // calendar: a page open across midnight of the 1st rolls over.
+      if (!pickedPastMonth.current && monthRef.current !== currentMonth()) {
+        monthRef.current = currentMonth();
+        setMonth(monthRef.current);
+      }
+      const [c, p, r, cu, allS, allP, allE, allD] = await Promise.all([
         api.companies.list(),
         api.parties.list(),
         api.rates.latest(),
         api.customers.list(),
-        api.sales.list({ month }),
-        api.purchases.list({ month }),
-        api.expenses.list({ month }),
-        api.ownerDrawings.list(month),
-        api.shops.salesList(month),
-        api.ledger.customerFlags(month),
         api.sales.list(),
         api.purchases.list(),
         api.expenses.list(),
         api.ownerDrawings.list(),
+        loadMonthData(monthRef.current),
       ]);
 
       setCompanies(c);
       setParties(p);
       setLatestRates(r);
       setCustomers(cu);
-      setSalesMTD(sales);
-      setPurchasesMTD(purchases);
-      setExpensesMTD(expenses);
-      setOwnerDrawingsMTD(ownerDrawings);
-      setShopSalesMTD(shopSales);
-      setFlags(fl);
       setAllSales(allS);
       setAllPurchases(allP);
       setAllExpenses(allE);
@@ -113,7 +160,15 @@ function DashboardBody() {
       inFlight.current = false;
       if (isInitial) setLoading(false);
     }
-  }, []);
+  }, [loadMonthData]);
+
+  const changeMonth = (m: string) => {
+    if (!m || m === monthRef.current) return;
+    pickedPastMonth.current = m !== currentMonth();
+    monthRef.current = m;
+    setMonth(m);
+    loadMonthData(m).catch(() => {});
+  };
 
   useEffect(() => {
     loadAll(true);
@@ -136,6 +191,12 @@ function DashboardBody() {
   }, [loadAll]);
 
   if (loading) return <div className="font-body text-steel p-10">{t("common.loading")}</div>;
+
+  const earliestMonth = [allSales, allPurchases, allExpenses, allDrawings]
+    .flatMap((rows) => rows.map((r) => (r.date || "").slice(0, 7)))
+    .filter((m) => /^\d{4}-\d{2}$/.test(m))
+    .sort()[0];
+  const periodLabel = monthLabel(month, i18n.language);
 
   // Flag Rule: this month's Closing Balance > this month's Opening Balance
   // (itself rolled over from the prior month's closing) -> Flagged.
@@ -243,6 +304,18 @@ function DashboardBody() {
         eyebrow={t("nav.dashboard")}
         title={t("dashboard.title")}
         caption={t("dashboard.caption")}
+        action={
+          <select
+            value={month}
+            onChange={(e) => changeMonth(e.target.value)}
+            aria-label={t("dashboard.period")}
+            className="font-mono text-[12px] font-semibold text-ink bg-white border border-hairline rounded-lg px-2.5 py-1.5 cursor-pointer"
+          >
+            {monthOptions(earliestMonth, month).map((m) => (
+              <option key={m} value={m}>{monthLabel(m, i18n.language)}</option>
+            ))}
+          </select>
+        }
       />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 mb-4">
@@ -314,8 +387,7 @@ function DashboardBody() {
 
       <Panel className="mb-3.5">
         <div className="flex items-baseline justify-between flex-wrap gap-1 mb-4">
-          <h2 className="font-display font-bold text-[16px] text-ink">{t("dashboard.pnlEyebrow")}</h2>
-          <span className="font-mono text-[10.5px] text-steel">{month}</span>
+          <h2 className="font-display font-bold text-[16px] text-ink">{t("dashboard.pnlEyebrow")} — {periodLabel}</h2>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <PnLStat label={t("dashboard.rowSales")} value={combinedSales} />
@@ -402,7 +474,7 @@ function DashboardBody() {
         </Panel>
 
         <Panel>
-          <Eyebrow>{t("dashboard.flaggedAccountsEyebrow", { month })}</Eyebrow>
+          <Eyebrow>{t("dashboard.flaggedAccountsEyebrow", { month: periodLabel })}</Eyebrow>
           <SectionCaption>
             {t("dashboard.flaggedAccountsCaption")}
           </SectionCaption>

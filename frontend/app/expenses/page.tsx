@@ -44,6 +44,8 @@ function currentYear() {
 
 type FilterType = "all" | "day" | "month" | "year";
 
+const EXPENSES_PAGE_SIZE = 25;
+
 // ============================================================
 // LOCAL PRESENTATIONAL PRIMITIVES
 // Deep Navy / Slate redesign.
@@ -289,6 +291,13 @@ function ExpensesBody() {
 
   const month = currentMonth();
 
+  // Transactions table paging — every expense in the filter is reachable.
+  const [page, setPage] = useState(0);
+
+  useEffect(() => {
+    setPage(0);
+  }, [filterType, filterDay, filterMonth, filterYear]);
+
   const load = async () => {
     const [cats, accs, expenses, emps] =
       await Promise.all([
@@ -513,10 +522,19 @@ function ExpensesBody() {
   ]);
 
   /*
-   * Show latest 10 from current filter.
+   * One page of the current filter (newest first); a changed filter or a
+   * shrunken list falls back to the last valid page.
    */
-  const recentExpenses =
-    filteredExpenses.slice(0, 10);
+  const pageCount = Math.max(
+    1,
+    Math.ceil(filteredExpenses.length / EXPENSES_PAGE_SIZE)
+  );
+  const currentPage = Math.min(page, pageCount - 1);
+  const pageStart = currentPage * EXPENSES_PAGE_SIZE;
+  const recentExpenses = filteredExpenses.slice(
+    pageStart,
+    pageStart + EXPENSES_PAGE_SIZE
+  );
 
   const filterLabel =
     filterType === "all"
@@ -1418,11 +1436,39 @@ function ExpensesBody() {
             </div>
 
             {filteredExpenses.length >
-              10 && (
-              <div className="border-t border-slate-200 px-4 py-3 text-center">
+              EXPENSES_PAGE_SIZE && (
+              <div className="flex items-center justify-between gap-3 border-t border-slate-200 px-4 py-3">
                 <span className="text-[11px] font-medium text-slate-500">
-                  {t("expenses.showingLatestOf", { shown: 10, total: filteredExpenses.length })}
+                  {t("expenses.showingRange", {
+                    from: pageStart + 1,
+                    to: pageStart + recentExpenses.length,
+                    total: filteredExpenses.length,
+                  })}
                 </span>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={currentPage === 0}
+                    onClick={() => setPage(currentPage - 1)}
+                    className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {t("expenses.previousPage")}
+                  </button>
+
+                  <span className="font-mono text-[11px] font-medium text-slate-500">
+                    {currentPage + 1} / {pageCount}
+                  </span>
+
+                  <button
+                    type="button"
+                    disabled={currentPage >= pageCount - 1}
+                    onClick={() => setPage(currentPage + 1)}
+                    className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {t("expenses.nextPage")}
+                  </button>
+                </div>
               </div>
             )}
           </div>

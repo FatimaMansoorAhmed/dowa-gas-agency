@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Wallet, Home, Landmark, ArrowRightLeft, Building2, Send, X, Calendar, Banknote, ArrowDownRight, Layers, Store } from "lucide-react";
+import { Wallet, Home, Landmark, ArrowRightLeft, Building2, Send, X, Calendar, Banknote, ArrowDownRight, Layers, Store, PlusCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { Panel, Eyebrow, Field, inputClass, Th, Td, Button } from "@/components/ui";
@@ -10,6 +10,7 @@ import { pkr, fmtTime, todayLocalInput, toKarachiDateString } from "@/lib/format
 import { useAuth } from "@/lib/auth";
 import { BUCKET_ACCOUNTS, findBucketAccount, type BucketType } from "@/lib/accounts";
 import type { PaymentAccount, Company, OwnerDrawing, OwnerCapital, UnifiedSaleBatch, Customer } from "@/lib/types";
+import EditOpeningBalanceModal from "@/components/EditOpeningBalanceModal";
 
 type DateFilter = "all" | "today" | "monthly" | "yearly" | "custom";
 
@@ -42,6 +43,8 @@ function CashManagementBody() {
   // Modal visibility states
   const [isTransferOpen, setIsTransferOpen] = useState(false);
   const [isPlantPaymentOpen, setIsPlantPaymentOpen] = useState(false);
+  // "Add Money" — which bucket's starting balance is being set (owner-only).
+  const [addMoneyBucket, setAddMoneyBucket] = useState<BucketType | null>(null);
 
   // Transfer Money form state — value is either a BucketType key
   // ("office_cash" etc.) or a raw shop-account UUID (§ Shop Cash Money
@@ -343,6 +346,16 @@ function CashManagementBody() {
               <div className="font-display font-bold text-2xl text-ink">
                 {loading ? "—" : pkr(balanceOf(type))}
               </div>
+              {user?.role === "owner" && (
+                <button
+                  type="button"
+                  onClick={() => setAddMoneyBucket(type)}
+                  title={t("cashBook.addMoneyHint")}
+                  className="mt-2 self-start inline-flex items-center gap-1 text-[11px] font-mono font-semibold text-teal hover:underline bg-transparent border-none cursor-pointer p-0"
+                >
+                  <PlusCircle size={12} /> {t("cashBook.addMoney")}
+                </button>
+              )}
             </div>
           );
         })}
@@ -615,6 +628,25 @@ function CashManagementBody() {
       </Panel>
 
       {/* MODAL 1: TRANSFER MONEY */}
+      {addMoneyBucket && (() => {
+        const acc = findBucketAccount(accounts, addMoneyBucket);
+        return (
+          <EditOpeningBalanceModal
+            title={t("cashBook.addMoneyTitle", { name: bucketLabel(addMoneyBucket) })}
+            fieldLabel={t("cashBook.addMoneyField")}
+            note={t("cashBook.addMoneyNote")}
+            currentValue={acc ? parseFloat(acc.opening_balance) : 0}
+            currentBalance={acc ? parseFloat(acc.current_balance) : 0}
+            onClose={() => setAddMoneyBucket(null)}
+            onSave={async (newValue, reason) => {
+              await api.paymentAccounts.correctBucketOpeningBalance(addMoneyBucket, { new_value: newValue, reason });
+              setAddMoneyBucket(null);
+              await loadData();
+            }}
+          />
+        );
+      })()}
+
       {isTransferOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="bg-white border border-hairline rounded-lg shadow-2xl max-w-md w-full p-6 space-y-4">

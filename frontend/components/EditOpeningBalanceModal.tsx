@@ -3,6 +3,8 @@ import { useState } from "react";
 import { X, Check } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Field, inputClass, Button } from "./ui";
+import { apiErrorMessage } from "@/lib/api";
+import { pkr } from "@/lib/format";
 
 /** § Opening Balance — one small modal shared by all 3 correctable anchors
  * (Customer, Company, Shop Cash). Unlike CorrectTransactionModal, there's
@@ -14,11 +16,20 @@ export default function EditOpeningBalanceModal({
   currentValue,
   onClose,
   onSave,
+  currentBalance,
+  fieldLabel,
+  note,
 }: {
   title: string;
   currentValue: number;
   onClose: () => void;
   onSave: (newValue: number, reason: string) => Promise<void>;
+  // Optional — when given, shows what the running balance becomes as the
+  // value is edited (the balance shifts by the same delta). Used by Cash
+  // Management's "Add Money", where the balance IS the figure being adjusted.
+  currentBalance?: number;
+  fieldLabel?: string;
+  note?: string;
 }) {
   const { t } = useTranslation();
   const [value, setValue] = useState(String(currentValue));
@@ -35,7 +46,7 @@ export default function EditOpeningBalanceModal({
     try {
       await onSave(parseFloat(value), reason);
     } catch (e) {
-      setError(t("modals.couldNotSaveOpeningBalance"));
+      setError(apiErrorMessage(e, t("modals.couldNotSaveOpeningBalance")));
       setSaving(false);
     }
   };
@@ -51,7 +62,7 @@ export default function EditOpeningBalanceModal({
         </div>
 
         <div className="flex flex-col gap-3.5">
-          <Field label={t("modals.newOpeningBalanceLabel")}>
+          <Field label={fieldLabel || t("modals.newOpeningBalanceLabel")}>
             <input
               type="number"
               autoFocus
@@ -71,8 +82,14 @@ export default function EditOpeningBalanceModal({
             />
           </Field>
 
+          {currentBalance != null && !isNaN(parseFloat(value)) && (
+            <div className="font-mono text-xs text-ink bg-paper border border-hairline rounded-md px-3 py-2">
+              {t("modals.balanceWillBecome", { from: pkr(currentBalance), to: pkr(currentBalance + (parseFloat(value) - currentValue)) })}
+            </div>
+          )}
+
           <div className="font-body text-[11px] text-steel">
-            {t("modals.openingBalanceChangeNote")}
+            {note || t("modals.openingBalanceChangeNote")}
           </div>
 
           {error && <div className="font-body text-xs text-brand-red">{error}</div>}

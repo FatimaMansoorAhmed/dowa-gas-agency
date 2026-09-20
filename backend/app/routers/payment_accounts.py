@@ -4,7 +4,8 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app import models, schemas
-from app.deps import require_active_user, require_csrf
+from app.deps import require_active_user, require_csrf, require_owner
+from app.utils import get_or_create_bucket_account, log_audit, BUCKET_ACCOUNT_LABELS
 
 router = APIRouter(prefix="/payment-accounts", tags=["payment-accounts"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
 
@@ -25,6 +26,52 @@ def create_account(payload: schemas.PaymentAccountCreate, db: Session = Depends(
         active="active",
     )
     db.add(account)
+    db.commit()
+    db.refresh(account)
+    return account
+
+
+@router.patch("/bucket/{account_type}/opening-balance", response_model=schemas.PaymentAccountOut)
+def correct_bucket_opening_balance(
+    account_type: str,
+    payload: schemas.OpeningBalanceUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_owner),
+):
+    """"Add Money" on Cash Management — establishes/corrects the STARTING
+    balance of one of the 3 global buckets (office_cash | owner_home |
+    dowa_account) for money the business already holds but the software was
+    never told about. Same edit-in-place + delta-shift-current_balance +
+    required-reason + AuditLog pattern as Customer/Company/Shop Cash opening
+    balances (see routers/shops.py::correct_shop_opening_cash).
+
+    Deliberately NOT a transaction: creates no Expense/OwnerDrawings/Payment/
+    CompanyPayment/OwnerCapital row, so it never appears in P&L, Dashboard
+    revenue/expense figures, or Owner Capital (which is for genuinely NEW
+    money the owner injects). Owner-only — it changes a cash figure with no
+    transaction behind it. Refuses a value that would leave the account with
+    a negative balance, same rule transfers already follow."""
+    if account_type not in BUCKET_ACCOUNT_LABELS:
+        raise HTTPException(400, "Only Office Cash, Owner Home and Dowa Account can be adjusted here")
+    reason = (payload.reason or "").strip()
+    if not reason:
+        raise HTTPException(400, "A reason is required to correct the Opening Balance")
+
+    account = get_or_create_bucket_account(db, account_type)
+    old_value = account.opening_balance
+    delta = payload.new_value - old_value
+    if account.current_balance + delta < 0:
+        raise HTTPException(
+            400,
+            f"This would leave {account.name} with a negative balance "
+            f"({account.current_balance + delta}) — the account holds {account.current_balance} from its transactions, "
+            f"so the opening balance cannot go below {old_value - account.current_balance}.",
+        )
+    account.opening_balance = payload.new_value
+    account.current_balance = account.current_balance + delta
+    db.add(account)
+    log_audit(db, "payment_account", account.id, "update", current_user.name,
+              field="opening_balance", old=old_value, new=payload.new_value, reason=reason)
     db.commit()
     db.refresh(account)
     return account

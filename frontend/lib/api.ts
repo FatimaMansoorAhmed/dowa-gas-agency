@@ -180,6 +180,8 @@ export const api = {
   },
   paymentAccounts: {
     list: () => request<PaymentAccount[]>("/payment-accounts"),
+    correctBucketOpeningBalance: (accountType: "office_cash" | "owner_home" | "dowa_account", payload: { new_value: number; reason: string }) =>
+      request<PaymentAccount>(`/payment-accounts/bucket/${accountType}/opening-balance`, { method: "PATCH", body: JSON.stringify(payload) }),
     create: (name: string, kind: "cash" | "bank", opening_balance = 0, account_type?: AccountType) =>
       request<PaymentAccount>("/payment-accounts", { method: "POST", body: JSON.stringify({ name, kind, opening_balance, account_type }) }),
     transfer: (payload: { from_account_id: string; to_account_id: string; amount: number; notes?: string; entered_by: string }) =>
