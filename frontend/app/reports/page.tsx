@@ -4,13 +4,14 @@ import { Download, Eye, RefreshCw, Send, FileDown, Plus, Trash2, RotateCcw, Chev
 import { useTranslation } from "react-i18next";
 import AuthGate from "@/components/AuthGate";
 import { PageHeader, Panel, Eyebrow, SectionCaption, Th, Td, inputClass, Button } from "@/components/ui";
-import { api } from "@/lib/api";
+import { api, apiErrorMessage } from "@/lib/api";
+import { normalizePkPhone, isStoredE164 } from "@/lib/phone";
 import { useAuth } from "@/lib/auth";
 import { fmtTime, todayLocalInput } from "@/lib/format";
 import type { GeneratedReport, WhatsAppStatus, WhatsAppRecipient, WhatsAppSendLog } from "@/lib/types";
 
 /** § WhatsApp Recipients & Daily Scheduler — recipient list (add/remove)
- * + the auto-send on/off toggle the 12:00 PM scheduler job reads
+ * + the auto-send on/off toggle the 12:00 AM (midnight) scheduler job reads
  * (app/scheduler.py). "Remove" is a soft deactivate, never a hard delete
  * — a WhatsAppSendLog row's recipient_id would otherwise dangle. */
 function WhatsAppSettingsPanel() {
@@ -21,6 +22,7 @@ function WhatsAppSettingsPanel() {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [label, setLabel] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [addError, setAddError] = useState<string | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -33,14 +35,19 @@ function WhatsAppSettingsPanel() {
   };
   useEffect(() => { load(); }, []);
 
+  const phone = normalizePkPhone(phoneNumber);
+
   const handleAdd = async () => {
-    if (!phoneNumber.trim()) return;
+    if (!phone.ok) return;
     setBusyId("__add__");
+    setAddError(null);
     try {
-      await api.reports.whatsappRecipients.create({ phone_number: phoneNumber.trim(), label: label.trim() || undefined });
+      await api.reports.whatsappRecipients.create({ phone_number: phone.e164, label: label.trim() || undefined });
       setPhoneNumber("");
       setLabel("");
       load();
+    } catch (e) {
+      setAddError(apiErrorMessage(e, t("reports.recipientAddFailed")));
     } finally {
       setBusyId(null);
     }
@@ -93,7 +100,7 @@ function WhatsAppSettingsPanel() {
           <div className="mt-4 flex items-center flex-wrap gap-2">
             <input
               value={phoneNumber}
-              onChange={(e) => setPhoneNumber(e.target.value)}
+              onChange={(e) => { setPhoneNumber(e.target.value); setAddError(null); }}
               placeholder={t("reports.recipientPhonePlaceholder")}
               className={`${inputClass} w-full sm:w-[180px]`}
             />
@@ -103,10 +110,16 @@ function WhatsAppSettingsPanel() {
               placeholder={t("reports.recipientLabelPlaceholder")}
               className={`${inputClass} w-full sm:w-[150px]`}
             />
-            <Button variant="outline" onClick={handleAdd} disabled={busyId === "__add__" || !phoneNumber.trim()}>
+            <Button variant="outline" onClick={handleAdd} disabled={busyId === "__add__" || !phone.ok}>
               <Plus size={14} /> {t("reports.addRecipient")}
             </Button>
           </div>
+          {phone.ok ? (
+            <div className="mt-1.5 font-mono text-[11.5px] text-teal">{t("reports.phoneWillSaveAs", { number: phone.e164 })}</div>
+          ) : (
+            !phone.empty && <div className="mt-1.5 font-body text-[11.5px] text-brand-red">{t("reports.phoneInvalid")}</div>
+          )}
+          {addError && <div className="mt-1.5 font-body text-[11.5px] text-brand-red">{addError}</div>}
 
           <div className="mt-3 flex flex-col gap-1.5">
             {recipients.map((r) => (
@@ -117,6 +130,9 @@ function WhatsAppSettingsPanel() {
                 <div className="font-body text-[13px] text-ink">
                   <span className="font-mono">{r.phone_number}</span>
                   {r.label && <span className="ml-2 text-steel text-[11.5px]">{r.label}</span>}
+                  {!isStoredE164(r.phone_number) && (
+                    <span className="ml-2 text-[11px] text-brand-amber">{t("reports.recipientNeedsFix")}</span>
+                  )}
                 </div>
                 <button
                   type="button"

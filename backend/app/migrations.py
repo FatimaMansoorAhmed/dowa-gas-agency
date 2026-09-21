@@ -826,6 +826,44 @@ def run_startup_migrations(engine: Engine) -> None:
         _drop_fk_columns(engine, _FK_DROPS)
 
     _ensure_indexes(engine, _INDEXES)
+    _normalize_whatsapp_recipients(engine)
+
+
+def _normalize_whatsapp_recipients(engine: Engine) -> None:
+    """Rewrites stored WhatsApp recipient numbers saved before validation
+    existed (e.g. "03701234567") into E.164 ("+923701234567") — Meta matches
+    recipients by exact number, so the un-prefixed form fails with error
+    #131030. Idempotent: an already-normal number is left alone. A number
+    that can't be read as a Pakistan mobile, or that would duplicate another
+    recipient, is left untouched and logged for a person to sort out."""
+    if "whatsapp_recipients" not in inspect(engine).get_table_names():
+        return
+    from app.whatsapp import normalize_phone_number
+
+    def masked(p: str) -> str:
+        return p[:4] + "…" + p[-3:] if len(p) > 7 else "…"
+
+    with engine.begin() as conn:
+        rows = conn.execute(text("SELECT id, phone_number FROM whatsapp_recipients ORDER BY created_at")).fetchall()
+        taken: set[str] = set()
+        pending: list[tuple] = []
+        for rid, phone in rows:
+            try:
+                fixed = normalize_phone_number(phone)
+            except ValueError:
+                logger.warning("WhatsApp recipient %s is not a valid Pakistan mobile number — fix it by hand", masked(phone))
+                continue
+            if fixed == phone:
+                taken.add(fixed)
+            else:
+                pending.append((rid, phone, fixed))
+        for rid, phone, fixed in pending:
+            if fixed in taken:
+                logger.warning("WhatsApp recipient %s duplicates another recipient once normalized — left as is", masked(phone))
+                continue
+            conn.execute(text("UPDATE whatsapp_recipients SET phone_number = :p WHERE id = :id"), {"p": fixed, "id": rid})
+            taken.add(fixed)
+            logger.info("Normalized WhatsApp recipient %s -> %s", masked(phone), masked(fixed))
 
 
 # (table, column) pairs whose FK to customers/companies/employees is dropped.

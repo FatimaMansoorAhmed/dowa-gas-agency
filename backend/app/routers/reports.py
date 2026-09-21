@@ -88,7 +88,7 @@ def download_report(report_id: UUID, db: Session = Depends(get_db)):
 
 
 def _generate_daily_report(db: Session, business_date: str, generated_by: str) -> list[models.GeneratedReport]:
-    """Shared by the manual "Generate Report" endpoint below and the 12 PM
+    """Shared by the manual "Generate Report" endpoint below and the midnight
     scheduled job (app/scheduler.py) — same data/PDF/row-insert behavior
     either way, so a scheduled report is indistinguishable in every respect
     except its generated_by tag.
@@ -187,7 +187,7 @@ def send_report_whatsapp(report_id: UUID, to: str | None = Query(None), db: Sess
 
 # ---------- WhatsApp Recipients & Daily Scheduler ----------
 # § WhatsApp Recipients & Daily Scheduler — a stored recipient list +
-# on/off toggle for the 12:00 PM scheduled job (app/scheduler.py) to send
+# on/off toggle for the 12:00 AM scheduled job (app/scheduler.py) to send
 # the day's Urdu report to automatically, rather than the send-whatsapp
 # endpoint above staying manual-trigger-only forever. Kept in this same
 # file (not a separate router) since it's entirely report-scoped — never
@@ -227,9 +227,21 @@ def list_whatsapp_recipients(db: Session = Depends(get_db)):
 
 @router.post("/whatsapp/recipients", response_model=schemas.WhatsAppRecipientOut, status_code=201)
 def create_whatsapp_recipient(payload: schemas.WhatsAppRecipientCreate, db: Session = Depends(get_db)):
-    if not payload.phone_number.strip():
-        raise HTTPException(400, "phone_number is required")
-    recipient = models.WhatsAppRecipient(phone_number=payload.phone_number.strip(), label=payload.label, active="active")
+    try:
+        phone_number = whatsapp.normalize_phone_number(payload.phone_number)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    # Rows saved before normalization existed may not be in E.164 form, so
+    # compare in normalized form where they can be normalized at all.
+    for existing in db.query(models.WhatsAppRecipient).all():
+        try:
+            same = whatsapp.normalize_phone_number(existing.phone_number) == phone_number
+        except ValueError:
+            same = existing.phone_number == phone_number
+        if same:
+            hint = "" if existing.active == "active" else " (removed — use its Re-add button)"
+            raise HTTPException(400, f"{phone_number} is already in the recipient list{hint}")
+    recipient = models.WhatsAppRecipient(phone_number=phone_number, label=(payload.label or "").strip() or None, active="active")
     db.add(recipient)
     db.commit()
     db.refresh(recipient)

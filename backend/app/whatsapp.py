@@ -14,12 +14,54 @@ report always is. The template must have a document header (the PDF) and
 exactly one body variable, the business date, e.g.:
 "Your daily DOWA report for {{1}} is attached."
 """
+import logging
 import os
+import re
 from typing import Optional
 
 import requests
 
+logger = logging.getLogger(__name__)
+
 GRAPH_API_BASE = "https://graph.facebook.com/v21.0"
+
+PK_MOBILE_E164 = re.compile(r"\+923\d{9}")
+
+
+def normalize_phone_number(raw: str) -> str:
+    """Canonical E.164 form (+923001234567) for a Pakistan mobile number, or
+    ValueError with a user-readable message. Meta matches recipients against
+    its allowed list by exact number, so "0300…" and "+92300…" are different
+    recipients to it (error #131030) even though they look alike to a person.
+
+    Accepts the ways numbers get typed or pasted: 0300 1234567, 300-1234567,
+    923001234567, 0092 300 1234567, +92 300 1234567, and the common slip
+    +92 0300 1234567 (trunk 0 kept). Rejects anything that isn't a
+    Pakistan mobile number. frontend/lib/phone.ts mirrors these rules."""
+    s = (raw or "").strip()
+    if not s:
+        raise ValueError("Phone number is required")
+    if re.search(r"[^\d\s\-().+]", s) or "+" in s[1:]:
+        raise ValueError("Phone number may only contain digits, spaces, dashes and a leading +")
+    digits = re.sub(r"\D", "", s)
+    if s.startswith("+"):
+        if not digits.startswith("92"):
+            raise ValueError("Only Pakistan numbers (+92) are supported")
+        rest = digits[2:]
+    elif digits.startswith("0092"):
+        rest = digits[4:]
+    elif digits.startswith("92") and len(digits) >= 12:
+        rest = digits[2:]
+    elif digits.startswith("0"):
+        rest = digits[1:]
+    else:
+        rest = digits
+    if len(rest) == 11 and rest.startswith("0"):
+        rest = rest[1:]
+    e164 = "+92" + rest
+    if not PK_MOBILE_E164.fullmatch(e164):
+        raise ValueError("Enter a valid Pakistan mobile number, e.g. +92 300 1234567")
+    return e164
 
 
 def is_configured() -> bool:
@@ -86,6 +128,14 @@ def send_pdf(file_path: str, filename: str, business_date: str, to: Optional[str
             timeout=30,
         )
         send_resp.raise_for_status()
+        # Meta accepting the message is not the same as the phone receiving
+        # it — the id is what to look up in Meta's console if a report
+        # "sent" here never shows up on the handset.
+        try:
+            message_id = send_resp.json()["messages"][0]["id"]
+        except Exception:
+            message_id = "?"
+        logger.info("WhatsApp accepted message %s to %s", message_id, f"{recipient[:4]}…{recipient[-3:]}")
         return True, None
     except requests.RequestException as e:
         detail = ""
