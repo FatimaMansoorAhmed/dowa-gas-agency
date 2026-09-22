@@ -704,9 +704,8 @@
     "colLanguage": "زبان",
     "languageEn": "انگریزی",
     "languageUr": "اردو",
-    "whatsappAutoSendTitle": "واٹس ایپ خودکار ارسال",
-    "whatsappAutoSendCaption": "وصول کنندگان کے نمبر منظم کریں اور خودکار ارسال آن کریں۔ ہر رات 12:00 AM پر پچھلے دن کی رپورٹ تیار ہو کر ان نمبروں پر بھیجی جاتی ہے۔",
-    "whatsappAutoSendToggleLabel": "واٹس ایپ خودکار ارسال آن/آف کریں",
+    "whatsappRecipientsTitle": "واٹس ایپ رپورٹ وصول کنندگان",
+    "whatsappRecipientsCaption": "وہ نمبر جو واٹس ایپ کے ذریعے روزانہ رپورٹ کی درخواست کر سکتے ہیں — شروع کرنے کے لیے کاروباری نمبر پر \"reports\" لکھ کر بھیجیں۔",
     "recipientPhonePlaceholder": "فون نمبر",
     "recipientLabelPlaceholder": "لیبل (اختیاری)",
     "addRecipient": "شامل کریں",
@@ -717,8 +716,8 @@
     "phoneInvalid": "درست پاکستانی موبائل نمبر درج کریں، مثلاً 0300 1234567 یا +92 300 1234567",
     "recipientAddFailed": "وصول کنندہ شامل نہیں ہو سکا",
     "recipientNeedsFix": "+92 فارمیٹ میں نہیں — واٹس ایپ اسے مسترد کر دے گا۔ اسے ہٹا کر دوبارہ شامل کریں۔",
-    "noAutoSendLogYet": "اس رپورٹ کے لیے ابھی تک کوئی خودکار ارسال نہیں ہوا۔",
-    "viewAutoSendLogTitle": "خودکار ارسال لاگ دیکھیں"
+    "noAutoSendLogYet": "اس رپورٹ کے لیے ابھی تک واٹس ایپ پر کوئی ارسال نہیں ہوا۔",
+    "viewAutoSendLogTitle": "واٹس ایپ ارسال لاگ دیکھیں"
   },
   "dailyActivity": {
     "title": "ایک کاروباری تاریخ، ہر ٹرانزیکشن",

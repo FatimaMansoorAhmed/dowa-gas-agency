@@ -2245,7 +2245,7 @@ class SendWhatsAppOut(BaseModel):
     message: str
 
 
-# ---------- WhatsApp Recipients & Daily Scheduler ----------
+# ---------- WhatsApp Report Recipients ----------
 class WhatsAppRecipientCreate(BaseModel):
     phone_number: str
     label: Optional[str] = None
@@ -2274,8 +2274,6 @@ class WhatsAppSendLogOut(BaseModel):
     recipient_phone_number: Optional[str] = None
 
 
-class WhatsAppAutoSendSettingOut(BaseModel):
-    enabled: bool
 
 
 # ---------- Shop Management + Board Rate ----------

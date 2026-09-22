@@ -653,18 +653,17 @@ export const api = {
       request<SendWhatsAppResult>(`/reports/${id}/send-whatsapp${to ? `?to=${encodeURIComponent(to)}` : ""}`, {
         method: "POST",
       }),
-    // § WhatsApp Recipients & Daily Scheduler
+    // § WhatsApp Report Recipients — the allowlist of numbers that may
+    // request a Daily Report over WhatsApp by messaging "reports"
+    // (backend/app/routers/whatsapp_webhook.py). Delivery itself is
+    // on-request now, not a scheduled auto-send, so there's no
+    // auto-send toggle here any more.
     whatsappRecipients: {
       list: () => request<WhatsAppRecipient[]>("/reports/whatsapp/recipients"),
       create: (payload: { phone_number: string; label?: string }) =>
         request<WhatsAppRecipient>("/reports/whatsapp/recipients", { method: "POST", body: JSON.stringify(payload) }),
       deactivate: (id: string) => request<WhatsAppRecipient>(`/reports/whatsapp/recipients/${id}/deactivate`, { method: "PATCH" }),
       activate: (id: string) => request<WhatsAppRecipient>(`/reports/whatsapp/recipients/${id}/activate`, { method: "PATCH" }),
-    },
-    whatsappAutoSend: {
-      get: () => request<{ enabled: boolean }>("/reports/whatsapp/auto-send"),
-      set: (enabled: boolean) =>
-        request<{ enabled: boolean }>("/reports/whatsapp/auto-send", { method: "PUT", body: JSON.stringify({ enabled }) }),
     },
     whatsappLog: (reportId: string) => request<WhatsAppSendLog[]>(`/reports/${reportId}/whatsapp-log`),
   },

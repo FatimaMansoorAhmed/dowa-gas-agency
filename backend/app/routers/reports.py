@@ -185,39 +185,37 @@ def send_report_whatsapp(report_id: UUID, to: str | None = Query(None), db: Sess
     return schemas.SendWhatsAppOut(report=report, message="Sent via WhatsApp" if ok else f"WhatsApp send failed: {error}")
 
 
-# ---------- WhatsApp Recipients & Daily Scheduler ----------
-# § WhatsApp Recipients & Daily Scheduler — a stored recipient list +
-# on/off toggle for the 12:00 AM scheduled job (app/scheduler.py) to send
-# the day's Urdu report to automatically, rather than the send-whatsapp
-# endpoint above staying manual-trigger-only forever. Kept in this same
-# file (not a separate router) since it's entirely report-scoped — never
-# a general-purpose WhatsApp feature.
+# ---------- WhatsApp Report Recipients ----------
+# § WhatsApp Report Recipients — the allowlist of phone numbers that may
+# request a Daily Report (add/remove list, managed on the Reports page).
+# Delivery itself is on-request now (§ WhatsApp Inbound Request Flow,
+# app/routers/whatsapp_webhook.py) — someone messaging "reports" on
+# WhatsApp — rather than a nightly auto-send; this router only owns the
+# allowlist. Kept in this same file (not a separate router) since it's
+# entirely report-scoped — never a general-purpose WhatsApp feature.
 
-WHATSAPP_AUTO_SEND_SETTING_KEY = "whatsapp_auto_send_enabled"
 
-
-def send_report_to_recipient(
-    db: Session, report: models.GeneratedReport, recipient: models.WhatsAppRecipient,
-) -> tuple[bool, str | None]:
-    """The scheduler's per-recipient send — never raises (same guarantee
-    as send_report_whatsapp above), and always writes a WhatsAppSendLog
-    row so per-recipient delivery stays visible even though GeneratedReport.
-    whatsapp_status itself is a single scalar (meaningless once there's
-    more than one recipient). Deliberately NOT shared code with
-    send_report_whatsapp's manual single-send path above — that endpoint's
-    existing behavior (updating report.whatsapp_status/sent_at/error
-    directly) stays untouched; this is purely additive."""
-    if not os.path.exists(report.file_path):
-        ok, error = False, "Report file is no longer on disk"
-    else:
-        filename = f"Daily_Report_{report.business_date}.pdf"
-        ok, error = whatsapp.send_pdf(report.file_path, filename, report.business_date, to=recipient.phone_number)
-
-    db.add(models.WhatsAppSendLog(
-        report_id=report.id, recipient_id=recipient.id,
-        status="sent" if ok else "failed", error=None if ok else error,
-    ))
-    return ok, error
+def find_or_generate_daily_report(db: Session, business_date: str, language: str) -> models.GeneratedReport:
+    """Shared by the WhatsApp inbound flow's "send me the report for X"
+    step: reuses the most recent already-generated report for
+    (business_date, language) — normally the midnight scheduler's row
+    (app/scheduler.py) — and only generates a fresh one (via
+    _generate_daily_report, same as every other caller) when none exists
+    yet, e.g. someone asks for today's report before the midnight job has
+    run, or the file for an existing row went missing from disk."""
+    report = (
+        db.query(models.GeneratedReport)
+        .filter(
+            models.GeneratedReport.business_date == business_date,
+            models.GeneratedReport.language == language,
+        )
+        .order_by(models.GeneratedReport.generated_at.desc())
+        .first()
+    )
+    if report and os.path.exists(report.file_path):
+        return report
+    reports = _generate_daily_report(db, business_date, "WhatsApp request")
+    return next(r for r in reports if r.language == language)
 
 
 @router.get("/whatsapp/recipients", response_model=list[schemas.WhatsAppRecipientOut])
@@ -272,25 +270,6 @@ def activate_whatsapp_recipient(recipient_id: UUID, db: Session = Depends(get_db
     db.commit()
     db.refresh(recipient)
     return recipient
-
-
-@router.get("/whatsapp/auto-send", response_model=schemas.WhatsAppAutoSendSettingOut)
-def get_whatsapp_auto_send(db: Session = Depends(get_db)):
-    row = db.query(models.AppSetting).get(WHATSAPP_AUTO_SEND_SETTING_KEY)
-    return schemas.WhatsAppAutoSendSettingOut(enabled=bool(row and row.value == "true"))
-
-
-@router.put("/whatsapp/auto-send", response_model=schemas.WhatsAppAutoSendSettingOut)
-def set_whatsapp_auto_send(payload: schemas.WhatsAppAutoSendSettingOut, db: Session = Depends(get_db)):
-    row = db.query(models.AppSetting).get(WHATSAPP_AUTO_SEND_SETTING_KEY)
-    value = "true" if payload.enabled else "false"
-    if row:
-        row.value = value
-    else:
-        row = models.AppSetting(key=WHATSAPP_AUTO_SEND_SETTING_KEY, value=value)
-    db.add(row)
-    db.commit()
-    return schemas.WhatsAppAutoSendSettingOut(enabled=payload.enabled)
 
 
 @router.get("/{report_id}/whatsapp-log", response_model=list[schemas.WhatsAppSendLogOut])

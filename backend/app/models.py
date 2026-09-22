@@ -1120,11 +1120,14 @@ class GeneratedReport(Base):
 
 
 class WhatsAppRecipient(Base):
-    """A phone number that scheduled Daily Reports auto-send to (§ WhatsApp
-    Recipients & Daily Scheduler) — add/remove list, managed on the
-    Reports page. `active` lets a number be paused without losing its
-    history (deleting it would orphan any WhatsAppSendLog rows pointing at
-    it); the scheduler only ever sends to active rows."""
+    """A phone number allowed to request Daily Reports over WhatsApp (§
+    WhatsApp Report Recipients) — add/remove list, managed on the Reports
+    page. `active` lets a number be paused without losing its history
+    (deleting it would orphan any WhatsAppSendLog rows pointing at it);
+    the inbound webhook (app/routers/whatsapp_webhook.py) only ever
+    processes messages from active rows — anyone else is silently
+    ignored, since this list gates access to sensitive financial
+    reports."""
     __tablename__ = "whatsapp_recipients"
 
     id = Column(GUID(), primary_key=True, default=gen_uuid)
@@ -1136,13 +1139,17 @@ class WhatsAppRecipient(Base):
 
 class WhatsAppSendLog(Base):
     """One send attempt of one GeneratedReport to one WhatsAppRecipient (§
-    WhatsApp Recipients & Daily Scheduler) — the per-recipient trail
+    WhatsApp Report Recipients) — the per-recipient trail
     GeneratedReport.whatsapp_status can't provide on its own (that column
     is a single scalar per report, meaningless once there's more than one
     recipient: "sent to 3 of 4, failed for 1" has nowhere to live there).
     One row per (report, recipient) attempt; a retry inserts a NEW row
     rather than overwriting the old one, same "keep full history" rule
-    GeneratedReport itself already follows."""
+    GeneratedReport itself already follows.
+
+    Since § WhatsApp Inbound Request Flow, this is also how an on-request
+    send (someone messaging "reports") is audited — same table, same
+    columns; there's no separate log for that path."""
     __tablename__ = "whatsapp_send_logs"
 
     id = Column(GUID(), primary_key=True, default=gen_uuid)
@@ -1154,6 +1161,30 @@ class WhatsAppSendLog(Base):
 
     report = relationship("GeneratedReport")
     recipient = relationship("WhatsAppRecipient")
+
+
+class WhatsAppConversationState(Base):
+    """In-progress "reports" conversation with one allowlisted phone number
+    (§ WhatsApp Inbound Request Flow) — WhatsApp webhook deliveries are
+    stateless HTTP calls with nothing tying a later reply back to an
+    earlier one, so this table is what remembers "this number said
+    'reports', now waiting for their date" between one inbound message
+    and the next. One row per phone_number (a second "reports" message
+    just overwrites/restarts it); STALE_AFTER (see
+    routers/whatsapp_webhook.py) treats an old, never-finished row as if
+    it were "idle" rather than resuming it, so an abandoned conversation
+    from days ago can't suddenly continue."""
+    __tablename__ = "whatsapp_conversation_states"
+
+    phone_number = Column(String, primary_key=True)  # E.164, same normalize_phone_number() form as WhatsAppRecipient
+    state = Column(String, nullable=False)  # "awaiting_date" | "awaiting_language"
+    pending_date = Column(String, nullable=True)  # "YYYY-MM-DD" business_date, set once the date step is done
+    # Set when a shortcut supplies the language BEFORE the date (e.g.
+    # "reports urdu") — held here until the date step finishes, then
+    # consumed the same as a normal awaiting_language reply would be.
+    pending_language = Column(String, nullable=True)  # "ur" | "en"
+    last_wamid = Column(String, nullable=True)  # last inbound message id processed — de-dupes Meta's at-least-once redelivery
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
 class BoardRate(Base):

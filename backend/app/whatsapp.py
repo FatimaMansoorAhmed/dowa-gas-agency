@@ -7,13 +7,25 @@ WHATSAPP_TEMPLATE_LANG (defaults to "en"). If any required var is missing,
 that as "unavailable", never as a failure — report generation/download
 must never depend on this.
 
-The message is sent as an approved template (not a free-form "document"
-message) because Meta rejects business-initiated free-form messages sent
-outside a 24-hour customer-service window — which an automated daily
-report always is. The template must have a document header (the PDF) and
-exactly one body variable, the business date, e.g.:
+The scheduled/manual "Send via WhatsApp" button's message is sent as an
+approved template (not a free-form "document" message) because Meta
+rejects business-initiated free-form messages sent outside a 24-hour
+customer-service window — which a business-initiated send always is. The
+template must have a document header (the PDF) and exactly one body
+variable, the business date, e.g.:
 "Your daily DOWA report for {{1}} is attached."
+
+§ WhatsApp Inbound Request Flow adds send_text/send_document below: a
+reply to an inbound "reports" message is USER-initiated, so it's sent
+free-form inside the 24-hour service window Meta opens the instant that
+inbound message arrives — no template needed there, and Meta rejects a
+template reply in-window with the same "re-engagement" friction it
+otherwise reserves for out-of-window sends. Gated by
+is_reply_configured() (token + phone number id only — the reply flow has
+no fixed WHATSAPP_RECIPIENT_NUMBER/TEMPLATE_NAME to require).
 """
+import hashlib
+import hmac
 import logging
 import os
 import re
@@ -144,3 +156,112 @@ def send_pdf(file_path: str, filename: str, business_date: str, to: Optional[str
         except Exception:
             pass
         return False, f"{e}" + (f" — {detail}" if detail else "")
+
+
+# ---------- § WhatsApp Inbound Request Flow ----------
+
+def is_reply_configured() -> bool:
+    """Narrower than is_configured() above: replying inside an inbound
+    conversation only ever needs the token + phone number id (the `to` is
+    whoever just messaged us, not a fixed WHATSAPP_RECIPIENT_NUMBER, and
+    there's no template involved)."""
+    return bool(os.getenv("WHATSAPP_TOKEN") and os.getenv("WHATSAPP_PHONE_NUMBER_ID"))
+
+
+def _mask(number: str) -> str:
+    return number[:4] + "…" + number[-3:] if number and len(number) > 7 else "?"
+
+
+def _post_message(payload: dict) -> tuple[bool, Optional[str]]:
+    token = os.getenv("WHATSAPP_TOKEN")
+    phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+    to = payload.get("to", "")
+    if not (token and phone_number_id):
+        logger.warning("WhatsApp reply to %s not sent: WHATSAPP_TOKEN/WHATSAPP_PHONE_NUMBER_ID not configured", _mask(to))
+        return False, "WhatsApp not configured"
+    try:
+        resp = requests.post(
+            f"{GRAPH_API_BASE}/{phone_number_id}/messages",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"messaging_product": "whatsapp", **payload},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        logger.info("WhatsApp %s reply accepted by Graph API for %s", payload.get("type"), _mask(to))
+        return True, None
+    except requests.RequestException as e:
+        detail = ""
+        try:
+            detail = e.response.text[:300] if e.response is not None else ""
+        except Exception:
+            pass
+        logger.warning("WhatsApp %s reply to %s rejected by Graph API: %s%s", payload.get("type"), _mask(to), e, f" — {detail}" if detail else "")
+        return False, f"{e}" + (f" — {detail}" if detail else "")
+
+
+def send_text(to: str, body: str) -> tuple[bool, Optional[str]]:
+    """Free-form text reply — the conversational prompts/confirmations in
+    the "reports" flow (asking for a date, asking for a language,
+    reporting an error). `to` must already be the E.164 number that just
+    messaged us; Meta only accepts a free-form send while that number's
+    24-hour service window is open, which it always is right after they
+    messaged us."""
+    return _post_message({"to": to, "type": "text", "text": {"body": body}})
+
+
+def send_document(file_path: str, filename: str, to: str, caption: Optional[str] = None) -> tuple[bool, Optional[str]]:
+    """Free-form document reply — the actual report PDF, sent inside the
+    inbound conversation's service window (see send_text). Same
+    upload-then-send shape as send_pdf() above, but as a plain document
+    message (no template/business_date body variable) since this is a
+    reply, not a business-initiated send."""
+    token = os.getenv("WHATSAPP_TOKEN")
+    phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+    if not (token and phone_number_id):
+        return False, "WhatsApp not configured"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        with open(file_path, "rb") as f:
+            media_resp = requests.post(
+                f"{GRAPH_API_BASE}/{phone_number_id}/media",
+                headers=headers,
+                data={"messaging_product": "whatsapp", "type": "application/pdf"},
+                files={"file": (filename, f, "application/pdf")},
+                timeout=30,
+            )
+        media_resp.raise_for_status()
+        media_id = media_resp.json()["id"]
+    except requests.RequestException as e:
+        detail = ""
+        try:
+            detail = e.response.text[:300] if e.response is not None else ""
+        except Exception:
+            pass
+        return False, f"{e}" + (f" — {detail}" if detail else "")
+
+    document: dict = {"id": media_id, "filename": filename}
+    if caption:
+        document["caption"] = caption
+    return _post_message({"to": to, "type": "document", "document": document})
+
+
+def verify_signature(app_secret: str, raw_body: bytes, signature_header: Optional[str]) -> bool:
+    """Validates Meta's X-Hub-Signature-256 header on an inbound webhook
+    POST — the one thing standing between this endpoint and anyone on the
+    internet who can guess its URL and POST a forged "message" claiming
+    to be from an allowlisted number, so getting this wrong is worse than
+    not having it (§ WhatsApp Inbound Request Flow — verified against
+    Meta's official Graph API webhooks docs, "Validating Payloads":
+    https://developers.facebook.com/docs/graph-api/webhooks/getting-started).
+    Meta signs the raw, exact request body (not a re-serialized/re-parsed
+    version of it — re-serializing JSON can change field order/whitespace
+    and would silently break this) with HMAC-SHA256 keyed by the app's
+    App Secret, sent as the header value "sha256=<hex digest>". Comparison
+    uses hmac.compare_digest to avoid a timing side-channel."""
+    if not signature_header or not signature_header.startswith("sha256="):
+        return False
+    if not app_secret:
+        return False
+    expected = hmac.new(app_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    provided = signature_header[len("sha256="):]
+    return hmac.compare_digest(expected, provided)

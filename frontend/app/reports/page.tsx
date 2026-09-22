@@ -10,14 +10,18 @@ import { useAuth } from "@/lib/auth";
 import { fmtTime, todayLocalInput } from "@/lib/format";
 import type { GeneratedReport, WhatsAppStatus, WhatsAppRecipient, WhatsAppSendLog } from "@/lib/types";
 
-/** § WhatsApp Recipients & Daily Scheduler — recipient list (add/remove)
- * + the auto-send on/off toggle the 12:00 AM (midnight) scheduler job reads
- * (app/scheduler.py). "Remove" is a soft deactivate, never a hard delete
- * — a WhatsAppSendLog row's recipient_id would otherwise dangle. */
+/** § WhatsApp Report Recipients — the allowlist a number must be on to
+ * request a Daily Report over WhatsApp by messaging "reports" (backend/
+ * app/routers/whatsapp_webhook.py). "Remove" is a soft deactivate, never
+ * a hard delete — a WhatsAppSendLog row's recipient_id would otherwise
+ * dangle, and the webhook only ever processes messages from active rows.
+ * There used to also be a nightly auto-send on/off toggle here (§
+ * WhatsApp Inbound Request Flow removed the midnight auto-send
+ * entirely, in favor of this on-request flow) — this panel is now just
+ * the recipient list. */
 function WhatsAppSettingsPanel() {
   const { t } = useTranslation();
   const [recipients, setRecipients] = useState<WhatsAppRecipient[]>([]);
-  const [autoSendEnabled, setAutoSendEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [phoneNumber, setPhoneNumber] = useState("");
   const [label, setLabel] = useState("");
@@ -26,11 +30,8 @@ function WhatsAppSettingsPanel() {
 
   const load = () => {
     setLoading(true);
-    Promise.all([api.reports.whatsappRecipients.list(), api.reports.whatsappAutoSend.get()])
-      .then(([r, s]) => {
-        setRecipients(r);
-        setAutoSendEnabled(s.enabled);
-      })
+    api.reports.whatsappRecipients.list()
+      .then(setRecipients)
       .finally(() => setLoading(false));
   };
   useEffect(() => { load(); }, []);
@@ -64,33 +65,13 @@ function WhatsAppSettingsPanel() {
     }
   };
 
-  const handleToggleAutoSend = async () => {
-    const next = !autoSendEnabled;
-    setAutoSendEnabled(next); // optimistic
-    try {
-      await api.reports.whatsappAutoSend.set(next);
-    } catch {
-      setAutoSendEnabled(!next); // revert on failure
-    }
-  };
-
   return (
     <Panel className="mb-4">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <Eyebrow>{t("reports.whatsappAutoSendTitle")}</Eyebrow>
-          <SectionCaption>{t("reports.whatsappAutoSendCaption")}</SectionCaption>
+          <Eyebrow>{t("reports.whatsappRecipientsTitle")}</Eyebrow>
+          <SectionCaption>{t("reports.whatsappRecipientsCaption")}</SectionCaption>
         </div>
-        <button
-          type="button"
-          onClick={handleToggleAutoSend}
-          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer border-none ${
-            autoSendEnabled ? "bg-teal" : "bg-slate-300"
-          }`}
-          aria-label={t("reports.whatsappAutoSendToggleLabel")}
-        >
-          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${autoSendEnabled ? "translate-x-6" : "translate-x-1"}`} />
-        </button>
       </div>
 
       {loading ? (

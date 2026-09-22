@@ -8,15 +8,18 @@ business_date — see models.GeneratedReport).
 Because the job fires the instant a new day starts, "today" would be an
 empty day: the report is always for YESTERDAY's business date.
 
-§ WhatsApp Recipients & Daily Scheduler — immediately after generating,
-also auto-sends the Urdu report to every active WhatsAppRecipient, but
-ONLY when the whatsapp_auto_send_enabled AppSetting is on ("true") and at
-least one active recipient exists. The outcome is rolled up onto the Urdu
-report's own whatsapp_status ("sent" only when every recipient was reached,
-otherwise "failed"), so the Reports list shows it without opening the
-per-recipient log. Fully additive to the existing manual Reports-page "Send
-via WhatsApp" button, which keeps working unchanged regardless of this
-setting.
+§ WhatsApp Inbound Request Flow — this job used to also auto-send the
+Urdu report to every WhatsAppRecipient right after generating it
+("whatsapp_auto_send_enabled" AppSetting + a nightly send loop). That
+auto-send step has been REMOVED ENTIRELY: reports are still generated
+every night on this same schedule (so the historical record for each
+business day exists, unchanged), but nothing is pushed to anyone
+automatically any more. Delivery now only happens on request, when an
+allowlisted number messages "reports" over WhatsApp (see
+app/routers/whatsapp_webhook.py) — that flow finds this job's
+already-generated report for the date asked about, and only generates
+one itself as a fallback if this job hasn't run yet for that date (e.g.
+someone asks for today's report before midnight).
 
 Missed-run tolerance — this job lives in an in-memory scheduler, so a
 restart at midnight would otherwise skip the whole day silently:
@@ -24,7 +27,7 @@ restart at midnight would otherwise skip the whole day silently:
     long as it is less than MISFIRE_GRACE_SECONDS late.
   * startup catch-up: if the process comes back up within CATCHUP_WINDOW
     after midnight and no scheduled report exists yet for yesterday, it is
-    generated (and sent) once, right then.
+    generated once, right then.
 
 Runs as an in-process background thread (apscheduler.BackgroundScheduler)
 started once from main.py's startup event — this app is a single
@@ -38,7 +41,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app import models
 from app.database import SessionLocal
-from app.routers.reports import _generate_daily_report, send_report_to_recipient, WHATSAPP_AUTO_SEND_SETTING_KEY
+from app.routers.reports import _generate_daily_report
 from app.timezone import KARACHI_TZ
 
 logger = logging.getLogger(__name__)
@@ -57,56 +60,17 @@ def _scheduled_business_date() -> str:
     return (datetime.now(KARACHI_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
 
 
-def _run_scheduled_whatsapp_auto_send(db, reports: list[models.GeneratedReport]) -> None:
-    setting = db.query(models.AppSetting).get(WHATSAPP_AUTO_SEND_SETTING_KEY)
-    if not (setting and setting.value == "true"):
-        return
-    recipients = db.query(models.WhatsAppRecipient).filter(models.WhatsAppRecipient.active == "active").all()
-    if not recipients:
-        return
-    # Same "Urdu only" rule as the manual send-whatsapp endpoint
-    # (routers/reports.py's send_report_whatsapp) — English exists purely
-    # for on-screen reference/download, never sent over WhatsApp.
-    ur_report = next((r for r in reports if r.language == "ur"), None)
-    if not ur_report:
-        return
-    delivered = 0
-    for recipient in recipients:
-        try:
-            ok, error = send_report_to_recipient(db, ur_report, recipient)
-            if ok:
-                delivered += 1
-            else:
-                logger.warning("Scheduled WhatsApp auto-send to %s failed: %s", recipient.phone_number, error)
-        except Exception:
-            # One recipient's failure must never block the rest — same
-            # never-crash-the-process guarantee _run_scheduled_daily_report
-            # already gives report generation itself.
-            logger.exception("Scheduled WhatsApp auto-send to %s raised", recipient.phone_number)
-
-    if delivered:
-        ur_report.whatsapp_sent_at = datetime.utcnow()
-    if delivered == len(recipients):
-        ur_report.whatsapp_status = "sent"
-        ur_report.whatsapp_error = None
-    else:
-        ur_report.whatsapp_status = "failed"
-        ur_report.whatsapp_error = f"Not delivered to {len(recipients) - delivered} of {len(recipients)} recipients"
-    db.add(ur_report)
-    db.commit()
-
-
 def _run_scheduled_daily_report() -> None:
     db = SessionLocal()
     try:
         business_date = _scheduled_business_date()
-        reports = _generate_daily_report(db, business_date, SCHEDULED_GENERATED_BY)
+        _generate_daily_report(db, business_date, SCHEDULED_GENERATED_BY)
         logger.info("Scheduled daily report generated for %s", business_date)
-        _run_scheduled_whatsapp_auto_send(db, reports)
     except Exception:
         # A failed auto-generation must never crash the process or block
-        # the next day's run — the manual button remains available as a
-        # fallback regardless.
+        # the next day's run — the manual button, and the WhatsApp
+        # on-request flow's own generate-as-fallback, remain available
+        # regardless.
         logger.exception("Scheduled daily report generation failed")
         db.rollback()
     finally:
@@ -153,7 +117,7 @@ def start_scheduler() -> BackgroundScheduler:
         max_instances=1,
     )
     # One-off, in the background, so startup itself never waits on PDF
-    # rendering or the WhatsApp API.
+    # rendering.
     _scheduler.add_job(
         _catch_up_missed_run,
         trigger="date",
