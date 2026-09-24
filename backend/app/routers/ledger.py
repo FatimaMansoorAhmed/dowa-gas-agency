@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import or_
@@ -273,6 +274,34 @@ def customer_monthly_ledger(
         .all()
     )
 
+    # Sell Cylinder as a real sale (total_amount set) — posts a receivable,
+    # like EmptyCylinderSale above; its optional payment is an ordinary
+    # Payment row and already appears via all_payments. Legacy sell rows
+    # (total_amount NULL) are excluded: their money effect was only that
+    # Payment, as before.
+    all_cylinder_sales = (
+        db.query(models.CylinderReturn)
+        .filter(
+            models.CylinderReturn.customer_id == customer_id,
+            models.CylinderReturn.status == "active",
+            models.CylinderReturn.mode == "cash",
+            models.CylinderReturn.origin == "sell_cylinder",
+            models.CylinderReturn.total_amount.isnot(None),
+        )
+        .order_by(models.CylinderReturn.date)
+        .all()
+    )
+    # A payment collected as part of the same Sell Cylinder transaction
+    # (CylinderReturn.payment_id) is shown on the sale's own row — same
+    # approach as a Unified Sale's aggregated row, whose audit Payment is
+    # likewise kept out of the standalone payment list. The Payment itself
+    # is untouched (still a normal active Payment everywhere else); only a
+    # LATER, separate payment stays its own row. A cancelled Payment isn't
+    # in all_payments, so it correctly contributes 0 here.
+    sell_payment_ids = {r.payment_id for r in all_cylinder_sales if r.payment_id}
+    sell_payment_amounts = {p.id: p.amount for p in all_payments if p.id in sell_payment_ids}
+    all_payments = [p for p in all_payments if p.id not in sell_payment_ids]
+
     products = {p.id: p for p in db.query(models.Product).all()}
 
     # Opening balance for the requested month = year opening balance plus
@@ -291,8 +320,11 @@ def customer_monthly_ledger(
     for ecs in all_empty_cylinder_sales:
         if ecs.date < month_start:
             opening += ecs.amount
+    for cs in all_cylinder_sales:
+        if cs.date < month_start:
+            opening += cs.total_amount - sell_payment_amounts.get(cs.payment_id, Decimal("0"))
 
-    month_sales = [s for s in all_sales if month_start <= s.date < next_month]
+    month_sales =[s for s in all_sales if month_start <= s.date < next_month]
     month_payments = [p for p in all_payments if month_start <= p.date < next_month]
     month_batches = [b for b in all_batches if month_start <= b.date < next_month]
     month_empty_cylinder_sales = [e for e in all_empty_cylinder_sales if month_start <= e.date < next_month]
@@ -306,6 +338,7 @@ def customer_monthly_ledger(
         + [{"date": p.date, "kind": "payment", "obj": p} for p in month_payments]
         + [{"date": b.date, "kind": "unified_sale", "obj": b} for b in month_batches]
         + [{"date": e.date, "kind": "empty_cylinder_sale", "obj": e} for e in month_empty_cylinder_sales]
+        + [{"date": r.date, "kind": "cylinder_sale", "obj": r} for r in all_cylinder_sales if month_start <= r.date < next_month]
         + [{"date": t.date, "kind": "cylinder_transaction", "obj": t} for t in month_cylinder_txns]
         + [{"date": r.date, "kind": "cylinder_return_out", "obj": r} for r in month_cyl_returns_out]
         + [{"date": r.date, "kind": "cylinder_return_in", "obj": r} for r in month_cyl_returns_in]
@@ -419,6 +452,22 @@ def customer_monthly_ledger(
                 sale_amount=ecs.amount, payment_amount=0, running_balance=running,
                 qty_empty=ecs.quantity, cyl_in=ecs.quantity,
                 entered_by=ecs.entered_by,
+            ))
+        elif e["kind"] == "cylinder_sale":
+            cs: models.CylinderReturn = e["obj"]
+            paid_now = sell_payment_amounts.get(cs.payment_id, Decimal("0"))
+            running += cs.total_amount - paid_now
+            total_sales += cs.total_amount
+            total_payments += paid_now
+            size_label = "45.4" if cs.cylinder_size == "454" else "11.8"
+            type_label = f" {cs.cylinder_type.upper()}" if cs.cylinder_type else ""
+            rows.append(schemas.LedgerRow(
+                date=cs.date, kind="empty_cylinder_sale", ref_id=cs.id, display_id=cs.display_id,
+                description=f"Cylinders Sold ({size_label} KG{type_label}) × {cs.quantity}",
+                sale_amount=cs.total_amount, payment_amount=paid_now, running_balance=running,
+                qty_empty=cs.quantity, cyl_in=cs.quantity,
+                rate_per_cylinder=cs.price_per_cylinder,
+                entered_by=cs.entered_by,
             ))
         elif e["kind"] in ("cylinder_return_out", "cylinder_return_in"):
             # Return Cylinder / Add Empty Cylinder (§ Part B/C) — pure
@@ -545,6 +594,13 @@ def _bulk_month_opening_closing(
     ecs_by_customer: dict = {}
     for e in db.query(models.EmptyCylinderSale).filter(models.EmptyCylinderSale.status == "active").all():
         ecs_by_customer.setdefault(e.customer_id, []).append(e)
+    # Sell Cylinder as a real sale — same receivable footing as the legacy
+    # EmptyCylinderSale rows above (see customer_monthly_ledger).
+    for r in db.query(models.CylinderReturn).filter(
+        models.CylinderReturn.status == "active", models.CylinderReturn.mode == "cash",
+        models.CylinderReturn.origin == "sell_cylinder", models.CylinderReturn.total_amount.isnot(None),
+    ).all():
+        ecs_by_customer.setdefault(r.customer_id, []).append(SimpleNamespace(date=r.date, amount=r.total_amount))
 
     result: dict = {}
     for customer in db.query(models.Customer).all():

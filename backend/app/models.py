@@ -1073,7 +1073,15 @@ class CylinderReturn(Base):
     # Delete Customer/Company — display snapshot, written only by the delete endpoint (NULL while the row's customer/plant is live).
     to_customer_label = Column(String, nullable=True)
     to_customer_id = Column(GUID(), ForeignKey("customers.id"), nullable=True)  # transfer only
-    payment_id = Column(GUID(), ForeignKey("payments.id"), nullable=True)  # cash only
+    payment_id = Column(GUID(), ForeignKey("payments.id"), nullable=True)  # cash only; for a sell, only set when payment_received > 0
+
+    # Sell Cylinder only (origin="sell_cylinder", mode="cash") — a real sale:
+    # total_amount (= quantity * price_per_cylinder) is posted to the
+    # customer's ledger as a receivable, and payment_id (if any) is the
+    # optional partial/full payment against it. NULL on every legacy sell
+    # row, which used the old cash-value-as-payment semantics and keeps them.
+    price_per_cylinder = Column(Numeric(14, 2), nullable=True)
+    total_amount = Column(Numeric(14, 2), nullable=True)
 
     notes = Column(String, nullable=True)
     status = Column(String, nullable=False, default="active")  # active | cancelled

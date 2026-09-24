@@ -324,6 +324,9 @@ def _fetch_customer_payments(db: Session, start: datetime, end: datetime) -> lis
     sell_cylinder_payment_ids = {
         r.payment_id for r in db.query(models.CylinderReturn.payment_id).filter(
             models.CylinderReturn.origin == "sell_cylinder", models.CylinderReturn.payment_id.isnot(None),
+            # New-style sells (total_amount set) report the SALE under
+            # empty_cylinder_sales and their payment here, as a real payment.
+            models.CylinderReturn.total_amount.is_(None),
         ).all()
     }
     payment_q = db.query(models.Payment).filter(models.Payment.status == "active")
@@ -518,7 +521,8 @@ def _fetch_empty_cylinder_sales(db: Session, start: datetime, end: datetime) -> 
         out.append(ReportableTransaction(
             id=r.id, type="empty_cylinder_sale", date=r.date, display_id=r.display_id,
             description=f"Empty Cylinders Sold{type_label}",
-            amount=payment.amount if payment else None, customer=customer.name if customer else None,
+            amount=r.total_amount if r.total_amount is not None else (payment.amount if payment else None),
+            customer=customer.name if customer else None,
             entered_by=r.entered_by, status=r.status,
             cylinder_weight=r.cylinder_size, quantity=r.quantity, unit="cylinder",
         ))

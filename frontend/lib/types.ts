@@ -578,6 +578,8 @@ export type CylinderReturn = {
   origin: "return_cylinder" | "sell_cylinder";
   to_customer_id: string | null;
   payment_id: string | null;
+  price_per_cylinder: string | null;
+  total_amount: string | null;
   notes: string | null;
   status: string;
   entered_by: string;

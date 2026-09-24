@@ -323,6 +323,10 @@ export const api = {
       home_expense_amount?: number;
       home_expense_category_id?: string;
       owner_drawings_amount?: number;
+      // Sell Cylinder (origin "sell_cylinder") only — see backend CylinderReturnCreate.
+      price_per_cylinder?: number;
+      payment_received?: number;
+      home_expense_lines?: { category_id: string; amount: number; employee_id?: string; description?: string }[];
       destination_type?: DestinationType;
       target_plant_id?: string;
       account_id?: string;

@@ -5,8 +5,9 @@ import { useTranslation } from "react-i18next";
 import { Field, inputClass, Button } from "@/components/ui";
 import AmountInput from "@/components/AmountInput";
 import SettlementDestinationFields, { SpecialAccount } from "@/components/SettlementDestinationFields";
+import { HomeExpenseLine, homeExpenseLinesTotal, homeExpenseLinesValid, toHomeExpenseLinesPayload } from "@/components/HomeExpenseLinesEditor";
 import { api } from "@/lib/api";
-import { todayLocalInput } from "@/lib/format";
+import { todayLocalInput, pkr } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import { findBucketAccount } from "@/lib/accounts";
 import type { Customer, Company, PaymentAccount, ExpenseCategory, DestinationType } from "@/lib/types";
@@ -73,6 +74,11 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
   const [toCustomerSearch, setToCustomerSearch] = useState("");
 
   const [amount, setAmount] = useState("");
+  // Sell only: a real sale — price × quantity is the receivable, and
+  // paymentReceived (default 0) is what's collected now.
+  const [price, setPrice] = useState("");
+  const [paymentReceived, setPaymentReceived] = useState("");
+  const [homeExpenseLines, setHomeExpenseLines] = useState<HomeExpenseLine[]>([]);
   const [homeExpenseAmount, setHomeExpenseAmount] = useState("");
   const [homeExpenseCatId, setHomeExpenseCatId] = useState("");
   const [ownerDrawingsAmount, setOwnerDrawingsAmount] = useState("");
@@ -113,6 +119,9 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
     setToCustomerId("");
     setToCustomerSearch("");
     setAmount("");
+    setPrice("");
+    setPaymentReceived("");
+    setHomeExpenseLines([]);
     setHomeExpenseAmount("");
     setHomeExpenseCatId("");
     setOwnerDrawingsAmount("");
@@ -150,10 +159,29 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
   const cashOwnerDrawings = parseFloat(ownerDrawingsAmount) || 0;
   const cashNetRemaining = Math.max(0, amountNum - cashHomeExpense - cashOwnerDrawings);
 
+  // Sell: a real sale. Deductions come out of the payment received, never
+  // the sale amount (same as a normal Sale's settlement).
+  const priceNum = parseFloat(price) || 0;
+  const saleTotal = qtyNum * priceNum;
+  const paymentNum = parseFloat(paymentReceived) || 0;
+  const sellExpenses = homeExpenseLinesTotal(homeExpenseLines);
+  const sellNetRemaining = Math.max(0, paymentNum - sellExpenses - cashOwnerDrawings);
+  const sellOutstanding = Math.max(0, saleTotal - paymentNum);
+  const sellPaymentTooHigh = paymentNum > saleTotal + 0.01;
+  const sellCanSubmit =
+    priceNum > 0 &&
+    !sellPaymentTooHigh &&
+    (paymentNum <= 0 ||
+      (sellExpenses + cashOwnerDrawings <= paymentNum + 0.01 &&
+        homeExpenseLinesValid(homeExpenseLines, expenseCategories) &&
+        (sellNetRemaining <= 0 || (destinationType === "plant" ? !!targetPlantId : specialAccount === "bank" ? !!accountId : true))));
+
   const canSubmit =
     qtyNum > 0 &&
     qtyNum <= availableBalance &&
-    (mode === "transfer"
+    (isSell
+      ? sellCanSubmit
+      : mode === "transfer"
       ? !!toCustomerId
       : amountNum > 0 &&
         // Nothing left to route (Home Expense/Owner Drawings consumed the
@@ -166,12 +194,36 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
     setError(null);
 
     let finalAccountId = accountId;
-    if (mode === "cash" && destinationType === "account" && specialAccount !== "bank" && specialAccount !== "shop_cash") {
+    if ((mode === "cash" || isSell) && destinationType === "account" && specialAccount !== "bank" && specialAccount !== "shop_cash") {
       const bucketAccount = findBucketAccount(accounts, specialAccount);
       finalAccountId = bucketAccount ? bucketAccount.id : specialAccount;
     }
 
     try {
+      if (isSell) {
+        // Routing is only meaningful (and only sent) when money was actually received.
+        const routed = paymentNum > 0;
+        await api.cylinderReturns.create({
+          customer_id: customer.id,
+          cylinder_size: cylSize,
+          cylinder_type: sellType === "legacy" ? undefined : sellType,
+          quantity: qtyNum,
+          mode: "cash",
+          origin: "sell_cylinder",
+          price_per_cylinder: priceNum,
+          payment_received: paymentNum,
+          home_expense_lines: routed ? toHomeExpenseLinesPayload(homeExpenseLines) : undefined,
+          owner_drawings_amount: routed && cashOwnerDrawings > 0 ? cashOwnerDrawings : undefined,
+          destination_type: routed ? destinationType : undefined,
+          target_plant_id: routed && destinationType === "plant" && targetPlantId ? targetPlantId : undefined,
+          account_id: routed && destinationType === "account" && finalAccountId ? finalAccountId : undefined,
+          notes: notes || undefined,
+          entered_by: user.name,
+        });
+        onSuccess();
+        onClose();
+        return;
+      }
       await api.cylinderReturns.create({
         customer_id: customer.id,
         cylinder_size: cylSize,
@@ -271,7 +323,71 @@ export default function ReturnCylinderModal({ isOpen, onClose, onSuccess, custom
             </div>
           )}
 
-          {mode === "transfer" ? (
+          {isSell ? (
+            <>
+              <div className="p-3.5 bg-paper rounded-lg border border-hairline space-y-3">
+                <div className="font-mono text-[10px] text-steel uppercase font-bold tracking-wider">{t("modals.sellSaleDetails")}</div>
+                <div className="font-body text-xs text-steel">
+                  {t("modals.sellCustomerLabel")}: <b className="text-ink">{customer.name}</b> · {customer.display_id}
+                </div>
+                <Field label={t("modals.sellPricePerCylinder")}>
+                  <AmountInput value={price} onChange={setPrice} placeholder="0" className={inputClass} />
+                </Field>
+                <div className="flex justify-between items-center">
+                  <span className="font-body text-xs text-steel">{t("modals.sellTotalSale")}</span>
+                  <b className="font-mono text-base text-teal">{pkr(saleTotal)}</b>
+                </div>
+              </div>
+
+              <div className="p-3.5 bg-paper rounded-lg border border-hairline space-y-3">
+                <div className="font-mono text-[10px] text-steel uppercase font-bold tracking-wider">{t("modals.sellPaymentSection")}</div>
+                <Field label={t("modals.sellAmountReceived")}>
+                  <AmountInput
+                    value={paymentReceived}
+                    onChange={setPaymentReceived}
+                    placeholder="0"
+                    className={`${inputClass} text-base font-mono font-bold text-teal`}
+                  />
+                </Field>
+                {sellPaymentTooHigh && (
+                  <div className="text-xs text-brand-red font-medium">{t("modals.sellPaymentExceedsTotal")}</div>
+                )}
+                {paymentNum > 0 ? (
+                  <div className="font-body text-xs text-steel">{t("modals.sellOutstandingAfter", { amount: pkr(sellOutstanding) })}</div>
+                ) : (
+                  saleTotal > 0 && (
+                    <div className="font-body text-xs text-steel">{t("modals.sellFullAmountToLedger", { amount: pkr(saleTotal) })}</div>
+                  )
+                )}
+              </div>
+
+              {paymentNum > 0 && (
+                <SettlementDestinationFields
+                  grossAmount={paymentNum}
+                  companies={companies}
+                  accounts={accounts}
+                  expenseCategories={expenseCategories}
+                  homeExpenseAmount={homeExpenseAmount}
+                  onHomeExpenseAmountChange={setHomeExpenseAmount}
+                  homeExpenseCatId={homeExpenseCatId}
+                  onHomeExpenseCatIdChange={setHomeExpenseCatId}
+                  homeExpenseLines={homeExpenseLines}
+                  onHomeExpenseLinesChange={setHomeExpenseLines}
+                  onExpenseCategoriesChange={setExpenseCategories}
+                  ownerDrawingsAmount={ownerDrawingsAmount}
+                  onOwnerDrawingsAmountChange={setOwnerDrawingsAmount}
+                  destinationType={destinationType}
+                  onDestinationTypeChange={setDestinationType}
+                  targetPlantId={targetPlantId}
+                  onTargetPlantIdChange={setTargetPlantId}
+                  specialAccount={specialAccount}
+                  onSpecialAccountChange={setSpecialAccount}
+                  accountId={accountId}
+                  onAccountIdChange={setAccountId}
+                />
+              )}
+            </>
+          ) : mode === "transfer" ? (
             <Field label={t("modals.transferToCustomerB")}>
               <div className="relative">
                 <input

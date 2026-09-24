@@ -11,6 +11,7 @@ from app.utils import require_live_customer, require_live_company
 from app.deps import require_active_user, require_csrf
 from app.utils import (
     next_display_id, resolve_settlement_destination, apply_settlement_routing, reverse_payment_receipt,
+    is_salary_category,
 )
 
 router = APIRouter(prefix="/cylinder-returns", tags=["cylinder-returns"], dependencies=[Depends(require_active_user), Depends(require_csrf)])
@@ -75,6 +76,13 @@ def create_cylinder_return(
         uses) — the customer is credited (current_balance drops) exactly as
         if they'd handed over that amount in cash.
       - "manual_add": pure count increase, no balance/money effect at all.
+
+    mode="cash" + origin="sell_cylinder" is a different operation from all
+    of the above: a real SALE of the cylinders to the customer. The sale
+    (quantity * price_per_cylinder) is posted to the customer's balance like
+    any Sale; payment_received (optional, default 0) is posted like any
+    Payment and routed via the same settlement routing; expenses/owner
+    drawings come out of that payment; the rest stays as receivable.
     """
     customer = db.query(models.Customer).get(payload.customer_id)
     if not customer:
@@ -95,9 +103,12 @@ def create_cylinder_return(
                 f"Quantity exceeds the customer's available {size_label} KG{type_label} empty cylinder balance",
             )
 
+    is_sell = payload.mode == "cash" and payload.origin == "sell_cylinder"
     to_customer = None
     destination_type = target_plant_id = account_row = account_category = None
     net_settlement_amount = None
+    sale_total = None
+    expense_lines = []
 
     if payload.mode == "transfer":
         if not payload.to_customer_id:
@@ -107,6 +118,37 @@ def create_cylinder_return(
         to_customer = db.query(models.Customer).get(payload.to_customer_id)
         if not to_customer:
             raise HTTPException(404, "Destination customer not found")
+
+    elif is_sell:
+        if not payload.price_per_cylinder or payload.price_per_cylinder <= 0:
+            raise HTTPException(400, "price_per_cylinder is required and must be greater than 0 for a cylinder sale")
+        sale_total = payload.quantity * payload.price_per_cylinder
+        if payload.payment_received < 0:
+            raise HTTPException(400, "payment_received cannot be negative")
+        if payload.payment_received > sale_total + EPSILON:
+            raise HTTPException(400, f"Payment received ({payload.payment_received}) cannot exceed the total sale amount ({sale_total})")
+
+        expense_lines = [l for l in (payload.home_expense_lines or []) if l.amount > 0]
+        home_expense_total = sum((l.amount for l in expense_lines), Decimal("0"))
+        bypass_sum = home_expense_total + payload.owner_drawings_amount
+        if bypass_sum > payload.payment_received + EPSILON:
+            raise HTTPException(
+                400,
+                f"Expense ({home_expense_total}) + owner drawings ({payload.owner_drawings_amount}) "
+                f"= {bypass_sum} exceeds the payment received ({payload.payment_received}).",
+            )
+        for line in expense_lines:
+            if not db.query(models.ExpenseCategory).get(line.category_id):
+                raise HTTPException(404, "Expense category not found")
+            if is_salary_category(db, line.category_id) and not line.employee_id:
+                raise HTTPException(400, "Employee is required when an Expense line's category is Salary")
+
+        # No payment -> nothing is routed anywhere, so no destination needed.
+        if payload.payment_received > 0:
+            net_settlement_amount = payload.payment_received - bypass_sum
+            destination_type, target_plant_id, account_row, account_category = resolve_settlement_destination(
+                db, payload.destination_type, payload.target_plant_id, payload.account_id, net_settlement_amount
+            )
 
     elif payload.mode == "cash":
         if not payload.amount or payload.amount <= 0:
@@ -139,10 +181,70 @@ def create_cylinder_return(
             db.add(customer)
             db.add(to_customer)
 
+        elif is_sell:
+            label = f"Cylinder Sale {cret_display_id}"
+            # Same math as the normal Sale/Unified Sale posting: balance +
+            # sale, then - payment; anything paid beyond what's owed becomes
+            # account credit (advance), same convention as every Payment.
+            balance_before_settlement = (customer.current_balance or 0) + sale_total
+            payment = None
+            excess_amount = None
+            if payload.payment_received > 0:
+                excess = payload.payment_received - balance_before_settlement
+                excess_amount = excess if excess > 0 else None
+                payment = models.Payment(
+                    display_id=next_display_id(db, models.Payment, "PAY", width=6),
+                    date=date,
+                    customer_id=payload.customer_id,
+                    amount=payload.payment_received,
+                    method=payload.method,
+                    account_id=account_row.id if account_row else None,
+                    reference_no=payload.reference_no,
+                    notes=payload.notes or label,
+                    excess_amount=excess_amount,
+                    destination_type=destination_type,
+                    target_plant_id=target_plant_id,
+                    account_category=account_category,
+                    net_settlement_amount=net_settlement_amount,
+                    status="active",
+                    entered_by=current_user.name,
+                )
+                db.add(payment)
+                db.flush()
+                payment_id = payment.id
+                customer.last_overpayment_amount = excess_amount
+                customer.last_overpayment_date = date if excess_amount else None
+                if excess_amount:
+                    customer.account_credit = customer.account_credit + excess_amount
+
+            customer.current_balance = balance_before_settlement - payload.payment_received
+            customer.last_transaction_at = date
+            db.add(customer)
+
+            _shift_balance(customer, payload.cylinder_size, payload.cylinder_type, -payload.quantity)
+            db.add(customer)
+
+            if payment:
+                # One Expense per line (each flushed so the next display_id
+                # sees it), then the drawings + remaining routing once.
+                for line in expense_lines:
+                    apply_settlement_routing(
+                        db, date, line.amount, line.category_id, Decimal("0"),
+                        destination_type, target_plant_id, account_row, Decimal("0"),
+                        current_user.name, payment.id, label,
+                        home_expense_description=line.description, home_expense_employee_id=line.employee_id,
+                    )
+                    db.flush()
+                apply_settlement_routing(
+                    db, date, Decimal("0"), None, payload.owner_drawings_amount,
+                    destination_type, target_plant_id, account_row, net_settlement_amount,
+                    current_user.name, payment.id, label,
+                )
+
         elif payload.mode == "cash":
             excess = payload.amount - customer.current_balance
             excess_amount = excess if excess > 0 else None
-            label = "Empty Cylinder Sale" if payload.origin == "sell_cylinder" else "Cylinder Return"
+            label = "Cylinder Return"
 
             payment = models.Payment(
                 display_id=next_display_id(db, models.Payment, "PAY", width=6),
@@ -200,6 +302,8 @@ def create_cylinder_return(
             origin=payload.origin,
             to_customer_id=payload.to_customer_id if payload.mode == "transfer" else None,
             payment_id=payment_id,
+            price_per_cylinder=payload.price_per_cylinder if is_sell else None,
+            total_amount=sale_total if is_sell else None,
             notes=payload.notes,
             status="active",
             entered_by=current_user.name,
@@ -245,6 +349,11 @@ def cancel_cylinder_return(cylinder_return_id: UUID, by: str = Query(...), db: S
                 payment.modified_at = datetime.utcnow()
                 payment.modified_by = by
                 db.add(payment)
+            # A Sell Cylinder also posted the sale itself (a receivable) —
+            # undone here after the payment reversal above, which only
+            # gives the payment back.
+            if cyl_return.total_amount is not None:
+                customer.current_balance = customer.current_balance - cyl_return.total_amount
             _shift_balance(customer, cyl_return.cylinder_size, cyl_return.cylinder_type, cyl_return.quantity)
             db.add(customer)
 

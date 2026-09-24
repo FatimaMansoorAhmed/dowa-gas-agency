@@ -233,6 +233,10 @@ _NEW_COLUMNS: list[tuple[str, str, str]] = [
     # Empty Cylinders page's "Sell Cylinder" button passes
     # origin='sell_cylinder' explicitly (see models.CylinderReturn.origin).
     ("cylinder_returns", "origin", "VARCHAR(20) NOT NULL DEFAULT 'return_cylinder'"),
+    # Sell Cylinder as a real sale (see models.CylinderReturn.total_amount) —
+    # NULL for every existing row, which keeps its legacy semantics.
+    ("cylinder_returns", "price_per_cylinder", "NUMERIC(14, 2)"),
+    ("cylinder_returns", "total_amount", "NUMERIC(14, 2)"),
     # Settlement Correction (§ Bug Fix — Correction Modal Routing) — every
     # existing batch predates settlement correction and was, by
     # construction, never corrected, so these are simply NULL for all of

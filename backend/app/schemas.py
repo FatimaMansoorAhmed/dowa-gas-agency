@@ -2152,6 +2152,18 @@ class CylinderReturnCreate(BaseModel):
     account_id: Optional[str] = None
     reference_no: Optional[str] = None
 
+    # origin == "sell_cylinder" only (a real sale, not a payment): the sale
+    # is quantity * price_per_cylinder, posted to the customer's ledger as a
+    # receivable. payment_received (default 0) is the optional amount
+    # collected now — expenses/owner drawings come out of THAT, exactly like
+    # a normal Sale's settlement, and only the remainder is routed via
+    # destination_type/target_plant_id/account_id. `amount` is ignored for
+    # a sell. home_expense_lines is the same multi-line shape Shop Sale /
+    # Unified Sale use and replaces the scalar home_expense_amount.
+    price_per_cylinder: Optional[Decimal] = None
+    payment_received: Decimal = Decimal("0")
+    home_expense_lines: Optional[list[UnifiedSaleHomeExpenseLineIn]] = None
+
     notes: Optional[str] = None
     entered_by: str
 
@@ -2171,6 +2183,8 @@ class CylinderReturnOut(BaseModel):
     origin: str
     to_customer_id: Optional[UUID] = None
     payment_id: Optional[UUID] = None
+    price_per_cylinder: Optional[Decimal] = None
+    total_amount: Optional[Decimal] = None
     notes: Optional[str] = None
     status: str
     entered_by: str
